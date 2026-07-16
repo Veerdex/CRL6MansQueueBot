@@ -5,7 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType } from "@/lib/supabase/types";
 import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
-import { VIEW_CHANNEL, SEND_MESSAGES, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
+import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { startTeamFormation } from "./teamFormation";
 
@@ -234,7 +234,6 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       await editOriginalResponse(interaction.token, { content: `You're not in the ${QUEUE_LABELS[queueType]}.` });
       return;
     }
-    await editOriginalResponse(interaction.token, { content: `Left the ${QUEUE_LABELS[queueType]}.` });
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`);
     return;
   }
@@ -269,13 +268,9 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     return;
   }
 
-  await editOriginalResponse(interaction.token, {
-    content: `Joined the ${QUEUE_LABELS[queueType]} (${result?.queue_size ?? "?"}/6).`,
-  });
-
   if (result?.status === "joined" && result.queue_size >= 6) {
     const guildId = interaction.guild_id ?? (await getGuildId());
-    await handlePop(supabase, queueType, guildId);
+    await handlePop(supabase, queueType, guildId, channelId);
   } else {
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
   }
@@ -287,7 +282,8 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
 // on pop)").
 // ---------------------------------------------------------------------------
 
-async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: string) {
+
+async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: string, queueChannelId: string) {
   const members = await fetchQueueMembers(supabase, queueType);
   const playerIds = members.map((m) => m.id);
 
@@ -342,74 +338,63 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     );
   }
 
-  await createMatchChannels(supabase, series.id, guildId, members);
+  await createMatchChannels(supabase, series.id, guildId, members, queueChannelId);
 }
 
-export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[]) {
+export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[], queueChannelId: string) {
   const adminRoleIds = await getAdminRoleIds();
   const botUserId = process.env.DISCORD_APPLICATION_ID;
   const shortId = seriesId.slice(0, 8);
 
-  // Discord does NOT inherit a category's permission overwrites onto a child channel
-  // unless the child's overwrites are byte-identical to the parent's ("synced"). Since the
-  // text channel below adds its own SEND_MESSAGES denies, it's unsynced — so the VIEW_CHANNEL
-  // deny/allow set has to be repeated explicitly on the text channel too, or @everyone falls
-  // back to the guild default (visible) instead of inheriting the category's private setting.
-  const baseOverwrites: PermissionOverwrite[] = [
-    { id: guildId, type: ROLE_TYPE, deny: VIEW_CHANNEL.toString() },
-    ...members.map((m) => ({ id: m.discord_id, type: MEMBER_TYPE, allow: VIEW_CHANNEL.toString() }) as PermissionOverwrite),
-    ...adminRoleIds.map((roleId) => ({ id: roleId, type: ROLE_TYPE, allow: VIEW_CHANNEL.toString() }) as PermissionOverwrite),
-  ];
-  if (botUserId) {
-    // Explicit SEND grant, not just VIEW — if the guild denies @everyone Send Messages
-    // (common for a locked-down community server), the bot would otherwise be unable to
-    // post into the very channel it just created and message-locked the 6 players out of.
-    baseOverwrites.push({
-      id: botUserId,
-      type: MEMBER_TYPE,
-      allow: (VIEW_CHANNEL | SEND_MESSAGES).toString(),
-    });
+  // Fetch admin-specified call category from config
+  const { data: categoryConfig } = await supabase
+    .from("crl6mansqueuebot_config")
+    .select("value")
+    .eq("key", "6mans_call_category_id")
+    .maybeSingle();
+
+  const categoryId = categoryConfig?.value;
+  if (!categoryId) {
+    // Post error in queue channel
+    await discordFetch(`/channels/${queueChannelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: `**Admin:** 6-mans call category not configured. Run \`/set6manscallcategory\` to set it up.`,
+      }),
+    }).catch((err) => console.error(`Failed to post error in queue channel`, err));
+    return;
   }
 
-  const category = (await discordFetch(`/guilds/${guildId}/channels`, {
-    method: "POST",
-    body: JSON.stringify({ name: `Match ${shortId}`, type: 4, permission_overwrites: baseOverwrites }),
-  })) as { id: string };
-
-  // Discord allows only one overwrite object per id per channel (allow/deny bits share the
-  // same object) — the members' entries here replace, not append to, their baseOverwrites ones.
-  const memberDiscordIds = new Set(members.map((m) => m.discord_id));
-  const textOverwrites: PermissionOverwrite[] = [
-    ...baseOverwrites.filter((o) => !memberDiscordIds.has(o.id)),
-    ...members.map(
-      (m) => ({ id: m.discord_id, type: MEMBER_TYPE, allow: VIEW_CHANNEL.toString(), deny: SEND_MESSAGES.toString() }) as PermissionOverwrite,
-    ),
+  const voiceOverwrites = (teamMembers: PlayerRow[]): PermissionOverwrite[] => [
+    { id: guildId, type: ROLE_TYPE, deny: VIEW_CHANNEL.toString() },
+    ...teamMembers.map((m) => ({ id: m.discord_id, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
+    ...adminRoleIds.map((roleId) => ({ id: roleId, type: ROLE_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
+    ...(botUserId ? [{ id: botUserId, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() } as PermissionOverwrite] : []),
   ];
 
-  const textChannel = (await discordFetch(`/guilds/${guildId}/channels`, {
+  const voiceA = (await discordFetch(`/guilds/${guildId}/channels`, {
     method: "POST",
-    body: JSON.stringify({
-      name: `match-${shortId}`,
-      type: 0,
-      parent_id: category.id,
-      permission_overwrites: textOverwrites,
-    }),
+    body: JSON.stringify({ name: `Team A - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(members.filter((_, i) => i < 3)) }),
+  })) as { id: string };
+  const voiceB = (await discordFetch(`/guilds/${guildId}/channels`, {
+    method: "POST",
+    body: JSON.stringify({ name: `Team B - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(members.filter((_, i) => i >= 3)) }),
   })) as { id: string };
 
   await supabase
     .from("crl6mansqueuebot_series")
-    .update({ category_id: category.id, text_channel_id: textChannel.id })
+    .update({ voice_channel_a_id: voiceA.id, voice_channel_b_id: voiceB.id })
     .eq("id", seriesId);
 
   const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
-  await discordFetch(`/channels/${textChannel.id}/messages`, {
+  await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({
-      content: `${mentions}\nYour lobby has popped! The match channel has been created — vote for team formation below.`,
+      content: `${mentions}\nYour lobby has popped! Vote for team formation below.`,
     }),
-  });
+  }).catch((err) => console.error(`Failed to post pop notification in queue channel`, err));
 
-  await startTeamFormation(supabase, guildId, seriesId, textChannel.id, members);
+  await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
 }
 
 // ---------------------------------------------------------------------------
@@ -444,4 +429,62 @@ async function processSetQueueChannel(
   }
   await initQueueMessage(queueTypeRaw, channelId);
   await editOriginalResponse(interaction.token, { content: `Queue message set up for ${QUEUE_LABELS[queueTypeRaw]}.` });
+}
+
+// ---------------------------------------------------------------------------
+// /set6manscallcategory — specify the Discord category where match voice channels
+// are created. Owner-or-admin-role gated.
+// ---------------------------------------------------------------------------
+
+export function handleSet6mansCallCategoryCommand(interaction: DiscordInteraction) {
+  const categoryId = interaction.data?.options?.find((o) => o.name === "category")?.value;
+  after(() => processSet6mansCallCategory(interaction, categoryId));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processSet6mansCallCategory(interaction: DiscordInteraction, categoryIdRaw: string | number | boolean | undefined) {
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+    return;
+  }
+  if (!categoryIdRaw) {
+    await editOriginalResponse(interaction.token, { content: "Missing category." });
+    return;
+  }
+  const categoryId = String(categoryIdRaw);
+  const supabase = createAdminClient();
+  await supabase.from("crl6mansqueuebot_config").upsert({ key: "6mans_call_category_id", value: categoryId });
+  await editOriginalResponse(interaction.token, { content: `6-mans call category set to <#${categoryId}>.` });
+}
+
+// ---------------------------------------------------------------------------
+// /setreportchannel — specify the Discord channel where match results are posted.
+// Owner-or-admin-role gated.
+// ---------------------------------------------------------------------------
+
+export function handleSetReportChannelCommand(interaction: DiscordInteraction) {
+  const channelId = interaction.data?.options?.find((o) => o.name === "channel")?.value;
+  after(() => processSetReportChannel(interaction, channelId));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processSetReportChannel(interaction: DiscordInteraction, channelIdRaw: string | number | boolean | undefined) {
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+    return;
+  }
+  if (!channelIdRaw) {
+    await editOriginalResponse(interaction.token, { content: "Missing channel." });
+    return;
+  }
+  const channelId = String(channelIdRaw);
+  const supabase = createAdminClient();
+  await supabase.from("crl6mansqueuebot_config").upsert({ key: "report_channel_id", value: channelId });
+  await editOriginalResponse(interaction.token, { content: `Report channel set to <#${channelId}>.` });
 }

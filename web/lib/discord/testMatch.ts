@@ -101,7 +101,9 @@ async function processTestMatch(interaction: DiscordInteraction, queueType: Queu
 
   await supabase.from("crl6mansqueuebot_series_lobby").insert(members.map((m) => ({ series_id: series.id, player_id: m.id })));
 
-  await createMatchChannels(supabase, series.id, interaction.guild_id, members);
+  // For test matches, use the command channel as the "queue channel" for voting UI
+  const channelId = interaction.channel_id || "";
+  await createMatchChannels(supabase, series.id, interaction.guild_id, members, channelId);
 
   // Auto-cast 4 of 5 fake votes (2 Balanced, 2 Captains) — deliberately leaves the vote at 2-2
   // so the admin's own click through the real button decides the outcome, exercising both the

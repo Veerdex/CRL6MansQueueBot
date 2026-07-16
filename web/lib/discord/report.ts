@@ -44,27 +44,36 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
   let series: SeriesRow | null = null;
   if (seriesIdOverride) {
     if (!(await hasAdminAccess(interaction))) {
-      await editOriginalResponse(interaction.token, { content: "Only admins can report by id: from outside the match channel." });
+      await editOriginalResponse(interaction.token, { content: "Only admins can report by id:." });
       return;
     }
     const { data } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesIdOverride).maybeSingle();
     series = data;
   } else {
-    if (!interaction.channel_id) {
-      await editOriginalResponse(interaction.token, { content: "Run this inside a match channel, or pass id: as an admin." });
+    // Find which active series the player is locked into
+    const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+    const { data: seriesPlayers } = await supabase
+      .from("crl6mansqueuebot_series_players")
+      .select("series_id")
+      .eq("player_id", player.id);
+
+    if (!seriesPlayers || seriesPlayers.length === 0) {
+      await editOriginalResponse(interaction.token, { content: "You're not part of an active match." });
       return;
     }
-    const { data } = await supabase
+
+    const seriesIds = seriesPlayers.map((s) => s.series_id);
+    const { data: activeSeries } = await supabase
       .from("crl6mansqueuebot_series")
       .select("*")
-      .eq("text_channel_id", interaction.channel_id)
-      .in("status", ["forming", "active"])
+      .in("id", seriesIds)
+      .eq("status", "active")
       .maybeSingle();
-    series = data;
+    series = activeSeries;
   }
 
   if (!series) {
-    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "No active match to report in this channel." });
+    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "No active match to report." });
     return;
   }
   if (series.status === "forming") {
@@ -186,17 +195,26 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
 
   await editOriginalResponse(interaction.token, { content: `Reported — Team ${winner} wins.` });
 
-  if (series.text_channel_id) {
-    await discordFetch(`/channels/${series.text_channel_id}/messages`, {
+  // Fetch admin-specified report channel
+  const { data: reportChannelConfig } = await supabase
+    .from("crl6mansqueuebot_config")
+    .select("value")
+    .eq("key", "report_channel_id")
+    .maybeSingle();
+
+  const reportChannelId = reportChannelConfig?.value;
+  if (reportChannelId) {
+    await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         content:
           `**Match reported — Team ${winner} wins!**\n\n` +
           `**Winners**\n${winnerLines.join("\n")}\n\n` +
-          `**Losers**\n${loserLines.join("\n")}\n\n` +
-          `This channel will close in 30 seconds.`,
+          `**Losers**\n${loserLines.join("\n")}`,
       }),
     }).catch((err) => console.error(`Failed to post report summary for series ${series!.id}`, err));
+  } else {
+    console.error(`Report channel not configured for series ${series.id}`);
   }
 
   await new Promise((resolve) => setTimeout(resolve, CLOSE_WARNING_MS));

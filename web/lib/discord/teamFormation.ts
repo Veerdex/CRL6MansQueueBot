@@ -67,13 +67,13 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
   return rows.map((row) => ({ row, player: byId.get(row.player_id) })).filter((x): x is { row: SeriesLobbyRow; player: PlayerRow } => Boolean(x.player));
 }
 
-// Entry point called by queue.ts once the match text channel exists — posts the vote
-// message, then auto-casts any player's saved /vote-default preference (still overridable
-// per game by clicking a button). Cast sequentially so a mid-loop resolution's follow-on
-// writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
-export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, textChannelId: string, members: PlayerRow[]) {
+// Entry point called by queue.ts once the series is created — posts the vote message in
+// the queue channel, then auto-casts any player's saved /vote-default preference (still
+// overridable per game by clicking a button). Cast sequentially so a mid-loop resolution's
+// follow-on writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
+export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-  const message = (await discordFetch(`/channels/${textChannelId}/messages`, {
+  const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({ embeds: [voteEmbed(0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
   })) as { id: string };
@@ -82,7 +82,7 @@ export async function startTeamFormation(supabase: AdminClient, guildId: string,
 
   for (const member of members) {
     if (member.vote_default) {
-      await castVote(supabase, guildId, seriesId, textChannelId, message.id, members, member.id, member.vote_default);
+      await castVote(supabase, guildId, seriesId, queueChannelId, message.id, members, member.id, member.vote_default);
     }
   }
 }
@@ -91,7 +91,7 @@ export async function castVote(
   supabase: AdminClient,
   guildId: string,
   seriesId: string,
-  textChannelId: string,
+  queueChannelId: string,
   messageId: string,
   members: PlayerRow[],
   playerId: string,
@@ -110,7 +110,7 @@ export async function castVote(
 
   if (!winner) {
     const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
+    await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds)], components: voteButtons(seriesId) }),
     });
@@ -129,9 +129,9 @@ export async function castVote(
   if (!claimed || claimed.length === 0) return;
 
   if (winner === "balanced") {
-    await resolveBalanced(supabase, guildId, seriesId, textChannelId, messageId, members);
+    await resolveBalanced(supabase, guildId, seriesId, queueChannelId, messageId, members);
   } else {
-    await beginCaptainsDraft(supabase, guildId, seriesId, textChannelId, messageId, members);
+    await beginCaptainsDraft(supabase, guildId, seriesId, queueChannelId, messageId, members);
   }
 }
 
@@ -150,7 +150,7 @@ export function handleVoteButton(interaction: DiscordInteraction, seriesId: stri
 async function processVoteButton(interaction: DiscordInteraction, seriesId: string, choice: VoteChoice) {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
-  if (!discordId || !interaction.guild_id) {
+  if (!discordId || !interaction.guild_id || !interaction.channel_id) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
     return;
   }
@@ -165,13 +165,13 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
   }
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
-  if (!series || series.vote_result || !series.text_channel_id || !series.formation_message_id) {
+  if (!series || series.vote_result || !series.formation_message_id) {
     await editOriginalResponse(interaction.token, { content: "Voting isn't open for this match anymore." });
     return;
   }
 
   const members = await fetchLobbyMembers(supabase, seriesId);
-  await castVote(supabase, interaction.guild_id, seriesId, series.text_channel_id, series.formation_message_id, members, player.id, choice);
+  await castVote(supabase, interaction.guild_id, seriesId, interaction.channel_id, series.formation_message_id, members, player.id, choice);
   await editOriginalResponse(interaction.token, { content: `Voted ${choice === "balanced" ? "Balanced" : "Captains"}.` });
 }
 
@@ -208,7 +208,7 @@ export function bestBalancedSplit(members: PlayerRow[]): { teamA: PlayerRow[]; t
   return { teamA: best!.teamA, teamB: best!.teamB };
 }
 
-async function resolveBalanced(supabase: AdminClient, guildId: string, seriesId: string, textChannelId: string, messageId: string, members: PlayerRow[]) {
+async function resolveBalanced(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, messageId: string, members: PlayerRow[]) {
   const { teamA, teamB } = bestBalancedSplit(members);
   const teamAssignments = new Map<string, Team>();
   teamA.forEach((p) => teamAssignments.set(p.id, "A"));
@@ -224,7 +224,7 @@ async function resolveBalanced(supabase: AdminClient, guildId: string, seriesId:
     ),
   );
 
-  await finalizeTeams(supabase, guildId, seriesId, textChannelId, messageId, members, teamAssignments);
+  await finalizeTeams(supabase, guildId, seriesId, queueChannelId, messageId, members, teamAssignments);
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ export function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null 
   return null; // 3 assigned -> the 4th auto-assigns, draft is complete
 }
 
-async function beginCaptainsDraft(supabase: AdminClient, guildId: string, seriesId: string, textChannelId: string, messageId: string, members: PlayerRow[]) {
+async function beginCaptainsDraft(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, messageId: string, members: PlayerRow[]) {
   const sorted = [...members].sort((a, b) => b.mmr - a.mmr || a.discord_id.localeCompare(b.discord_id));
   const captainA = sorted[0];
   const captainB = sorted[1];
@@ -249,7 +249,7 @@ async function beginCaptainsDraft(supabase: AdminClient, guildId: string, series
   await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B", is_captain: true }).eq("series_id", seriesId).eq("player_id", captainB.id);
 
   const remaining = members.filter((m) => m.id !== captainA.id && m.id !== captainB.id);
-  await sendDraftPickPrompt(textChannelId, messageId, seriesId, captainA, captainB, remaining, "A");
+  await sendDraftPickPrompt(queueChannelId, messageId, seriesId, captainA, captainB, remaining, "A");
   await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
 }
 
@@ -478,7 +478,7 @@ async function finalizeTeams(
   supabase: AdminClient,
   guildId: string,
   seriesId: string,
-  textChannelId: string,
+  queueChannelId: string,
   messageId: string,
   members: PlayerRow[],
   teamAssignments: Map<string, Team>,
@@ -490,44 +490,9 @@ async function finalizeTeams(
   const teamA = members.filter((m) => teamAssignments.get(m.id) === "A");
   const teamB = members.filter((m) => teamAssignments.get(m.id) === "B");
 
-  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("category_id").eq("id", seriesId).maybeSingle();
-  const adminRoleIds = await getAdminRoleIds();
-  const botUserId = process.env.DISCORD_APPLICATION_ID;
-  const shortId = seriesId.slice(0, 8);
-
-  const voiceOverwrites = (teamMembers: PlayerRow[]): PermissionOverwrite[] => [
-    { id: guildId, type: ROLE_TYPE, deny: VIEW_CHANNEL.toString() },
-    ...teamMembers.map((m) => ({ id: m.discord_id, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
-    ...adminRoleIds.map((roleId) => ({ id: roleId, type: ROLE_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
-    ...(botUserId ? [{ id: botUserId, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() } as PermissionOverwrite] : []),
-  ];
-
-  const voiceA = (await discordFetch(`/guilds/${guildId}/channels`, {
-    method: "POST",
-    body: JSON.stringify({ name: `Team A - ${shortId}`, type: 2, parent_id: series?.category_id ?? undefined, permission_overwrites: voiceOverwrites(teamA) }),
-  })) as { id: string };
-  const voiceB = (await discordFetch(`/guilds/${guildId}/channels`, {
-    method: "POST",
-    body: JSON.stringify({ name: `Team B - ${shortId}`, type: 2, parent_id: series?.category_id ?? undefined, permission_overwrites: voiceOverwrites(teamB) }),
-  })) as { id: string };
-
-  await supabase.from("crl6mansqueuebot_series").update({ voice_channel_a_id: voiceA.id, voice_channel_b_id: voiceB.id }).eq("id", seriesId);
-
-  // Lifts the message-lock set at channel creation (see queue.ts, createMatchChannels) by
-  // replacing each of the 6 players' overwrite with a VIEW-only allow — PUT replaces the
-  // whole overwrite object for that id, so this clears the earlier SEND_MESSAGES deny too.
-  await Promise.all(
-    members.map((m) =>
-      discordFetch(`/channels/${textChannelId}/permissions/${m.discord_id}`, {
-        method: "PUT",
-        body: JSON.stringify({ type: MEMBER_TYPE, allow: VIEW_CHANNEL.toString() }),
-      }),
-    ),
-  );
-
   const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
   const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");
-  await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
+  await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
     method: "PATCH",
     body: JSON.stringify({
       content: "",
@@ -539,7 +504,7 @@ async function finalizeTeams(
             { name: "Team 1", value: teamALine, inline: true },
             { name: "Team 2", value: teamBLine, inline: true },
           ],
-          footer: { text: "Chat and voice are unlocked. Run /report in this channel once the series is decided." },
+          footer: { text: "Teams are ready. Join your team's voice channel to start playing. Run /report in the report channel when done." },
         },
       ],
       components: [],

@@ -5,19 +5,11 @@ import type { SeriesRow } from "@/lib/supabase/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-// Deletes a series' match category + text/voice channels and clears the id columns
-// afterward — shared by /report's own 30s-delayed cleanup, the sweep route's timeout-void
-// path, the sweep route's reported-series backstop, and /abandon's void path. Nulling the
-// columns after a successful delete matters: without it, the sweep backstop (which matches
-// on non-null channel ids) would keep re-attempting deletes against channels that are
-// already gone, forever, on every sweep tick.
+// Deletes a series' voice channels and clears the id columns afterward — shared by /report's
+// own 30s-delayed cleanup, the sweep route's timeout-void path, and /abandon's void path.
+// In the redesigned architecture, text channels and per-match categories are not created.
 export async function deleteMatchChannels(supabase: AdminClient, series: SeriesRow) {
-  for (const channelId of [
-    series.voice_channel_a_id,
-    series.voice_channel_b_id,
-    series.text_channel_id,
-    series.category_id,
-  ]) {
+  for (const channelId of [series.voice_channel_a_id, series.voice_channel_b_id]) {
     if (!channelId) continue;
     await discordFetch(`/channels/${channelId}`, { method: "DELETE" }).catch((err) =>
       console.error(`Failed to delete channel ${channelId} for series ${series.id}`, err),
@@ -25,7 +17,7 @@ export async function deleteMatchChannels(supabase: AdminClient, series: SeriesR
   }
   await supabase
     .from("crl6mansqueuebot_series")
-    .update({ category_id: null, text_channel_id: null, voice_channel_a_id: null, voice_channel_b_id: null })
+    .update({ voice_channel_a_id: null, voice_channel_b_id: null })
     .eq("id", series.id);
 }
 
@@ -38,15 +30,11 @@ export async function clearPendingSeriesState(supabase: AdminClient, seriesId: s
   await supabase.from("crl6mansqueuebot_abandon_votes").delete().eq("series_id", seriesId);
 }
 
-// Shared by /admin cancel-series, /end, and /admin force-leave (Phase 8) — an admin-triggered
-// void, same shape as /abandon's vote-passed path and the sweep route's timeout path: atomic
-// claim (so a double-fire can't double-void) + clear pending sub/abandon state + post a public
-// closing message. Split from the delayed channel deletion (closeMatchChannelsAfterDelay)
-// rather than one combined function, so callers can reply to the admin's interaction right
-// after the claim succeeds instead of blocking the ephemeral response on the 30s warning —
-// same ordering /report and /abandon already use. Returns false if the series was already
-// settled by the time the claim ran.
-export async function claimSeriesVoid(supabase: AdminClient, series: SeriesRow, publicMessage: string): Promise<boolean> {
+// Shared by /admin cancel-series, /end, and /admin force-leave — an admin-triggered void,
+// same shape as /abandon's vote-passed path and the sweep route's timeout path: atomic claim
+// (so a double-fire can't double-void) + clear pending sub/abandon state. Returns false if
+// the series was already settled by the time the claim ran.
+export async function claimSeriesVoid(supabase: AdminClient, series: SeriesRow, _publicMessage: string): Promise<boolean> {
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_series")
     .update({ status: "void", winner_team: null })
@@ -56,13 +44,6 @@ export async function claimSeriesVoid(supabase: AdminClient, series: SeriesRow, 
   if (!claimed || claimed.length === 0) return false;
 
   await clearPendingSeriesState(supabase, series.id);
-
-  if (series.text_channel_id) {
-    await discordFetch(`/channels/${series.text_channel_id}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content: `${publicMessage}\n\nThis channel will close in 30 seconds.` }),
-    }).catch((err) => console.error(`Failed to post cancellation message for series ${series.id}`, err));
-  }
 
   return true;
 }

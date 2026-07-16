@@ -67,6 +67,32 @@ const commands = [
     ],
   },
   {
+    name: "set6manscallcategory",
+    description: "Set the category where 6-mans match voice channels are created.",
+    type: 1,
+    options: [
+      {
+        name: "category",
+        description: "The category to create match voice channels in.",
+        type: 7,
+        required: true,
+      },
+    ],
+  },
+  {
+    name: "setreportchannel",
+    description: "Set the channel where match results are reported.",
+    type: 1,
+    options: [
+      {
+        name: "channel",
+        description: "The channel to post match results in.",
+        type: 7,
+        required: true,
+      },
+    ],
+  },
+  {
     name: "q",
     description: "Join the queue mapped to this channel.",
     type: 1,

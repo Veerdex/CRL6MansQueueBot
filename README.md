@@ -1,3 +1,14 @@
+
+
+
+
+
+
+
+
+
+
+
 # CRL 6 Mans
 
 Discord bot + companion website for a small, high-skill (Champ+) Rocket League community
