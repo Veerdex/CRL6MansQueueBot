@@ -8,6 +8,7 @@ import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
+import { cleanupTestMatchRows } from "./testMatch";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team } from "@/lib/supabase/types";
 
@@ -110,9 +111,23 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     .in("id", seriesPlayers.map((sp) => sp.player_id));
   const playersById = new Map((players ?? []).map((p) => [p.id, p]));
 
-  const summaryLines: string[] = [];
+  // Report summary is split by winning/losing team (not one flat list) — each line shows the
+  // player's MMR delta and their resulting MMR/band, per CLAUDE.md's "Reporting & disputes".
+  // Band itself isn't recomputed live (bands.ts's recompute is a daily cron job — see
+  // CLAUDE.md, "Bands / ranks"), so the band shown here is the player's last-known band as of
+  // the most recent daily recompute, not necessarily reflecting this exact game's MMR change.
+  const winnerLines: string[] = [];
+  const loserLines: string[] = [];
+  const pushLine = (sp: (typeof seriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
 
-  if (series.queue_type === "rank") {
+  if (series.is_test_data) {
+    // Test matches (/test-rank-match, /test-universal-match) never touch real player stats,
+    // even when queue_type is "rank" — see CLAUDE.md, "Flag as test data".
+    for (const sp of seriesPlayers) {
+      const p = playersById.get(sp.player_id)!;
+      pushLine(sp, `<@${p.discord_id}> — test match, no stat changes`);
+    }
+  } else if (series.queue_type === "rank") {
     const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
@@ -148,8 +163,10 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
       const p = playersById.get(sp.player_id)!;
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
-      summaryLines.push(
-        `<@${p.discord_id}> (Team ${sp.team}): ${sign}${r.delta.toFixed(1)} → ${r.newMmr.toFixed(1)}${r.wasProvisional ? " (provisional)" : ""}`,
+      const band = p.band ?? "NA";
+      pushLine(
+        sp,
+        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} (${band})${r.wasProvisional ? " (provisional)" : ""}`,
       );
     }
   } else {
@@ -163,7 +180,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     );
     for (const sp of seriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      summaryLines.push(`<@${p.discord_id}> (Team ${sp.team}) — Universal Queue, no MMR change`);
+      pushLine(sp, `<@${p.discord_id}> — Universal Queue, no MMR change`);
     }
   }
 
@@ -173,11 +190,19 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     await discordFetch(`/channels/${series.text_channel_id}/messages`, {
       method: "POST",
       body: JSON.stringify({
-        content: `**Match reported — Team ${winner} wins!**\n${summaryLines.join("\n")}\n\nThis channel will close in 30 seconds.`,
+        content:
+          `**Match reported — Team ${winner} wins!**\n\n` +
+          `**Winners**\n${winnerLines.join("\n")}\n\n` +
+          `**Losers**\n${loserLines.join("\n")}\n\n` +
+          `This channel will close in 30 seconds.`,
       }),
     }).catch((err) => console.error(`Failed to post report summary for series ${series!.id}`, err));
   }
 
   await new Promise((resolve) => setTimeout(resolve, CLOSE_WARNING_MS));
   await deleteMatchChannels(supabase, series);
+
+  if (series.is_test_data) {
+    await cleanupTestMatchRows(supabase, series.id);
+  }
 }

@@ -1,14 +1,9 @@
 import "server-only";
 import { after } from "next/server";
-import {
-  InteractionResponseType,
-  InteractionResponseFlags,
-  MessageComponentTypes,
-  ButtonStyleTypes,
-} from "discord-interactions";
+import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -22,34 +17,20 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Persistent queue status message
+// Queue status message — queueing moved from a persistent button panel to slash commands
+// (/q, /queue to join; /l, /leave to leave — Discord has no native command aliasing, so all
+// four are separately registered commands calling the same handlers, matching the existing
+// /end-vs-/admin-cancel-series precedent in adminTools.ts). To avoid channel clutter, exactly
+// one queue-status message is kept alive per queue channel: every join/leave deletes the
+// previously tracked message and posts a fresh one, rather than PATCH-editing one message in
+// place (the old button-driven behavior) or letting messages pile up.
 // ---------------------------------------------------------------------------
 
-function queueButtons(queueType: QueueType) {
-  return [
-    {
-      type: MessageComponentTypes.ACTION_ROW,
-      components: [
-        {
-          type: MessageComponentTypes.BUTTON,
-          style: ButtonStyleTypes.SUCCESS,
-          label: "Join Queue",
-          custom_id: `queue_join:${queueType}`,
-        },
-        {
-          type: MessageComponentTypes.BUTTON,
-          style: ButtonStyleTypes.DANGER,
-          label: "Leave Queue",
-          custom_id: `queue_leave:${queueType}`,
-        },
-      ],
-    },
-  ];
-}
-
-function queueMessageContent(queueType: QueueType, members: PlayerRow[]) {
-  const lines = members.length ? members.map((m, i) => `${i + 1}. ${m.display_name}`).join("\n") : "_Empty_";
-  return `### ${QUEUE_LABELS[queueType]} (${members.length}/6)\n${lines}`;
+function queueStateContent(queueType: QueueType, members: PlayerRow[], headline?: string): string {
+  const label = QUEUE_LABELS[queueType];
+  const mentionLines = members.length ? members.map((m) => `<@${m.discord_id}>`).join("\n") : "_Empty_";
+  const headlineBlock = headline ? `${headline}\n\n` : "";
+  return `${headlineBlock}**Current Queue Members: ${members.length}**\n${mentionLines}\n\nRun \`/q\` to join the ${label} or \`/l\` to leave.`;
 }
 
 async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
@@ -73,7 +54,38 @@ async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): P
   return playerIds.map((id) => byId.get(id)).filter((p): p is PlayerRow => Boolean(p));
 }
 
-export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType) {
+// Deletes the previously tracked message for `channelId` (if any — pass null to skip, e.g.
+// initial setup) and posts a fresh one, then upserts the new channel/message id mapping. The
+// single shared primitive behind refreshQueueMessage and initQueueMessage below.
+async function postFreshQueueMessage(
+  supabase: AdminClient,
+  queueType: QueueType,
+  channelId: string,
+  oldMessageId: string | null,
+  members: PlayerRow[],
+  headline?: string,
+): Promise<void> {
+  if (oldMessageId) {
+    await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
+      console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
+    );
+  }
+  const message = (await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: queueStateContent(queueType, members, headline) }),
+  })) as { id: string };
+
+  await supabase.from("crl6mansqueuebot_queue_messages").upsert({
+    queue_type: queueType,
+    channel_id: channelId,
+    message_id: message.id,
+  });
+}
+
+// Refreshes whichever channel is currently mapped to `queueType`. No-ops if the queue channel
+// was never set up. `headline` is the "<@user> has joined/left..." line for command-driven
+// refreshes; omitted for headline-less refreshes (admin force-leave, cross-queue-pop removal).
+export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string) {
   const { data: msgRow } = await supabase
     .from("crl6mansqueuebot_queue_messages")
     .select("*")
@@ -82,31 +94,26 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
   if (!msgRow) return;
 
   const members = await fetchQueueMembers(supabase, queueType);
-  await discordFetch(`/channels/${msgRow.channel_id}/messages/${msgRow.message_id}`, {
-    method: "PATCH",
-    body: JSON.stringify({
-      content: queueMessageContent(queueType, members),
-      components: queueButtons(queueType),
-    }),
-  });
+  await postFreshQueueMessage(supabase, queueType, msgRow.channel_id, msgRow.message_id, members, headline);
 }
 
 export async function initQueueMessage(queueType: QueueType, channelId: string) {
   const supabase = createAdminClient();
-  const members = await fetchQueueMembers(supabase, queueType);
-  const message = (await discordFetch(`/channels/${channelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({
-      content: queueMessageContent(queueType, members),
-      components: queueButtons(queueType),
-    }),
-  })) as { id: string };
+  const { data: existing } = await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .select("*")
+    .eq("queue_type", queueType)
+    .maybeSingle();
 
-  await supabase.from("crl6mansqueuebot_queue_messages").upsert({
-    queue_type: queueType,
-    channel_id: channelId,
-    message_id: message.id,
-  });
+  // Relocating to a new channel — clean up the old channel's message too, since it's about to
+  // become untracked and would otherwise sit there stale forever.
+  if (existing && existing.channel_id !== channelId) {
+    await discordFetch(`/channels/${existing.channel_id}/messages/${existing.message_id}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  const members = await fetchQueueMembers(supabase, queueType);
+  const oldMessageId = existing && existing.channel_id === channelId ? existing.message_id : null;
+  await postFreshQueueMessage(supabase, queueType, channelId, oldMessageId, members);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,24 +165,53 @@ export async function isPlayerLockedInActiveSeries(supabase: AdminClient, player
 }
 
 // ---------------------------------------------------------------------------
-// Join / Leave button entry point
+// /q, /queue (join) and /l, /leave (leave) — channel-inferred queue type via the
+// crl6mansqueuebot_queue_messages mapping set up by /setqueuechannel. Replies ephemerally to
+// the caller (confirmation or error); the public queue-state message is a separate,
+// delete-and-repost message — see refreshQueueMessage above.
 // ---------------------------------------------------------------------------
 
-export function handleQueueButton(interaction: DiscordInteraction, action: "join" | "leave", queueType: QueueType) {
-  after(() => processQueueButton(interaction, action, queueType));
+export function handleQueueJoinCommand(interaction: DiscordInteraction) {
+  after(() => processQueueCommand(interaction, "join"));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
-async function processQueueButton(interaction: DiscordInteraction, action: "join" | "leave", queueType: QueueType) {
+export function handleQueueLeaveCommand(interaction: DiscordInteraction) {
+  after(() => processQueueCommand(interaction, "leave"));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processQueueCommand(interaction: DiscordInteraction, action: "join" | "leave") {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
     return;
   }
+  const channelId = interaction.channel_id;
+  if (!channelId) {
+    await editOriginalResponse(interaction.token, { content: "Run this inside a queue channel." });
+    return;
+  }
+
+  const { data: msgRow } = await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .select("queue_type")
+    .eq("channel_id", channelId)
+    .maybeSingle();
+  if (!msgRow) {
+    await editOriginalResponse(interaction.token, {
+      content: "This channel isn't set up as a queue channel — ask an admin to run /setqueuechannel here.",
+    });
+    return;
+  }
+  const queueType = msgRow.queue_type as QueueType;
 
   const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
 
@@ -194,8 +230,8 @@ async function processQueueButton(interaction: DiscordInteraction, action: "join
       await editOriginalResponse(interaction.token, { content: `You're not in the ${QUEUE_LABELS[queueType]}.` });
       return;
     }
-    await refreshQueueMessage(supabase, queueType);
     await editOriginalResponse(interaction.token, { content: `Left the ${QUEUE_LABELS[queueType]}.` });
+    await refreshQueueMessage(supabase, queueType, `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`);
     return;
   }
 
@@ -233,17 +269,18 @@ async function processQueueButton(interaction: DiscordInteraction, action: "join
     content: `Joined the ${QUEUE_LABELS[queueType]} (${result?.queue_size ?? "?"}/6).`,
   });
 
-  if (result?.status === "joined" && result.queue_size >= 6 && interaction.guild_id) {
-    await handlePop(supabase, queueType, interaction.guild_id);
+  if (result?.status === "joined" && result.queue_size >= 6) {
+    const guildId = interaction.guild_id ?? (await getGuildId());
+    await handlePop(supabase, queueType, guildId);
   } else {
-    await refreshQueueMessage(supabase, queueType);
+    await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Pop: lock the 6 players in, cross-remove from the other queue, create the series
 // + match category/text channel (see CLAUDE.md, "Match channels (created per series
-// on pop)"). Team formation (vote/draft, voice channels) is Phase 3 — not built yet.
+// on pop)").
 // ---------------------------------------------------------------------------
 
 async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: string) {
@@ -304,7 +341,7 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
   await createMatchChannels(supabase, series.id, guildId, members);
 }
 
-async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[]) {
+export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[]) {
   const adminRoleIds = await getAdminRoleIds();
   const botUserId = process.env.DISCORD_APPLICATION_ID;
   const shortId = seriesId.slice(0, 8);
@@ -364,7 +401,7 @@ async function createMatchChannels(supabase: AdminClient, seriesId: string, guil
   await discordFetch(`/channels/${textChannel.id}/messages`, {
     method: "POST",
     body: JSON.stringify({
-      content: `${mentions}\nYour lobby has popped! Vote for team formation below.`,
+      content: `${mentions}\nYour lobby has popped! The match channel has been created — vote for team formation below.`,
     }),
   });
 
@@ -372,9 +409,10 @@ async function createMatchChannels(supabase: AdminClient, seriesId: string, guil
 }
 
 // ---------------------------------------------------------------------------
-// /setqueuechannel — bootstrap to post the persistent message in a queue channel.
-// Owner-or-admin-role gated (see lib/discord/admin.ts) — this creates/overwrites the
-// channel's persistent bot-edited message, so it shouldn't be open to any member.
+// /setqueuechannel — bootstrap to post the queue message in a channel and map it to a queue
+// type for /q, /queue, /l, /leave to look up. Owner-or-admin-role gated (see
+// lib/discord/admin.ts) — this creates/overwrites the channel's tracked bot message, so it
+// shouldn't be open to any member.
 // ---------------------------------------------------------------------------
 
 export function handleSetQueueChannelCommand(interaction: DiscordInteraction) {

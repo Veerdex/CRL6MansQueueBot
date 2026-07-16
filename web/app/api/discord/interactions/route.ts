@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { InteractionType, InteractionResponseType } from "discord-interactions";
 import { verifyDiscordRequest } from "@/lib/discord/verify";
 import type { DiscordInteraction } from "@/lib/discord/types";
-import { handleQueueButton, handleSetQueueChannelCommand } from "@/lib/discord/queue";
+import { handleQueueJoinCommand, handleQueueLeaveCommand, handleSetQueueChannelCommand } from "@/lib/discord/queue";
 import {
   handleAddAdminRoleCommand,
   handleRemoveAdminRoleCommand,
@@ -17,7 +17,8 @@ import { handleSubCommand, handleSubAcceptButton } from "@/lib/discord/sub";
 import { handleAbandonCommand } from "@/lib/discord/abandon";
 import { handleSetBandRoleCommand } from "@/lib/discord/bands";
 import { handleAdminCommand, handleEndCommand } from "@/lib/discord/adminTools";
-import type { QueueType, VoteChoice } from "@/lib/supabase/types";
+import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
+import type { VoteChoice } from "@/lib/supabase/types";
 
 // /report posts a public result message, then sleeps 30s before deleting the match channels
 // (see CLAUDE.md, "Series end") — comfortably inside this, but well past the ~10s a plain
@@ -44,11 +45,6 @@ export async function POST(request: Request) {
   if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
     const customId = interaction.data?.custom_id ?? "";
     const [action, arg1, arg2] = customId.split(":");
-    const queueType = arg1 as QueueType | undefined;
-
-    if ((action === "queue_join" || action === "queue_leave") && (queueType === "rank" || queueType === "universal")) {
-      return NextResponse.json(handleQueueButton(interaction, action === "queue_join" ? "join" : "leave", queueType));
-    }
 
     if (action === "vote" && arg1 && (arg2 === "balanced" || arg2 === "captains")) {
       return NextResponse.json(handleVoteButton(interaction, arg1, arg2 as VoteChoice));
@@ -73,6 +69,14 @@ export async function POST(request: Request) {
 
     if (commandName === "setqueuechannel") {
       return NextResponse.json(handleSetQueueChannelCommand(interaction));
+    }
+
+    if (commandName === "q" || commandName === "queue") {
+      return NextResponse.json(handleQueueJoinCommand(interaction));
+    }
+
+    if (commandName === "l" || commandName === "leave") {
+      return NextResponse.json(handleQueueLeaveCommand(interaction));
     }
 
     if (commandName === "add-admin-role") {
@@ -121,6 +125,18 @@ export async function POST(request: Request) {
 
     if (commandName === "end") {
       return NextResponse.json(handleEndCommand(interaction));
+    }
+
+    if (commandName === "test-rank-match") {
+      return NextResponse.json(handleTestMatchCommand(interaction, "rank"));
+    }
+
+    if (commandName === "test-universal-match") {
+      return NextResponse.json(handleTestMatchCommand(interaction, "universal"));
+    }
+
+    if (commandName === "end-test") {
+      return NextResponse.json(handleEndTestCommand(interaction));
     }
 
     return NextResponse.json({

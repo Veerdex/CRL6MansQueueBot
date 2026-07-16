@@ -8,8 +8,9 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, editOriginalResponse } from "./rest";
+import { discordFetch, editOriginalResponse, sendDirectMessage, getGuildId } from "./rest";
 import { getAdminRoleIds } from "./admin";
+import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, type DiscordInteraction } from "./types";
 
@@ -20,11 +21,13 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // See CLAUDE.md, "Team formation (on pop)" / "Team formation, in the match channel".
 // ---------------------------------------------------------------------------
 
-function voteMessageContent(balancedCount: number, captainsCount: number) {
+function voteMessageContent(balancedCount: number, captainsCount: number, timeoutSeconds: number) {
+  const minutes = Math.round(timeoutSeconds / 60);
   return (
     `**Vote: team formation mode**\n` +
-    `First to 3/6 votes wins (an exact 3-3 tie resolves to Captains).\n` +
-    `Balanced: ${balancedCount}   Captains: ${captainsCount}`
+    `You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote. Vote by clicking the buttons below.\n` +
+    `First to 3/6 votes wins (an exact 3-3 tie resolves to Captains).\n\n` +
+    `Balanced: ${balancedCount}/3   Captains: ${captainsCount}/3`
   );
 }
 
@@ -65,9 +68,10 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
 // per game by clicking a button). Cast sequentially so a mid-loop resolution's follow-on
 // writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
 export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, textChannelId: string, members: PlayerRow[]) {
+  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const message = (await discordFetch(`/channels/${textChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: voteMessageContent(0, 0), components: voteButtons(seriesId) }),
+    body: JSON.stringify({ content: voteMessageContent(0, 0, timeoutSeconds), components: voteButtons(seriesId) }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
@@ -79,7 +83,7 @@ export async function startTeamFormation(supabase: AdminClient, guildId: string,
   }
 }
 
-async function castVote(
+export async function castVote(
   supabase: AdminClient,
   guildId: string,
   seriesId: string,
@@ -101,9 +105,10 @@ async function castVote(
   else if (balancedCount + captainsCount >= 6) winner = "captains"; // exact 3-3 tie
 
   if (!winner) {
+    const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content: voteMessageContent(balancedCount, captainsCount), components: voteButtons(seriesId) }),
+      body: JSON.stringify({ content: voteMessageContent(balancedCount, captainsCount, timeoutSeconds), components: voteButtons(seriesId) }),
     });
     return;
   }
@@ -240,25 +245,70 @@ async function beginCaptainsDraft(supabase: AdminClient, guildId: string, series
   await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B", is_captain: true }).eq("series_id", seriesId).eq("player_id", captainB.id);
 
   const remaining = members.filter((m) => m.id !== captainA.id && m.id !== captainB.id);
-  await renderDraftTurn(textChannelId, messageId, seriesId, captainA, captainB, remaining, "A");
+  await sendDraftPickPrompt(textChannelId, messageId, seriesId, captainA, captainB, remaining, "A");
+  await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
 }
 
-async function renderDraftTurn(
-  textChannelId: string,
-  messageId: string,
-  seriesId: string,
-  captainA: PlayerRow,
-  captainB: PlayerRow,
-  remaining: PlayerRow[],
-  turnCaptain: Team,
-) {
-  const turnPlayer = turnCaptain === "A" ? captainA : captainB;
-  const content =
-    `**Captains Draft**\n` +
-    `Captain A: <@${captainA.discord_id}>\n` +
-    `Captain B: <@${captainB.discord_id}>\n\n` +
-    `<@${turnPlayer.discord_id}>'s pick.`;
+// Auto-plays a captains-draft pick on behalf of a synthetic test player (is_test_data) whose
+// turn it is — used by /test-rank-match and /test-universal-match (testMatch.ts), where fake
+// lobby members have no real Discord account to click a "Choose" button with. No-ops the
+// instant the turn belongs to a real player, so this has zero effect on ordinary matches.
+// Re-fetches fresh state on every call rather than threading it through the caller, and
+// recurses so a fake captain's back-to-back picks (Captain B picks twice in a row) both
+// resolve in one pass.
+async function autoAdvanceDraftIfFake(supabase: AdminClient, guildId: string, seriesId: string) {
+  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
+  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.text_channel_id || !series.formation_message_id) return;
 
+  const lobby = await fetchLobbyRowsWithPlayers(supabase, seriesId);
+  const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
+  const captainBRow = lobby.find((x) => x.row.is_captain && x.row.team === "B");
+  if (!captainARow || !captainBRow) return;
+
+  const nonCaptainRows = lobby.filter((x) => !x.row.is_captain);
+  const assignedCount = nonCaptainRows.filter((x) => x.row.team).length;
+  const turnCaptain = deriveTurnCaptain(assignedCount);
+  if (!turnCaptain) return;
+
+  const turnCaptainPlayer = turnCaptain === "A" ? captainARow.player : captainBRow.player;
+  if (!turnCaptainPlayer.is_test_data) return;
+
+  const target = nonCaptainRows.find((x) => !x.row.team);
+  if (!target) return;
+
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_series_lobby")
+    .update({ team: turnCaptain })
+    .eq("series_id", seriesId)
+    .eq("player_id", target.row.player_id)
+    .is("team", null)
+    .select("player_id");
+  if (!claimed || claimed.length === 0) return; // lost a race (e.g. a real pick landed first)
+
+  const newAssignedCount = assignedCount + 1;
+  const allMembers = lobby.map((x) => x.player);
+
+  if (newAssignedCount >= 3) {
+    const lastRemaining = nonCaptainRows.find((x) => x.row.player_id !== target.row.player_id && !x.row.team);
+    const teamAssignments = new Map<string, Team>();
+    for (const x of lobby) if (x.row.team) teamAssignments.set(x.row.player_id, x.row.team);
+    teamAssignments.set(target.row.player_id, turnCaptain);
+    if (lastRemaining) {
+      await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("series_id", seriesId).eq("player_id", lastRemaining.row.player_id);
+      teamAssignments.set(lastRemaining.row.player_id, "A");
+    }
+    await finalizeTeams(supabase, guildId, seriesId, series.text_channel_id, series.formation_message_id, allMembers, teamAssignments);
+    return;
+  }
+
+  const nextTurn = deriveTurnCaptain(newAssignedCount)!;
+  const remaining = nonCaptainRows.filter((x) => x.row.player_id !== target.row.player_id && !x.row.team).map((x) => x.player);
+  await sendDraftPickPrompt(series.text_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
+
+  await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
+}
+
+function draftPickButtonRows(seriesId: string, remaining: PlayerRow[]) {
   const buttonRows = [];
   for (let i = 0; i < remaining.length; i += 5) {
     buttonRows.push({
@@ -271,11 +321,56 @@ async function renderDraftTurn(
       })),
     });
   }
+  return buttonRows;
+}
 
-  await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ content, components: buttonRows }),
-  });
+// Picks are made via DM to whichever captain currently has the turn (not channel buttons —
+// see CLAUDE.md, "Other user commands"/pop-to-report flow: "The bot will send a DM to the
+// first captain... Then a message for the second captain..."). Discord gives bots no way to
+// force-open a DM to a user who has DMs closed to non-friends — sendDirectMessage's boolean
+// return is how we detect that and fall back to posting the same pick buttons directly in the
+// match channel instead, @-mentioning the captain so it's obvious the fallback happened. A
+// synthetic test-data captain (/test-rank-match etc.) has no real Discord account to DM, so its
+// turn is rendered as a channel status line with no buttons — autoAdvanceDraftIfFake resolves
+// it immediately after this call, without any interaction.
+async function sendDraftPickPrompt(
+  textChannelId: string,
+  messageId: string,
+  seriesId: string,
+  captainA: PlayerRow,
+  captainB: PlayerRow,
+  remaining: PlayerRow[],
+  turnCaptain: Team,
+) {
+  const turnPlayer = turnCaptain === "A" ? captainA : captainB;
+  const header = `**Captains Draft**\nCaptain A: <@${captainA.discord_id}>\nCaptain B: <@${captainB.discord_id}>\n\n`;
+
+  if (turnPlayer.is_test_data) {
+    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: `${header}Waiting on <@${turnPlayer.discord_id}> (test bot)...`, components: [] }),
+    });
+    return;
+  }
+
+  const buttonRows = draftPickButtonRows(seriesId, remaining);
+  const dmContent = `**Captains Draft — your pick**\nChoose a player for your team:`;
+  const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows);
+
+  if (dmSent) {
+    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: `${header}<@${turnPlayer.discord_id}> is picking — check your DMs!`, components: [] }),
+    });
+  } else {
+    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        content: `${header}<@${turnPlayer.discord_id}> — I couldn't DM you (your DMs are closed). Pick here instead:`,
+        components: buttonRows,
+      }),
+    });
+  }
 }
 
 export function handleDraftPickButton(interaction: DiscordInteraction, seriesId: string, pickedPlayerId: string) {
@@ -289,10 +384,15 @@ export function handleDraftPickButton(interaction: DiscordInteraction, seriesId:
 async function processDraftPick(interaction: DiscordInteraction, seriesId: string, pickedPlayerId: string) {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
-  if (!discordId || !interaction.guild_id) {
+  if (!discordId) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
     return;
   }
+  // Draft picks are DM-driven now (see sendDraftPickPrompt) — a DM interaction has no guild_id
+  // of its own, so this resolves the bot's single guild the same way background jobs without
+  // an interaction payload do (getGuildId, rest.ts). The channel-fallback pick case (DMs
+  // closed) still arrives with a real guild_id and just short-circuits to it below.
+  const guildId = interaction.guild_id ?? (await getGuildId());
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.text_channel_id || !series.formation_message_id) {
@@ -354,11 +454,12 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
       await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("series_id", seriesId).eq("player_id", lastRemaining.row.player_id);
       teamAssignments.set(lastRemaining.row.player_id, "A");
     }
-    await finalizeTeams(supabase, interaction.guild_id, seriesId, series.text_channel_id, series.formation_message_id, allMembers, teamAssignments);
+    await finalizeTeams(supabase, guildId, seriesId, series.text_channel_id, series.formation_message_id, allMembers, teamAssignments);
   } else {
     const nextTurn = deriveTurnCaptain(newAssignedCount)!;
     const remaining = nonCaptainRows.filter((x) => x.row.player_id !== pickedPlayerId && !x.row.team).map((x) => x.player);
-    await renderDraftTurn(series.text_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
+    await sendDraftPickPrompt(series.text_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
+    await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
   }
 }
 

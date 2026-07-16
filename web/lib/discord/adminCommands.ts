@@ -108,7 +108,8 @@ async function processHelp(interaction: DiscordInteraction) {
 
   const lines = [
     "**Commands**",
-    "Use the Join Queue / Leave Queue buttons in #universal-queue and #rank-queue to queue up.",
+    "`/q` or `/queue` — join the queue mapped to the current channel (e.g. #universal-queue, #rank-queue).",
+    "`/l` or `/leave` — leave that queue.",
     "`/vote-default mode:<balanced|captains>` — set your default team-formation vote (still overridable per game).",
     "`/report` — run inside your match channel to report the result (inferred from your own team). Settles immediately.",
     "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement; they must accept via a button.",
@@ -126,6 +127,8 @@ async function processHelp(interaction: DiscordInteraction) {
       "`/list-admin-roles` — list roles with admin access.",
       "`/newseason` — close the current season (if any) and start the next one.",
       "`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Placed|Prism> role:<@role>` — map a band (or the Placed gate, or the season-end Prism Top 10 role) to a Discord role for auto role-sync.",
+      "`/test-rank-match` / `/test-universal-match` — spin up a simulated match (you + 5 test bots) to try the flow yourself.",
+      "`/end-test` — run inside a test match's channel to tear it down (category, voice channels, text channel, and its test data).",
     );
   }
 
