@@ -200,13 +200,6 @@ async function processQueueButton(interaction: DiscordInteraction, action: "join
   }
 
   // action === "join"
-  if (queueType === "rank" && !player.is_placed) {
-    await editOriginalResponse(interaction.token, {
-      content: "You're not placed yet — play Universal Queue games until you hit the placement threshold.",
-    });
-    return;
-  }
-
   if (await isPlayerLockedInActiveSeries(supabase, player.id)) {
     await editOriginalResponse(interaction.token, {
       content: "You're already locked into an active series — finish or report that first.",
