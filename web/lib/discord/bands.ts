@@ -14,6 +14,61 @@ const VALID_BAND_ROLE_KEYS: BandRoleKey[] = ["Iron", "Garnet", "Emerald", "Sapph
 type RecomputeSummary = { placed: number; promoted: number; demoted: number; unchanged: number };
 type ChangeAction = "placed" | "promoted" | "demoted";
 
+export type BandCutoffConfig = {
+  graceGames: number;
+  hysteresisPct: number;
+  garnetCutoff: number;
+  emeraldCutoff: number;
+  sapphireCutoff: number;
+};
+
+// Pure decision logic — no Discord, no DB — extracted from the recompute loop below so the
+// promotion/grace/hysteresis rules (see CLAUDE.md, "Bands / ranks") can be unit tested directly.
+export function targetBandForPercentile(pctile: number, config: BandCutoffConfig): Band {
+  if (pctile >= config.sapphireCutoff) return "Sapphire";
+  if (pctile >= config.emeraldCutoff) return "Emerald";
+  if (pctile >= config.garnetCutoff) return "Garnet";
+  return "Iron";
+}
+
+export function computeBandChange(
+  player: { band: Band | null; band_games_played: number; is_placed: boolean },
+  pctile: number,
+  isNewlyPlaced: boolean,
+  config: BandCutoffConfig,
+): { action: ChangeAction; targetBand: Band } | null {
+  const targetBand = targetBandForPercentile(pctile, config);
+
+  if (isNewlyPlaced) {
+    return { action: "placed", targetBand };
+  }
+
+  const currentBand = player.band as Band;
+  const currentIndex = BAND_ORDER.indexOf(currentBand);
+  const targetIndex = BAND_ORDER.indexOf(targetBand);
+
+  if (targetIndex > currentIndex) {
+    return { action: "promoted", targetBand };
+  }
+
+  if (targetIndex < currentIndex && player.band_games_played >= config.graceGames) {
+    // Grace checked first (the caller's `>=` above), then hysteresis: only demote if more than
+    // hysteresisPct percentile points below the promotion-in threshold for their *current*
+    // band, not just below the raw target-band cutoff.
+    const promotionThreshold: Partial<Record<Band, number>> = {
+      Garnet: config.garnetCutoff,
+      Emerald: config.emeraldCutoff,
+      Sapphire: config.sapphireCutoff,
+    };
+    const threshold = promotionThreshold[currentBand];
+    if (threshold !== undefined && pctile < threshold - config.hysteresisPct) {
+      return { action: "demoted", targetBand };
+    }
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Daily band recompute — see CLAUDE.md, "Bands / ranks". Percentile-ranks every currently-
 // placed player (plus anyone crossing the placement threshold this run) by MMR, assigns bands
@@ -34,14 +89,7 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
   ]);
-  const promotionThreshold: Partial<Record<Band, number>> = { Garnet: garnetCutoff, Emerald: emeraldCutoff, Sapphire: sapphireCutoff };
-
-  function targetBandFor(pctile: number): Band {
-    if (pctile >= sapphireCutoff) return "Sapphire";
-    if (pctile >= emeraldCutoff) return "Emerald";
-    if (pctile >= garnetCutoff) return "Garnet";
-    return "Iron";
-  }
+  const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff };
 
   const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0 };
 
@@ -80,33 +128,14 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
 
   for (const player of pool) {
     const pctile = percentileById.get(player.id)!;
-    const targetBand = targetBandFor(pctile);
+    const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig);
 
-    let action: ChangeAction | null = null;
-
-    if (newlyPlacedIds.has(player.id)) {
-      action = "placed";
-    } else {
-      const currentBand = player.band as Band;
-      const currentIndex = BAND_ORDER.indexOf(currentBand);
-      const targetIndex = BAND_ORDER.indexOf(targetBand);
-      if (targetIndex > currentIndex) {
-        action = "promoted";
-      } else if (targetIndex < currentIndex && player.band_games_played >= graceGames) {
-        // Grace checked first (the `>=` above), then hysteresis: only demote if more than
-        // hysteresis_pct percentile points below the promotion-in threshold for their
-        // *current* band, not just below the raw target-band cutoff.
-        const threshold = promotionThreshold[currentBand];
-        if (threshold !== undefined && pctile < threshold - hysteresisPct) {
-          action = "demoted";
-        }
-      }
-    }
-
-    if (!action) {
+    if (!change) {
       summary.unchanged += 1;
       continue;
     }
+
+    const { action, targetBand } = change;
 
     const oldBand = action === "placed" ? null : (player.band as Band);
 

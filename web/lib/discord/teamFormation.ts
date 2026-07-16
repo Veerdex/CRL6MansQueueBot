@@ -170,7 +170,7 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
 // Balanced mode: brute-force all 10 unique 3v3 splits, pick the smallest MMR-average gap.
 // ---------------------------------------------------------------------------
 
-function bestBalancedSplit(members: PlayerRow[]): { teamA: PlayerRow[]; teamB: PlayerRow[] } {
+export function bestBalancedSplit(members: PlayerRow[]): { teamA: PlayerRow[]; teamB: PlayerRow[] } {
   let best: { teamA: PlayerRow[]; teamB: PlayerRow[]; diff: number } | null = null;
   const seenSplits = new Set<string>();
 
@@ -225,7 +225,7 @@ async function resolveBalanced(supabase: AdminClient, guildId: string, seriesId:
 // See CLAUDE.md, "Team formation (on pop)".
 // ---------------------------------------------------------------------------
 
-function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null {
+export function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null {
   if (nonCaptainAssignedCount === 0) return "A";
   if (nonCaptainAssignedCount === 1 || nonCaptainAssignedCount === 2) return "B";
   return null; // 3 assigned -> the 4th auto-assigns, draft is complete
