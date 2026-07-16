@@ -32,8 +32,8 @@ const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
 
 function toggleClass(active: boolean) {
   return active
-    ? "bg-brand-orange text-zinc-950 shadow-sm"
-    : "bg-white/5 text-brand-orange/70 hover:bg-white/10 hover:text-brand-orange";
+    ? "bg-brand-orange text-zinc-950 shadow-lg font-semibold"
+    : "bg-white/5 text-brand-orange/60 hover:bg-white/15 hover:text-brand-orange/90 transition-all";
 }
 
 export default function StatsBoard({
@@ -146,8 +146,13 @@ export default function StatsBoard({
               <tr className="bg-white/5 text-left text-brand-orange">
                 <th className="py-2.5 pr-3 pl-4 font-semibold">Player</th>
                 {COLUMNS.map((col) => (
-                  <th key={col.key} className="py-2.5 pr-3 font-semibold">
+                  <th
+                    key={col.key}
+                    className="cursor-pointer select-none py-2.5 pr-3 font-semibold hover:text-white"
+                    onClick={() => toggleSort(col.key)}
+                  >
                     {col.label}
+                    {sortKey === col.key ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
                   </th>
                 ))}
               </tr>
