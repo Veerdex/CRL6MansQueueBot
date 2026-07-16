@@ -8,7 +8,7 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, editOriginalResponse, sendDirectMessage, getGuildId } from "./rest";
+import { discordFetch, editOriginalResponse, sendDirectMessage, getGuildId, BRAND_COLOR } from "./rest";
 import { getAdminRoleIds } from "./admin";
 import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -21,14 +21,18 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // See CLAUDE.md, "Team formation (on pop)" / "Team formation, in the match channel".
 // ---------------------------------------------------------------------------
 
-function voteMessageContent(balancedCount: number, captainsCount: number, timeoutSeconds: number) {
+function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds: number) {
   const minutes = Math.round(timeoutSeconds / 60);
-  return (
-    `**Vote: team formation mode**\n` +
-    `You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote. Vote by clicking the buttons below.\n` +
-    `First to 3/6 votes wins (an exact 3-3 tie resolves to Captains).\n\n` +
-    `Balanced: ${balancedCount}/3   Captains: ${captainsCount}/3`
-  );
+  return {
+    color: BRAND_COLOR,
+    description:
+      `**You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote. Vote by clicking the buttons below.**\n` +
+      `This message needs **3 player interactions** to proceed! An exact 3-3 tie resolves to Captains.`,
+    fields: [
+      { name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true },
+      { name: "Captains", value: `${captainsCount} / 3`, inline: true },
+    ],
+  };
 }
 
 function voteButtons(seriesId: string) {
@@ -71,7 +75,7 @@ export async function startTeamFormation(supabase: AdminClient, guildId: string,
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const message = (await discordFetch(`/channels/${textChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: voteMessageContent(0, 0, timeoutSeconds), components: voteButtons(seriesId) }),
+    body: JSON.stringify({ embeds: [voteEmbed(0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
@@ -108,7 +112,7 @@ export async function castVote(
     const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content: voteMessageContent(balancedCount, captainsCount, timeoutSeconds), components: voteButtons(seriesId) }),
+      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds)], components: voteButtons(seriesId) }),
     });
     return;
   }
@@ -348,7 +352,7 @@ async function sendDraftPickPrompt(
   if (turnPlayer.is_test_data) {
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content: `${header}Waiting on <@${turnPlayer.discord_id}> (test bot)...`, components: [] }),
+      body: JSON.stringify({ content: `${header}Waiting on <@${turnPlayer.discord_id}> (test bot)...`, embeds: [], components: [] }),
     });
     return;
   }
@@ -360,13 +364,14 @@ async function sendDraftPickPrompt(
   if (dmSent) {
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content: `${header}<@${turnPlayer.discord_id}> is picking — check your DMs!`, components: [] }),
+      body: JSON.stringify({ content: `${header}<@${turnPlayer.discord_id}> is picking — check your DMs!`, embeds: [], components: [] }),
     });
   } else {
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: `${header}<@${turnPlayer.discord_id}> — I couldn't DM you (your DMs are closed). Pick here instead:`,
+        embeds: [],
         components: buttonRows,
       }),
     });
@@ -520,14 +525,23 @@ async function finalizeTeams(
     ),
   );
 
-  const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(", ");
-  const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(", ");
+  const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
+  const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");
   await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
     method: "PATCH",
     body: JSON.stringify({
-      content:
-        `**Teams formed!**\nTeam A: ${teamALine}\nTeam B: ${teamBLine}\n\n` +
-        `Chat and voice are unlocked. Run \`/report\` in this channel once the series is decided.`,
+      content: "",
+      embeds: [
+        {
+          color: BRAND_COLOR,
+          title: "Teams formed!",
+          fields: [
+            { name: "Team 1", value: teamALine, inline: true },
+            { name: "Team 2", value: teamBLine, inline: true },
+          ],
+          footer: { text: "Chat and voice are unlocked. Run /report in this channel once the series is decided." },
+        },
+      ],
       components: [],
     }),
   });

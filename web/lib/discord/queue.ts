@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -26,11 +26,15 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 // place (the old button-driven behavior) or letting messages pile up.
 // ---------------------------------------------------------------------------
 
-function queueStateContent(queueType: QueueType, members: PlayerRow[], headline?: string): string {
+function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], headline?: string) {
   const label = QUEUE_LABELS[queueType];
-  const mentionLines = members.length ? members.map((m) => `<@${m.discord_id}>`).join("\n") : "_Empty_";
-  const headlineBlock = headline ? `${headline}\n\n` : "";
-  return `${headlineBlock}**Current Queue Members: ${members.length}**\n${mentionLines}\n\nRun \`/q\` to join the ${label} or \`/l\` to leave.`;
+  const mentionLine = members.length ? members.map((m) => `<@${m.discord_id}>`).join(" ") : "_Empty_";
+  const headlineBlock = headline ? `**${headline}**\n\n` : "";
+  return {
+    color: BRAND_COLOR,
+    description: `${headlineBlock}**Current Queue Members: ${members.length}**\n${mentionLine}`,
+    footer: { text: `Run /q to join the ${label} or /l to leave.` },
+  };
 }
 
 async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
@@ -72,7 +76,7 @@ async function postFreshQueueMessage(
   }
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: queueStateContent(queueType, members, headline) }),
+    body: JSON.stringify({ embeds: [queueStatusEmbed(queueType, members, headline)] }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_queue_messages").upsert({

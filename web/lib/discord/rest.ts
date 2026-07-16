@@ -2,6 +2,10 @@ import "server-only";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 
+// Shared accent color for the bot's embeds (queue status, vote, teams-formed) — matches the
+// design the user provided reference screenshots for.
+export const BRAND_COLOR = 0x57f287;
+
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.
