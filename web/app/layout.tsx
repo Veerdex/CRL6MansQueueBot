@@ -30,27 +30,9 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <nav className="border-b border-brand-blue/10 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3 text-sm">
-            <span className="mr-4 text-lg font-bold tracking-tight text-brand-blue dark:text-white">
+          <div className="mx-auto flex max-w-4xl items-center px-4 py-3 text-sm">
+            <Link href="/" className="text-lg font-bold tracking-tight text-brand-blue dark:text-white hover:opacity-80 transition-opacity">
               CRL <span className="text-brand-orange">6 Mans</span>
-            </span>
-            <Link
-              href="/"
-              className="rounded-full px-3 py-1.5 font-medium text-zinc-600 transition-colors hover:bg-brand-blue/5 hover:text-brand-blue dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white"
-            >
-              Main
-            </Link>
-            <Link
-              href="/stats/season"
-              className="rounded-full px-3 py-1.5 font-medium text-zinc-600 transition-colors hover:bg-brand-blue/5 hover:text-brand-blue dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white"
-            >
-              Season Stats
-            </Link>
-            <Link
-              href="/stats/all-time"
-              className="rounded-full px-3 py-1.5 font-medium text-zinc-600 transition-colors hover:bg-brand-blue/5 hover:text-brand-blue dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white"
-            >
-              All-Time Stats
             </Link>
           </div>
         </nav>
