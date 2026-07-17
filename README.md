@@ -279,6 +279,9 @@ role is granted, only the server owner has admin access.
 - **`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role>`** — map a
   band (or the `Unranked` state, or the season-end-only `Prism` Top 10 tier) to a Discord
   role the bot grants/revokes automatically on change.
+- **`/setmentionrole queue_type:<rank|universal> role:<@role>`** — set the role to mention
+  when the first player joins an empty queue (useful for pinging community members to start
+  playing).
 - **`/newseason confirmation:NEW SEASON`** — closes the current season (soft-reset MMR via
   hyperbolic decay, snapshot final standings, sync the Prism Top 10 role) and opens the next
   one. Requires confirmation text "NEW SEASON". Manual trigger only — there's no scheduled
