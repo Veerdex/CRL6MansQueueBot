@@ -387,6 +387,23 @@ const commands = [
           },
         ],
       },
+      {
+        name: "test-flow",
+        description: "Create a temporary test match to try the queue→teams→report flow (auto-cleanup on /report).",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "mode",
+            description: "Team formation mode for the test bots to vote for.",
+            type: STRING_OPTION,
+            required: true,
+            choices: [
+              { name: "captains", value: "captains" },
+              { name: "balanced", value: "balanced" },
+            ],
+          },
+        ],
+      },
     ],
   },
   {

@@ -9,7 +9,7 @@ import { recomputeBands } from "./bands";
 import { refreshQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { claimSeriesVoid, closeMatchChannelsAfterDelay } from "./matchChannels";
 import { interactionUserId, interactionDisplayName, type CommandOption, type DiscordInteraction } from "./types";
-import type { SeriesRow, PlayerRow } from "@/lib/supabase/types";
+import type { SeriesRow, PlayerRow, Team } from "@/lib/supabase/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -117,6 +117,11 @@ async function processAdminCommand(interaction: DiscordInteraction) {
     case "audit-log": {
       const limit = getParamValue(params, "limit");
       await processAuditLog(interaction, typeof limit === "number" ? limit : undefined);
+      return;
+    }
+    case "test-flow": {
+      const mode = getParamValue(params, "mode");
+      await processTestFlow(interaction, actorId, typeof mode === "string" ? mode : "balanced");
       return;
     }
     default:
@@ -405,4 +410,146 @@ async function processAuditLog(interaction: DiscordInteraction, limitRaw: number
     return `<t:${ts}:R> **${r.action}** by <@${r.actor_discord_id}>${r.target ? ` → ${r.target}` : ""}${r.details ? ` (${r.details})` : ""}`;
   });
   await editOriginalResponse(interaction.token, { content: lines.join("\n") });
+}
+
+// ---------------------------------------------------------------------------
+// /admin test-flow mode:<captains|balanced> — admin testing tool. Creates a temporary
+// 6-player match (5 test bots + the admin), auto-casts bot votes for the specified mode,
+// forms teams, and allows the admin to run /report. All test data is deleted afterward.
+// ---------------------------------------------------------------------------
+
+async function processTestFlow(interaction: DiscordInteraction, actorId: string, mode: string) {
+  if (mode !== "captains" && mode !== "balanced") {
+    await editOriginalResponse(interaction.token, { content: "Mode must be 'captains' or 'balanced'." });
+    return;
+  }
+
+  const supabase = createAdminClient();
+  const { data: season } = await supabase.from("crl6mansqueuebot_seasons").select("id").eq("is_active", true).maybeSingle();
+  if (!season) {
+    await editOriginalResponse(interaction.token, { content: "No active season — run /newseason first." });
+    return;
+  }
+
+  const admin = await getOrCreatePlayer(supabase, actorId, interactionDisplayName(interaction));
+  if (await getLockedSeriesForPlayer(supabase, admin.id)) {
+    await editOriginalResponse(interaction.token, { content: "You're already in an active match." });
+    return;
+  }
+
+  // Create 5 test bots with random MMR
+  const bots: PlayerRow[] = [];
+  const baseMMR = admin.mmr || 1000;
+  for (let i = 0; i < 5; i++) {
+    const botMMR = baseMMR + (Math.random() * 400 - 200); // ±200 from admin's MMR
+    const botDiscordId = `test_bot_${Date.now()}_${i}`;
+    const { data: bot } = await supabase
+      .from("crl6mansqueuebot_players")
+      .insert({ discord_id: botDiscordId, display_name: `Test Bot ${i + 1}`, mmr: botMMR, is_test_data: true })
+      .select("*")
+      .single();
+    if (bot) bots.push(bot);
+  }
+
+  if (bots.length < 5) {
+    await editOriginalResponse(interaction.token, { content: "Failed to create test bots." });
+    return;
+  }
+
+  const members = [admin, ...bots];
+
+  // Create series
+  const { data: series } = await supabase
+    .from("crl6mansqueuebot_series")
+    .insert({ season_id: season.id, queue_type: "rank", status: "forming", is_test_data: true })
+    .select("*")
+    .single();
+
+  if (!series) {
+    await editOriginalResponse(interaction.token, { content: "Failed to create test series." });
+    return;
+  }
+
+  // Add all to lobby
+  await supabase.from("crl6mansqueuebot_series_lobby").insert(members.map((m) => ({ series_id: series.id, player_id: m.id })));
+
+  // Create a dummy formation message (won't actually post to Discord for test)
+  const { data: updated } = await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ formation_message_id: "test_dummy_message_id" })
+    .eq("id", series.id)
+    .select("*")
+    .single();
+
+  if (!updated) {
+    await editOriginalResponse(interaction.token, { content: "Failed to set up test series." });
+    return;
+  }
+
+  // Auto-cast bot votes
+  for (let i = 0; i < 3; i++) {
+    await supabase.from("crl6mansqueuebot_series_votes").insert({
+      series_id: series.id,
+      player_id: bots[i].id,
+      choice: mode as "captains" | "balanced",
+    });
+  }
+
+  // Settle the vote
+  await supabase.from("crl6mansqueuebot_series").update({ vote_result: mode as "captains" | "balanced" }).eq("id", series.id);
+
+  // For captains mode, auto-assign teams
+  if (mode === "captains") {
+    const sorted = members.sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
+    const captainA = sorted[0];
+    const captainB = sorted[1];
+    const others = sorted.slice(2);
+
+    // Assign: captain A gets 2, captain B gets 2, last one goes to A
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ is_captain: true, team: "A" }).eq("player_id", captainA.id).eq("series_id", series.id);
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ is_captain: true, team: "B" }).eq("player_id", captainB.id).eq("series_id", series.id);
+
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("player_id", others[0].id).eq("series_id", series.id);
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B" }).eq("player_id", others[1].id).eq("series_id", series.id);
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B" }).eq("player_id", others[2].id).eq("series_id", series.id);
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("player_id", others[3].id).eq("series_id", series.id);
+
+    // Move lobby to series_players and set status to active
+    const { data: lobbyRows } = await supabase.from("crl6mansqueuebot_series_lobby").select("*").eq("series_id", series.id);
+    if (lobbyRows) {
+      const seriesPlayerRows = lobbyRows.map((row) => ({
+        series_id: row.series_id,
+        player_id: row.player_id,
+        team: row.team! as Team,
+      }));
+      await supabase.from("crl6mansqueuebot_series_players").insert(seriesPlayerRows);
+      await supabase.from("crl6mansqueuebot_series_lobby").delete().eq("series_id", series.id);
+    }
+  } else {
+    // Balanced: compute best split and assign
+    const sorted = members.sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
+    const teamA = [sorted[0], sorted[3], sorted[4]];
+    const teamB = [sorted[1], sorted[2], sorted[5]];
+
+    const { data: lobbyRows } = await supabase.from("crl6mansqueuebot_series_lobby").select("*").eq("series_id", series.id);
+    if (lobbyRows) {
+      const seriesPlayerRows = lobbyRows.map((row) => ({
+        series_id: row.series_id,
+        player_id: row.player_id,
+        team: (teamA.some((p) => p.id === row.player_id) ? "A" : "B") as Team,
+      }));
+      await supabase.from("crl6mansqueuebot_series_players").insert(seriesPlayerRows);
+      await supabase.from("crl6mansqueuebot_series_lobby").delete().eq("series_id", series.id);
+    }
+  }
+
+  // Set status to active
+  await supabase.from("crl6mansqueuebot_series").update({ status: "active" }).eq("id", series.id);
+
+  // Store series id for cleanup (on /report, test data will be auto-cleaned)
+  await editOriginalResponse(interaction.token, {
+    content: `Test match created! Series ID: ${series.id}\n\nTeams:\n**Team A**: ${members.slice(0, 3).map((m) => m.display_name).join(", ")}\n**Team B**: ${members.slice(3).map((m) => m.display_name).join(", ")}\n\nRun \`/report result:win\` or \`/report result:loss\` to complete the test.`,
+  });
+
+  await logAdminAction(actorId, "test_flow", series.id, `mode=${mode}`);
 }
