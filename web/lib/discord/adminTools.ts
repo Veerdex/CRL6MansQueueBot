@@ -78,6 +78,10 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processCancelSeries(interaction, actorId, typeof id === "string" && id ? id : null);
       return;
     }
+    case "cancel-matches": {
+      await processCancelMatches(interaction, actorId);
+      return;
+    }
     case "adjust-mmr": {
       const target = getParamValue(params, "target");
       const delta = getParamValue(params, "delta");
@@ -242,6 +246,60 @@ async function processCancelSeries(interaction: DiscordInteraction, actorId: str
   await logAdminAction(actorId, "cancel_series", series.id);
   await editOriginalResponse(interaction.token, { content: `Cancelled series ${series.id}.` });
   await closeMatchChannelsAfterDelay(supabase, series);
+}
+
+// ---------------------------------------------------------------------------
+// /admin cancel-matches — cancels all active and forming series at once.
+// Posts an embed message to each affected queue channel.
+// ---------------------------------------------------------------------------
+
+async function processCancelMatches(interaction: DiscordInteraction, actorId: string) {
+  const supabase = createAdminClient();
+
+  // Fetch all active and forming series
+  const { data: activeSeries } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .in("status", ["forming", "active"]);
+
+  if (!activeSeries || activeSeries.length === 0) {
+    await editOriginalResponse(interaction.token, { content: "No active or forming matches to cancel." });
+    return;
+  }
+
+  const seriesList = activeSeries as SeriesRow[];
+  let cancelledCount = 0;
+  const channelsNotified = new Set<string>();
+
+  // Cancel each series
+  for (const series of seriesList) {
+    const ok = await claimSeriesVoid(supabase, series, "**All matches cancelled by an admin.** No MMR change.");
+    if (ok) {
+      cancelledCount++;
+      if (series.queue_channel_id) {
+        channelsNotified.add(series.queue_channel_id);
+      }
+      await closeMatchChannelsAfterDelay(supabase, series);
+    }
+  }
+
+  // Post notification to each affected queue channel
+  for (const channelId of channelsNotified) {
+    await discordFetch(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [
+          {
+            color: 0xef476f,
+            description: "**All matches cancelled by an admin.** No MMR change.",
+          },
+        ],
+      }),
+    }).catch((err) => console.error(`Failed to post cancellation message to queue channel ${channelId}`, err));
+  }
+
+  await logAdminAction(actorId, "cancel_matches", "all", `cancelled=${cancelledCount}`);
+  await editOriginalResponse(interaction.token, { content: `Cancelled ${cancelledCount} active/forming match${cancelledCount === 1 ? "" : "es"}.` });
 }
 
 // ---------------------------------------------------------------------------

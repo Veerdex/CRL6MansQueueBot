@@ -311,6 +311,12 @@ const commands = [
         ],
       },
       {
+        name: "cancel-matches",
+        description: "Cancel all active and forming matches.",
+        type: SUB_COMMAND,
+        options: [],
+      },
+      {
         name: "adjust-mmr",
         description: "Manually adjust a player's MMR — provide exactly one of delta or mmr.",
         type: SUB_COMMAND,
