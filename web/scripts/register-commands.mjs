@@ -236,7 +236,7 @@ const commands = [
     options: [
       {
         name: "band",
-        description: "Which band (or Placed) this role represents.",
+        description: "Which band (or Unranked) this role represents.",
         type: STRING_OPTION,
         required: true,
         choices: [
@@ -244,7 +244,7 @@ const commands = [
           { name: "Garnet", value: "Garnet" },
           { name: "Emerald", value: "Emerald" },
           { name: "Sapphire", value: "Sapphire" },
-          { name: "Placed", value: "Placed" },
+          { name: "Unranked", value: "Unranked" },
           { name: "Prism", value: "Prism" },
         ],
       },
