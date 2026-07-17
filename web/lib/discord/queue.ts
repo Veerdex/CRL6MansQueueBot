@@ -433,14 +433,6 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
     .update({ voice_channel_a_id: voiceA.id, voice_channel_b_id: voiceB.id })
     .eq("id", seriesId);
 
-  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
-  await discordFetch(`/channels/${queueChannelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({
-      content: `${mentions}\nYour lobby has popped! Vote for team formation below.`,
-    }),
-  }).catch((err) => console.error(`Failed to post pop notification in queue channel`, err));
-
   try {
     await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
   } catch (err) {

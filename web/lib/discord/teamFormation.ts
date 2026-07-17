@@ -80,9 +80,10 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
 // follow-on writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
 export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ embeds: [voteEmbed(0, 0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
+    body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
