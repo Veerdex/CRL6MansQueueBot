@@ -40,15 +40,25 @@ export async function discordFetch(path: string, init: RequestInit = {}) {
 // failed notification shouldn't break the caller's main flow. Returns whether it succeeded
 // so callers that need a fallback (e.g. the captains-draft DM prompt in teamFormation.ts)
 // can react to a closed-DMs case instead of silently doing nothing.
-export async function sendDirectMessage(discordId: string, content: string, components?: unknown[]): Promise<boolean> {
+export async function sendDirectMessage(
+  discordId: string,
+  content: string,
+  components?: unknown[],
+  embeds?: unknown[],
+): Promise<boolean> {
   try {
     const dmChannel = (await discordFetch("/users/@me/channels", {
       method: "POST",
       body: JSON.stringify({ recipient_id: discordId }),
     })) as { id: string };
+
+    const body: any = { content };
+    if (components) body.components = components;
+    if (embeds) body.embeds = embeds;
+
     await discordFetch(`/channels/${dmChannel.id}/messages`, {
       method: "POST",
-      body: JSON.stringify(components ? { content, components } : { content }),
+      body: JSON.stringify(body),
     });
     return true;
   } catch (err) {

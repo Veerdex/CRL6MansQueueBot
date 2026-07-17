@@ -8,7 +8,7 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, editOriginalResponse, sendDirectMessage, getGuildId, BRAND_COLOR } from "./rest";
+import { discordFetch, editOriginalResponse, sendDirectMessage, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds } from "./admin";
 import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -442,8 +442,56 @@ async function sendDraftPickPrompt(
   }
 
   const buttonRows = draftPickButtonRows(seriesId, remaining);
-  const dmContent = `**Captains Draft — your pick**\nChoose a player for your team:`;
-  const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows);
+  const dmContent = `**Captains Draft — your pick**`;
+
+  // Create embed with player information
+  const supabase = createAdminClient();
+  const embedFields = [];
+
+  for (const player of remaining) {
+    const emoji = await getRankEmoji(player.band);
+    const { data: seriesPlayerRows } = await supabase
+      .from("crl6mansqueuebot_series_players")
+      .select("team, series_id")
+      .eq("player_id", player.id);
+
+    if (!seriesPlayerRows || seriesPlayerRows.length === 0) {
+      embedFields.push({
+        name: player.display_name,
+        value: `${player.mmr.toFixed(0)} MMR ${emoji} | **W:** 0 | **L:** 0`,
+        inline: false,
+      });
+      continue;
+    }
+
+    const seriesIds = seriesPlayerRows.map((sp) => sp.series_id);
+    const { data: seriesRows } = await supabase.from("crl6mansqueuebot_series").select("id, winner_team").in("id", seriesIds);
+
+    let wins = 0;
+    if (seriesRows) {
+      for (const sp of seriesPlayerRows) {
+        const series = seriesRows.find((s) => s.id === sp.series_id);
+        if (series && series.winner_team === sp.team) {
+          wins++;
+        }
+      }
+    }
+
+    const losses = seriesPlayerRows.length - wins;
+    embedFields.push({
+      name: player.display_name,
+      value: `${player.mmr.toFixed(0)} MMR ${emoji} | **W:** ${wins} | **L:** ${losses}`,
+      inline: false,
+    });
+  }
+
+  const embed = {
+    title: "Choose a Player",
+    color: BRAND_COLOR,
+    fields: embedFields,
+  };
+
+  const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows, [embed]);
 
   if (dmSent) {
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
