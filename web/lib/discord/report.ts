@@ -228,4 +228,6 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
   if (series.is_test_data) {
     await cleanupTestMatchRows(supabase, series.id);
   }
+
+  await editOriginalResponse(interaction.token, { content: "Match reported." });
 }
