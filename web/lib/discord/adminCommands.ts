@@ -126,7 +126,7 @@ async function processHelp(interaction: DiscordInteraction) {
       "`/remove-admin-role role:<@role>` — revoke a role's admin access.",
       "`/list-admin-roles` — list roles with admin access.",
       "`/newseason` — close the current season (if any) and start the next one.",
-      "`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Placed|Prism> role:<@role>` — map a band (or the Placed gate, or the season-end Prism Top 10 role) to a Discord role for auto role-sync.",
+      "`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role>` — map a band (or the Unranked role, or the season-end Prism Top 10 role) to a Discord role for auto role-sync.",
       "`/test-rank-match` / `/test-universal-match` — spin up a simulated match (you + 5 test bots) to try the flow yourself.",
       "`/end-test` — run inside a test match's channel to tear it down (category, voice channels, text channel, and its test data).",
     );

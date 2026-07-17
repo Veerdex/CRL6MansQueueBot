@@ -9,7 +9,7 @@ import { type DiscordInteraction } from "./types";
 import type { Band, BandRoleKey } from "@/lib/supabase/types";
 
 const BAND_ORDER: Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
-const VALID_BAND_ROLE_KEYS: BandRoleKey[] = ["Iron", "Garnet", "Emerald", "Sapphire", "Placed", "Prism"];
+const VALID_BAND_ROLE_KEYS: BandRoleKey[] = ["Iron", "Garnet", "Emerald", "Sapphire", "Unranked", "Prism"];
 
 type RecomputeSummary = { placed: number; promoted: number; demoted: number; unchanged: number };
 type ChangeAction = "placed" | "promoted" | "demoted";
@@ -153,8 +153,8 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
         const newRoleId = roleIdByBand.get(targetBand);
         if (newRoleId) await addMemberRole(guildId, player.discord_id, newRoleId);
         if (action === "placed") {
-          const placedRoleId = roleIdByBand.get("Placed");
-          if (placedRoleId) await addMemberRole(guildId, player.discord_id, placedRoleId);
+          const unrankedRoleId = roleIdByBand.get("Unranked");
+          if (unrankedRoleId) await addMemberRole(guildId, player.discord_id, unrankedRoleId);
         }
       } catch (err) {
         console.error(`Band recompute: failed to sync Discord role for ${player.discord_id}`, err);
@@ -169,11 +169,11 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
 }
 
 // ---------------------------------------------------------------------------
-// /setbandrole band:<Iron|Garnet|Emerald|Sapphire|Placed|Prism> role:<@role> — admin-gated, maps
-// a band (or the generic 'Placed' Rank Queue gate, or the season-end-only 'Prism' Top 10 tier)
-// to a Discord role. recomputeBands() below only ever grants/revokes Iron/Garnet/Emerald/
-// Sapphire/Placed — it never touches 'Prism', which is exclusively synced by season close
-// (see seasonClose.ts). Mirrors /setqueuechannel's channel-mapping pattern.
+// /setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role> — admin-gated, maps
+// a band (or the 'Unranked' informational role for newly placed players, or the season-end-only
+// 'Prism' Top 10 tier) to a Discord role. recomputeBands() below only ever grants/revokes
+// Iron/Garnet/Emerald/Sapphire/Unranked — it never touches 'Prism', which is exclusively synced
+// by season close (see seasonClose.ts). Mirrors /setqueuechannel's channel-mapping pattern.
 // ---------------------------------------------------------------------------
 
 export function handleSetBandRoleCommand(interaction: DiscordInteraction) {

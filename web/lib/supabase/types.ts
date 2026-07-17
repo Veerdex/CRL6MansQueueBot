@@ -117,7 +117,7 @@ export type AbandonVoteRow = {
   created_at: string;
 };
 
-export type BandRoleKey = Band | "Placed" | "Prism";
+export type BandRoleKey = Band | "Unranked" | "Prism";
 
 export type BandRoleRow = {
   band: BandRoleKey;
