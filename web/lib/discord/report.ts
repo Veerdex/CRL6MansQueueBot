@@ -10,6 +10,7 @@ import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
+import { encodeMatchId } from "./matchId";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
@@ -104,6 +105,15 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     await editOriginalResponse(interaction.token, { content: "This match was already reported." });
     return;
   }
+
+  // Assign match number (based on count of previously reported series)
+  const { count: reportedCount } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "reported")
+    .lt("reported_at", new Date().toISOString());
+  const matchNumber = (reportedCount ?? 0) - 1; // -1 because we just added this series
+  await supabase.from("crl6mansqueuebot_series").update({ match_number: matchNumber } as any).eq("id", series.id);
 
   await clearPendingSeriesState(supabase, series.id);
 
@@ -204,7 +214,8 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
   const reportChannelId = reportChannelConfig?.value;
   if (reportChannelId) {
-    const embed = reportResultEmbed(winner, winnerLines, loserLines);
+    const matchId = encodeMatchId(matchNumber);
+    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines);
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
       body: JSON.stringify({ embeds: [embed] }),
@@ -223,11 +234,12 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   await deleteOriginalResponse(interaction.token);
 }
 
-function reportResultEmbed(winner: Team, winnerLines: string[], loserLines: string[]) {
+function reportResultEmbed(winner: Team, matchId: string, winnerLines: string[], loserLines: string[]) {
   return {
     color: BRAND_COLOR,
     title: `Match Reported — Team ${winner} Wins!`,
     description:
+      `**Match #${matchId}**\n\n` +
       `**Winners**\n${winnerLines.join("\n")}\n\n` +
       `**Losers**\n${loserLines.join("\n")}`,
   };
