@@ -8,7 +8,7 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, editOriginalResponse, deleteOriginalResponse, sendDirectMessage, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds } from "./admin";
 import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -153,8 +153,7 @@ export async function castVote(
 export function handleVoteButton(interaction: DiscordInteraction, seriesId: string, choice: VoteChoice) {
   after(() => processVoteButton(interaction, seriesId, choice));
   return {
-    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-    data: { flags: InteractionResponseFlags.EPHEMERAL },
+    type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
   };
 }
 
@@ -162,7 +161,13 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId || !interaction.guild_id || !interaction.channel_id) {
-    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
@@ -171,19 +176,30 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
     ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
     : { data: null };
   if (!player || !lobbyRow) {
-    await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "You're not part of this match.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result || !series.formation_message_id) {
-    await editOriginalResponse(interaction.token, { content: "Voting isn't open for this match anymore." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Voting isn't open for this match anymore.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
   const members = await fetchLobbyMembers(supabase, seriesId);
   await castVote(supabase, interaction.guild_id, seriesId, interaction.channel_id, series.formation_message_id, members, player.id, choice);
-  await deleteOriginalResponse(interaction.token);
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +209,7 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
 export function handleCancelButton(interaction: DiscordInteraction, seriesId: string) {
   after(() => processCancelButton(interaction, seriesId));
   return {
-    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-    data: { flags: InteractionResponseFlags.EPHEMERAL },
+    type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
   };
 }
 
@@ -202,7 +217,13 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId || !interaction.guild_id || !interaction.channel_id) {
-    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
@@ -211,13 +232,25 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
     ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
     : { data: null };
   if (!player || !lobbyRow) {
-    await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "You're not part of this match.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result || series.status !== "forming" || !series.formation_message_id) {
-    await editOriginalResponse(interaction.token, { content: "Match is no longer in voting phase." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Match is no longer in voting phase.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
@@ -241,7 +274,6 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
       await supabase.from("crl6mansqueuebot_series_votes").delete().eq("series_id", seriesId);
       await supabase.from("crl6mansqueuebot_cancel_votes").delete().eq("series_id", seriesId);
       await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
-      await deleteOriginalResponse(interaction.token);
       return;
     }
   }
@@ -256,8 +288,6 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
     method: "PATCH",
     body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
   });
-
-  await deleteOriginalResponse(interaction.token);
 }
 
 // ---------------------------------------------------------------------------
@@ -514,8 +544,7 @@ async function sendDraftPickPrompt(
 export function handleDraftPickButton(interaction: DiscordInteraction, seriesId: string, pickedPlayerId: string) {
   after(() => processDraftPick(interaction, seriesId, pickedPlayerId));
   return {
-    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-    data: { flags: InteractionResponseFlags.EPHEMERAL },
+    type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
   };
 }
 
@@ -523,7 +552,13 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
-    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
   // Draft picks are DM-driven now (see sendDraftPickPrompt) — a DM interaction has no guild_id
@@ -534,7 +569,13 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) {
-    await editOriginalResponse(interaction.token, { content: "The draft isn't active for this match." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "The draft isn't active for this match.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
@@ -542,7 +583,13 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
   const captainBRow = lobby.find((x) => x.row.is_captain && x.row.team === "B");
   if (!captainARow || !captainBRow) {
-    await editOriginalResponse(interaction.token, { content: "Something's wrong with this draft — ask an admin to check it." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Something's wrong with this draft — ask an admin to check it.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
@@ -550,19 +597,37 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const assignedCount = nonCaptainRows.filter((x) => x.row.team).length;
   const turnCaptain = deriveTurnCaptain(assignedCount);
   if (!turnCaptain) {
-    await editOriginalResponse(interaction.token, { content: "The draft has already finished." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "The draft has already finished.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
   const turnCaptainPlayer = turnCaptain === "A" ? captainARow.player : captainBRow.player;
   if (turnCaptainPlayer.discord_id !== discordId) {
-    await editOriginalResponse(interaction.token, { content: "It's not your pick." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "It's not your pick.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
   const target = nonCaptainRows.find((x) => x.row.player_id === pickedPlayerId);
   if (!target || target.row.team) {
-    await editOriginalResponse(interaction.token, { content: "That player isn't available to pick." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "That player isn't available to pick.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
 
@@ -574,11 +639,15 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
     .is("team", null)
     .select("player_id");
   if (!claimed || claimed.length === 0) {
-    await editOriginalResponse(interaction.token, { content: "That pick already happened." });
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "That pick already happened.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
     return;
   }
-
-  await deleteOriginalResponse(interaction.token);
 
   const newAssignedCount = assignedCount + 1;
   const allMembers = lobby.map((x) => x.player);
