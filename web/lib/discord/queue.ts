@@ -348,7 +348,8 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     .in("player_id", playerIds)
     .select("player_id");
 
-  await refreshQueueMessage(supabase, queueType);
+  // Don't refresh queue message here — the vote embed will be posted in the queue channel
+  // by createMatchChannels, and we don't want to send a "0 members" message after pop
   if (crossRemoved && crossRemoved.length > 0) {
     await refreshQueueMessage(supabase, otherQueueType);
     const crossRemovedIds = new Set(crossRemoved.map((r) => r.player_id));
