@@ -620,6 +620,10 @@ async function processChecklist(interaction: DiscordInteraction) {
     const { data: configs } = await supabase.from("crl6mansqueuebot_config").select("*");
     const configMap = new Map((configs ?? []).map((c) => [c.key, c.value]));
 
+    // Fetch queue messages (which track queue channel setup)
+    const { data: queueMessages } = await supabase.from("crl6mansqueuebot_queue_messages").select("*");
+    const queueMessageMap = new Map((queueMessages ?? []).map((q) => [q.queue_type, q.channel_id]));
+
     // Fetch rank emoji
     const { data: emojis } = await supabase.from("crl6mansqueuebot_rank_emoji").select("*");
     const emojiMap = new Map((emojis as any ?? []).map((e: any) => [e.band, e.emoji_id]));
@@ -638,10 +642,10 @@ async function processChecklist(interaction: DiscordInteraction) {
 
     // Channels
     items.push(`**Channels**`);
-    items.push(configMap.has("queue_channel_id_rank") ? `✅ Rank Queue channel` : `❌ Rank Queue channel`);
-    items.push(configMap.has("queue_channel_id_universal") ? `✅ Universal Queue channel` : `❌ Universal Queue channel`);
+    items.push(queueMessageMap.has("rank") ? `✅ Rank Queue channel` : `❌ Rank Queue channel`);
+    items.push(queueMessageMap.has("universal") ? `✅ Universal Queue channel` : `❌ Universal Queue channel`);
     items.push(configMap.has("report_channel_id") ? `✅ Report channel` : `❌ Report channel`);
-    items.push(configMap.has("call_category_id") ? `✅ 6-mans call category` : `❌ 6-mans call category`);
+    items.push(configMap.has("6mans_call_category_id") ? `✅ 6-mans call category` : `❌ 6-mans call category`);
 
     // Rank emoji
     items.push(``);
@@ -660,7 +664,7 @@ async function processChecklist(interaction: DiscordInteraction) {
     items.push(bandRoleMap.has("Garnet") ? `✅ Garnet role` : `❌ Garnet role`);
     items.push(bandRoleMap.has("Emerald") ? `✅ Emerald role` : `❌ Emerald role`);
     items.push(bandRoleMap.has("Sapphire") ? `✅ Sapphire role` : `❌ Sapphire role`);
-    items.push(bandRoleMap.has("Placed") ? `✅ Placed role` : `❌ Placed role`);
+    items.push(bandRoleMap.has("Unranked") ? `✅ Unranked role` : `❌ Unranked role`);
     items.push(bandRoleMap.has("Prism") ? `✅ Prism role` : `❌ Prism role`);
 
     // Admin roles
