@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -295,7 +295,9 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
   if (result?.status === "joined" && result.queue_size >= 6) {
     const guildId = interaction.guild_id ?? (await getGuildId());
     await handlePop(supabase, queueType, guildId, channelId);
-  } else {
+    // Pop succeeded — delete the deferred response so it auto-dismisses
+    await deleteOriginalResponse(interaction.token);
+  } else if (result?.status === "joined") {
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
   }
 }
