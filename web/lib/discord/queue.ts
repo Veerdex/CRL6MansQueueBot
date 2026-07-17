@@ -409,7 +409,12 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
 
   const voiceOverwrites = (teamMembers: PlayerRow[]): PermissionOverwrite[] => [
     { id: guildId, type: ROLE_TYPE, deny: VIEW_CHANNEL.toString() },
-    ...teamMembers.map((m) => ({ id: m.discord_id, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
+    // Test bots use synthetic discord_ids (e.g. "test_bot_..."), not real snowflakes — Discord's
+    // API rejects the entire channel-creation request if any permission_overwrites id isn't a
+    // real snowflake, so they must be excluded here rather than just skipped elsewhere.
+    ...teamMembers
+      .filter((m) => !m.is_test_data)
+      .map((m) => ({ id: m.discord_id, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
     ...adminRoleIds.map((roleId) => ({ id: roleId, type: ROLE_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }) as PermissionOverwrite),
     ...(botUserId ? [{ id: botUserId, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() } as PermissionOverwrite] : []),
   ];
