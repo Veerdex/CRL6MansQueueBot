@@ -630,6 +630,10 @@ async function processChecklist(interaction: DiscordInteraction) {
     const { data: bandRoles } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
     const bandRoleMap = new Map((bandRoles as any ?? []).map((b: any) => [b.band, b.role_id]));
 
+    // Fetch mention roles
+    const { data: mentionRoles } = await supabase.from("crl6mansqueuebot_queue_mention_roles").select("*");
+    const mentionRoleMap = new Map((mentionRoles as any ?? []).map((m: any) => [m.queue_type, m.role_id]));
+
     // Fetch admin roles
     const { count: adminRoleCount } = await supabase
       .from("crl6mansqueuebot_admin_roles")
@@ -664,6 +668,12 @@ async function processChecklist(interaction: DiscordInteraction) {
     items.push(bandRoleMap.has("Sapphire") ? `✅ Sapphire role` : `❌ Sapphire role`);
     items.push(bandRoleMap.has("Unranked") ? `✅ Unranked role` : `❌ Unranked role`);
     items.push(bandRoleMap.has("Prism") ? `✅ Prism role` : `❌ Prism role`);
+
+    // Mention roles
+    items.push(``);
+    items.push(`**Queue Mention Roles**`);
+    items.push(mentionRoleMap.has("rank") ? `✅ Rank Queue mention role` : `❌ Rank Queue mention role`);
+    items.push(mentionRoleMap.has("universal") ? `✅ Universal Queue mention role` : `❌ Universal Queue mention role`);
 
     // Admin roles
     items.push(``);
