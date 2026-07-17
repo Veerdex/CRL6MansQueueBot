@@ -130,6 +130,11 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processSetRankEmoji(interaction, actorId, typeof band === "string" ? band : null, typeof imageAttachmentId === "string" ? imageAttachmentId : null);
       return;
     }
+    case "reset": {
+      const confirmation = getParamValue(params, "confirmation");
+      await processReset(interaction, actorId, typeof confirmation === "string" ? confirmation : null);
+      return;
+    }
     default:
       await editOriginalResponse(interaction.token, { content: "Unrecognized admin subcommand." });
       return;
@@ -558,6 +563,61 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
   });
 
   await logAdminAction(actorId, "test_flow", series.id, `mode=${mode}`);
+}
+
+// ---------------------------------------------------------------------------
+// /admin reset confirmation:<text> — dangerous: wipes all game data and
+// resets to a clean slate. Requires "SEASON RESET" confirmation text.
+// Does NOT start a new season — just clears all tables.
+// ---------------------------------------------------------------------------
+
+async function processReset(interaction: DiscordInteraction, actorId: string, confirmation: string | null) {
+  if (confirmation !== "SEASON RESET") {
+    await editOriginalResponse(interaction.token, { content: 'Confirmation failed. Type exactly: "SEASON RESET"' });
+    return;
+  }
+
+  const supabase = createAdminClient();
+
+  try {
+    // Delete in order of foreign key dependencies to avoid constraint violations
+    await supabase.from("crl6mansqueuebot_abandon_votes").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_sub_requests").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series_votes").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series_players").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series_lobby").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series").delete().neq("id", "");
+    await supabase.from("crl6mansqueuebot_queue_members").delete().neq("player_id", "");
+    await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
+
+    // Reset players but keep them (delete all game data only)
+    await supabase
+      .from("crl6mansqueuebot_players")
+      .update({
+        mmr: 0,
+        is_placed: false,
+        band: null,
+        total_games_played: 0,
+        rank_games_played: 0,
+        band_games_played: 0,
+        vote_default: null,
+        is_prism: false,
+      })
+      .neq("id", "");
+
+    // Keep seasons table untouched (they track historical data)
+    // Keep rank emoji config untouched
+    // Keep admin roles untouched
+    // Keep config values untouched
+
+    await logAdminAction(actorId, "reset", "all_game_data", "Wiped all series, queue members, and reset player stats to 0");
+    await editOriginalResponse(interaction.token, {
+      content: "✅ All game data reset to clean slate. Players retained with stats reset to 0.",
+    });
+  } catch (err) {
+    console.error("Failed to reset game data", err);
+    await editOriginalResponse(interaction.token, { content: "An error occurred while resetting data." });
+  }
 }
 
 // ---------------------------------------------------------------------------

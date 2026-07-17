@@ -149,6 +149,14 @@ const commands = [
     name: "newseason",
     description: "Close the current season (if any) and start the next one.",
     type: 1,
+    options: [
+      {
+        name: "confirmation",
+        description: 'Type "NEW SEASON" to confirm this action.',
+        type: STRING_OPTION,
+        required: true,
+      },
+    ],
   },
   {
     name: "vote-default",
@@ -416,6 +424,19 @@ const commands = [
             name: "image",
             description: "The emoji image file (PNG recommended).",
             type: ATTACHMENT_OPTION,
+            required: true,
+          },
+        ],
+      },
+      {
+        name: "reset",
+        description: "DANGER: Wipe all game data and reset to a clean slate (does not start a new season).",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "confirmation",
+            description: 'Type "SEASON RESET" to confirm this destructive action.',
+            type: STRING_OPTION,
             required: true,
           },
         ],

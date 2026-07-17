@@ -144,7 +144,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const emoji = emojiByBand.get(p.band) || "❓";
-      pushLine(sp, `${emoji} <@${p.discord_id}> — test match, no stat changes`);
+      pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else if (series.queue_type === "rank") {
     const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
@@ -185,7 +185,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const emoji = emojiByBand.get(p.band) || "❓";
       pushLine(
         sp,
-        `${emoji} <@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)}`,
+        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} ${emoji}`,
       );
     }
   } else {
@@ -200,7 +200,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const emoji = emojiByBand.get(p.band) || "❓";
-      pushLine(sp, `${emoji} <@${p.discord_id}>`);
+      pushLine(sp, `<@${p.discord_id}> ${emoji}`);
     }
   }
 

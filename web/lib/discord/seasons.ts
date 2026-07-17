@@ -23,10 +23,16 @@ function deferredEphemeral(run: () => Promise<void>) {
 // ---------------------------------------------------------------------------
 
 export function handleNewSeasonCommand(interaction: DiscordInteraction) {
-  return deferredEphemeral(() => processNewSeason(interaction));
+  const confirmation = interaction.data?.options?.find((o) => o.name === "confirmation")?.value;
+  return deferredEphemeral(() => processNewSeason(interaction, typeof confirmation === "string" ? confirmation : null));
 }
 
-async function processNewSeason(interaction: DiscordInteraction) {
+async function processNewSeason(interaction: DiscordInteraction, confirmation: string | null) {
+  if (confirmation !== "NEW SEASON") {
+    await editOriginalResponse(interaction.token, { content: 'Confirmation failed. Type exactly: "NEW SEASON"' });
+    return;
+  }
+
   const actorId = interactionUserId(interaction);
   if (!actorId) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
