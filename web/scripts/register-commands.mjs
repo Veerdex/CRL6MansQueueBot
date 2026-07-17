@@ -17,6 +17,7 @@ const INTEGER_OPTION = 4;
 const USER_OPTION = 6;
 const ROLE_OPTION = 8;
 const NUMBER_OPTION = 10;
+const ATTACHMENT_OPTION = 11;
 const SUB_COMMAND = 1;
 const SUB_COMMAND_GROUP = 2;
 
@@ -389,6 +390,31 @@ const commands = [
               { name: "captains", value: "captains" },
               { name: "balanced", value: "balanced" },
             ],
+          },
+        ],
+      },
+      {
+        name: "set-rank-emoji",
+        description: "Upload and assign a custom emoji for a rank band.",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "band",
+            description: "Which rank band to assign the emoji to.",
+            type: STRING_OPTION,
+            required: true,
+            choices: [
+              { name: "Iron", value: "Iron" },
+              { name: "Garnet", value: "Garnet" },
+              { name: "Emerald", value: "Emerald" },
+              { name: "Sapphire", value: "Sapphire" },
+            ],
+          },
+          {
+            name: "image",
+            description: "The emoji image file (PNG recommended).",
+            type: ATTACHMENT_OPTION,
+            required: true,
           },
         ],
       },

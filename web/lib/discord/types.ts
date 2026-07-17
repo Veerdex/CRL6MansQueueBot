@@ -31,6 +31,9 @@ export type DiscordInteraction = {
     custom_id?: string;
     component_type?: number;
     options?: CommandOption[];
+    resolved?: {
+      attachments?: Record<string, { id: string; url: string; content_type?: string }>;
+    };
   };
 };
 

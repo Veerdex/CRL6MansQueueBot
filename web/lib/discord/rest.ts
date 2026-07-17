@@ -113,3 +113,40 @@ export async function deleteOriginalResponse(interactionToken: string) {
     console.error("Failed to delete original interaction response", await res.text());
   }
 }
+
+let rankEmojiCache: Map<string, string | null> | null = null;
+
+export async function getRankEmoji(band: string | null): Promise<string> {
+  if (!band) return "❓";
+
+  // Load cache if not already loaded (once per instance)
+  if (!rankEmojiCache) {
+    rankEmojiCache = new Map();
+    try {
+      const { createAdminClient } = await import("@/lib/supabase/admin");
+      const supabase = createAdminClient();
+      const { data } = await supabase.from("crl6mansqueuebot_rank_emoji").select("*");
+      if (data) {
+        for (const row of data as any) {
+          rankEmojiCache.set(row.band, row.emoji_id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load rank emoji cache", err);
+    }
+  }
+
+  const emojiId = rankEmojiCache.get(band);
+  if (emojiId) {
+    return `<:rank_${band.toLowerCase()}:${emojiId}>`;
+  }
+
+  // Fallback emoji if not configured
+  const fallbacks: Record<string, string> = {
+    Iron: "⚒️",
+    Garnet: "💎",
+    Emerald: "💚",
+    Sapphire: "💙",
+  };
+  return fallbacks[band] || "❓";
+}

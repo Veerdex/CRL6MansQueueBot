@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendDirectMessage, editOriginalResponse } from "./rest";
+import { sendDirectMessage, editOriginalResponse, discordFetch, getGuildId } from "./rest";
 import { getConfigNumber, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
@@ -122,6 +122,12 @@ async function processAdminCommand(interaction: DiscordInteraction) {
     case "test-flow": {
       const mode = getParamValue(params, "mode");
       await processTestFlow(interaction, actorId, typeof mode === "string" ? mode : "balanced");
+      return;
+    }
+    case "set-rank-emoji": {
+      const band = getParamValue(params, "band");
+      const imageAttachmentId = getParamValue(params, "image");
+      await processSetRankEmoji(interaction, actorId, typeof band === "string" ? band : null, typeof imageAttachmentId === "string" ? imageAttachmentId : null);
       return;
     }
     default:
@@ -552,4 +558,82 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
   });
 
   await logAdminAction(actorId, "test_flow", series.id, `mode=${mode}`);
+}
+
+// ---------------------------------------------------------------------------
+// /admin set-rank-emoji band:<band> image:<attachment> — uploads a custom emoji
+// to the guild and stores the emoji ID for the specified rank band. The emoji is
+// then used in embed displays (report summary, queue status, etc) instead of image URLs.
+// ---------------------------------------------------------------------------
+
+async function processSetRankEmoji(
+  interaction: DiscordInteraction,
+  actorId: string,
+  band: string | null,
+  imageAttachmentId: string | null,
+) {
+  if (!band || !["Iron", "Garnet", "Emerald", "Sapphire"].includes(band)) {
+    await editOriginalResponse(interaction.token, { content: "Invalid band." });
+    return;
+  }
+  if (!imageAttachmentId) {
+    await editOriginalResponse(interaction.token, { content: "No image provided." });
+    return;
+  }
+
+  const attachment = interaction.data?.resolved?.attachments?.[imageAttachmentId];
+  if (!attachment) {
+    await editOriginalResponse(interaction.token, { content: "Attachment not found." });
+    return;
+  }
+
+  try {
+    const guildId = interaction.guild_id ?? (await getGuildId());
+    if (!guildId) {
+      await editOriginalResponse(interaction.token, { content: "Could not determine guild ID." });
+      return;
+    }
+
+    // Fetch the image data from the attachment URL
+    const imageRes = await fetch(attachment.url);
+    if (!imageRes.ok) {
+      await editOriginalResponse(interaction.token, { content: "Failed to download image." });
+      return;
+    }
+    const imageBuffer = await imageRes.arrayBuffer();
+    const base64Image = Buffer.from(imageBuffer).toString("base64");
+    const dataUri = `data:${attachment.content_type || "image/png"};base64,${base64Image}`;
+
+    // Create the emoji on the guild
+    const createdEmoji = await discordFetch(`/guilds/${guildId}/emojis`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: `rank_${band.toLowerCase()}`,
+        image: dataUri,
+      }),
+    });
+
+    if (!createdEmoji || !createdEmoji.id) {
+      await editOriginalResponse(interaction.token, { content: "Failed to create emoji on the guild." });
+      return;
+    }
+
+    // Store the emoji ID in the database
+    const supabase = createAdminClient();
+    const discordId = interactionUserId(interaction);
+
+    await supabase.from("crl6mansqueuebot_rank_emoji").upsert({
+      band,
+      emoji_id: createdEmoji.id,
+      set_by: discordId,
+    } as any);
+
+    await logAdminAction(actorId, "set_rank_emoji", band, `emoji_id=${createdEmoji.id}`);
+    await editOriginalResponse(interaction.token, {
+      content: `Successfully set emoji for ${band} rank: <:rank_${band.toLowerCase()}:${createdEmoji.id}>`,
+    });
+  } catch (err) {
+    console.error(`Failed to set rank emoji for ${band}`, err);
+    await editOriginalResponse(interaction.token, { content: "An error occurred while setting the emoji." });
+  }
 }

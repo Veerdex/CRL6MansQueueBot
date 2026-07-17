@@ -2,14 +2,14 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR } from "./rest";
+import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, getRankEmoji } from "./rest";
 import { getConfigNumber } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
-import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
+import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
@@ -122,13 +122,19 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   const loserLines: string[] = [];
   const pushLine = (sp: (typeof allSeriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
 
+  // Pre-fetch all rank emoji to avoid async calls in loops
+  const emojiByBand = new Map<string | null, string>();
+  for (const band of [null, "Iron", "Garnet", "Emerald", "Sapphire"]) {
+    emojiByBand.set(band, await getRankEmoji(band));
+  }
+
   if (series.is_test_data) {
     // Test matches (/test-rank-match, /test-universal-match) never touch real player stats,
     // even when queue_type is "rank" — see CLAUDE.md, "Flag as test data".
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
-      pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${rankIconUrl}`);
+      const emoji = emojiByBand.get(p.band) || "❓";
+      pushLine(sp, `${emoji} <@${p.discord_id}> — test match, no stat changes`);
     }
   } else if (series.queue_type === "rank") {
     const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
@@ -166,11 +172,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const p = playersById.get(sp.player_id)!;
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
-      const rankLabel = getRankLabel(p.band);
-      const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
+      const emoji = emojiByBand.get(p.band) || "❓";
       pushLine(
         sp,
-        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} ${rankIconUrl}`,
+        `${emoji} <@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)}`,
       );
     }
   } else {
@@ -184,8 +189,8 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     );
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
-      pushLine(sp, `<@${p.discord_id}> — Universal Queue, no MMR change ${rankIconUrl}`);
+      const emoji = emojiByBand.get(p.band) || "❓";
+      pushLine(sp, `${emoji} <@${p.discord_id}> — Universal Queue, no MMR change`);
     }
   }
 
