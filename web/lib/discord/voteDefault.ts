@@ -27,16 +27,21 @@ async function processVoteDefault(interaction: DiscordInteraction, choiceRaw: st
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
     return;
   }
-  if (choiceRaw !== "balanced" && choiceRaw !== "captains") {
+  if (choiceRaw !== "balanced" && choiceRaw !== "captains" && choiceRaw !== "clear") {
     await editOriginalResponse(interaction.token, { content: "Invalid mode." });
     return;
   }
 
   const supabase = createAdminClient();
   const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
-  await supabase.from("crl6mansqueuebot_players").update({ vote_default: choiceRaw }).eq("id", player.id);
 
-  await editOriginalResponse(interaction.token, {
-    content: `Your default team-formation vote is now **${choiceRaw === "balanced" ? "Balanced" : "Captains"}** — still overridable per game.`,
-  });
+  if (choiceRaw === "clear") {
+    await supabase.from("crl6mansqueuebot_players").update({ vote_default: null }).eq("id", player.id);
+    await editOriginalResponse(interaction.token, { content: "Default vote cleared." });
+  } else {
+    await supabase.from("crl6mansqueuebot_players").update({ vote_default: choiceRaw }).eq("id", player.id);
+    await editOriginalResponse(interaction.token, {
+      content: `Your default team-formation vote is now **${choiceRaw === "balanced" ? "Balanced" : "Captains"}** — still overridable per game.`,
+    });
+  }
 }

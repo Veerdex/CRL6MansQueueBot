@@ -150,17 +150,18 @@ const commands = [
   },
   {
     name: "vote-default",
-    description: "Set your default team-formation vote (still overridable per game).",
+    description: "Set or clear your default team-formation vote.",
     type: 1,
     options: [
       {
         name: "mode",
-        description: "Your default vote.",
+        description: "Your default vote, or clear to remove.",
         type: STRING_OPTION,
         required: true,
         choices: [
           { name: "balanced", value: "balanced" },
           { name: "captains", value: "captains" },
+          { name: "clear", value: "clear" },
         ],
       },
     ],
@@ -225,25 +226,6 @@ const commands = [
       {
         name: "id",
         description: "Series id override — admins only, for subbing from outside the match channel.",
-        type: STRING_OPTION,
-        required: false,
-      },
-    ],
-  },
-  {
-    name: "abandon",
-    description: "Vote a player as having abandoned your current match (run inside the match channel).",
-    type: 1,
-    options: [
-      {
-        name: "target",
-        description: "The player to vote as abandoned.",
-        type: USER_OPTION,
-        required: true,
-      },
-      {
-        name: "id",
-        description: "Series id override — admins only, for voting from outside the match channel.",
         type: STRING_OPTION,
         required: false,
       },
