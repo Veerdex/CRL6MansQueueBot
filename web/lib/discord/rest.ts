@@ -117,8 +117,6 @@ export async function deleteOriginalResponse(interactionToken: string) {
 let rankEmojiCache: Map<string, string | null> | null = null;
 
 export async function getRankEmoji(band: string | null): Promise<string> {
-  if (!band) return "❓";
-
   // Load cache if not already loaded (once per instance)
   if (!rankEmojiCache) {
     rankEmojiCache = new Map();
@@ -136,6 +134,11 @@ export async function getRankEmoji(band: string | null): Promise<string> {
     }
   }
 
+  if (!band) {
+    const unrankedId = rankEmojiCache.get("Unranked");
+    return unrankedId ? `<:rank_unranked:${unrankedId}>` : "❓";
+  }
+
   const emojiId = rankEmojiCache.get(band);
   if (emojiId) {
     return `<:rank_${band.toLowerCase()}:${emojiId}>`;
@@ -147,6 +150,8 @@ export async function getRankEmoji(band: string | null): Promise<string> {
     Garnet: "💎",
     Emerald: "💚",
     Sapphire: "💙",
+    Prism: "⭐",
+    Unranked: "❓",
   };
   return fallbacks[band] || "❓";
 }

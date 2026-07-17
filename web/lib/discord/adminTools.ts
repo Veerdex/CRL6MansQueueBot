@@ -572,7 +572,7 @@ async function processSetRankEmoji(
   band: string | null,
   imageAttachmentId: string | null,
 ) {
-  if (!band || !["Iron", "Garnet", "Emerald", "Sapphire"].includes(band)) {
+  if (!band || !["Iron", "Garnet", "Emerald", "Sapphire", "Prism", "Unranked"].includes(band)) {
     await editOriginalResponse(interaction.token, { content: "Invalid band." });
     return;
   }

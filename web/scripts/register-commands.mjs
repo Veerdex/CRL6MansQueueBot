@@ -408,6 +408,8 @@ const commands = [
               { name: "Garnet", value: "Garnet" },
               { name: "Emerald", value: "Emerald" },
               { name: "Sapphire", value: "Sapphire" },
+              { name: "Prism (Top 10)", value: "Prism" },
+              { name: "Unranked", value: "Unranked" },
             ],
           },
           {
