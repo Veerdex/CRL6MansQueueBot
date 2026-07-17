@@ -95,6 +95,12 @@ export type SeriesVoteRow = {
   choice: VoteChoice;
 };
 
+export type CancelVoteRow = {
+  series_id: string;
+  player_id: string;
+  voted_at: string;
+};
+
 export type SubRequestRow = {
   series_id: string;
   leaving_player_id: string;
@@ -195,6 +201,12 @@ export type Database = {
         Row: SeriesVoteRow;
         Insert: SeriesVoteRow;
         Update: Partial<SeriesVoteRow>;
+        Relationships: [];
+      };
+      crl6mansqueuebot_cancel_votes: {
+        Row: CancelVoteRow;
+        Insert: Partial<CancelVoteRow> & Pick<CancelVoteRow, "series_id" | "player_id">;
+        Update: Partial<CancelVoteRow>;
         Relationships: [];
       };
       crl6mansqueuebot_sub_requests: {
