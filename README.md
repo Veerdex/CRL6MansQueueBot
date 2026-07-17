@@ -238,28 +238,31 @@ the 6 players, `/help` responds, and an admin command like `/admin audit-log` wo
 
 ## Player usage
 
-- **Queueing** — no slash command. `#universal-queue` and `#rank-queue` each have one
-  persistent bot message with **Join Queue** / **Leave Queue** buttons and a live list of
-  who's queued. Both queues are open immediately, no placement requirement — Rank Queue
-  results affect your MMR from your very first game. You can sit in both queues at once;
-  popping one auto-removes you from the other.
-- **On pop (6/6)** — the bot creates a private match category (text channel + a voice
-  channel per team) visible only to the 6 players (plus admins). Vote **Balanced** or
-  **Captains** using the buttons that appear; your `/vote-default` preference auto-casts
-  if you have one set, but you can still override it per game.
-  - `/vote-default mode:<balanced|captains>` — set your default vote.
+- **Queueing** — slash commands `/q` (or `/queue`) to join, `/l` (or `/leave`) to leave.
+  `#universal-queue` and `#rank-queue` each have one persistent bot message showing the
+  current queue list and a **Join/Leave** option. Both queues are open immediately, no
+  placement requirement — Rank Queue results affect your MMR from your very first game.
+  You can sit in both queues at once; popping one auto-removes you from the other.
+- **On pop (6/6)** — the bot creates a private match category with two voice channels
+  (Team A and Team B) visible only to the 6 players (plus admins). Vote **Balanced** or
+  **Captains** using the buttons that appear in the queue channel; your `/vote-default`
+  preference auto-casts if you have one set, but you can still override it per game.
+  - `/vote-default mode:<balanced|captains|clear>` — set your default vote, or clear it.
+- **Balanced split** — if Balanced wins, the bot computes the optimal 3v3 split
+  (smallest MMR-average difference between teams) instantly.
 - **Captains draft** — if Captains wins, the two highest-MMR players in the lobby become
-  captains and pick via buttons: Captain 1 picks one player, Captain 2 picks two, and the
-  last player auto-assigns to Captain 1's team.
-- **`/report`** — run inside your match's text channel once the game is over. Result is
-  inferred from your own team (no win/lose param). Settles immediately, no confirmation
-  needed from the other team.
+  captains and pick via buttons in DM: Captain 1 picks one player, Captain 2 picks two,
+  and the last player auto-assigns to Captain 1's team. (If a captain has DMs closed, the
+  bot posts the pick prompt in the queue channel as a fallback.)
+- **`/report result:<win|loss>`** — once the game is over, report your team's result from
+  anywhere (no channel restriction). Settles immediately, no confirmation needed from the
+  other team. Rank Queue series update MMR; Universal Queue series are unranked but still
+  count toward placement and season stats.
 - **`/sub nominee:<@user>`** — run inside your match channel if you need to leave
   mid-series; nominates a specific replacement, who must accept via a button before the
-  swap happens.
-- **`/abandon target:<@user>`** — vote a player as having abandoned the match. Once 3 of
-  the other 5 players vote the same target, the series is cancelled (void, no MMR change)
-  immediately rather than waiting out the full timeout.
+  swap happens. The sub inherits your team and plays out the rest of the series.
+- **`/admin cancel-series [id:<series_id>]`** — admin-only: abruptly end a match.
+  Run inside the channel with no `id:`, or provide `id:` from elsewhere.
 - **`/help`** — lists available commands (shows an extra admin section if you have admin
   access).
 
@@ -275,15 +278,14 @@ role is granted, only the server owner has admin access.
 - **`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Placed|Prism> role:<@role>`** — map a
   band (or the `Placed` gate, or the season-end-only `Prism` Top 10 tier) to a Discord
   role the bot grants/revokes automatically on change.
-- **`/newseason`** — closes the current season (soft-reset MMR via median compression,
-  snapshot final standings, sync the Prism role) and opens the next one. Manual trigger
-  only — there's no scheduled monthly rollover.
-- **`/end`** — abruptly ends + deletes whichever match you're currently sitting in (no
-  `id:` needed).
+- **`/newseason`** — closes the current season (soft-reset MMR via hyperbolic decay,
+  snapshot final standings, sync the Prism Top 10 role) and opens the next one. Manual
+  trigger only — there's no scheduled monthly rollover.
 - **`/admin unreport id:<series_id>`** — reverses a reported series and unwinds the
   MMR/games-played changes it caused for all 6 players.
-- **`/admin cancel-series [id:<series_id>]`** — voids an in-progress series. Run inside
-  the match channel, or pass `id:` from elsewhere.
+- **`/admin cancel-series [id:<series_id>]`** — voids an in-progress (forming or active)
+  series. Run inside the match channel with no `id:` to cancel whichever match you're
+  sitting in, or pass `id:` from elsewhere to cancel any series by id.
 - **`/admin adjust-mmr target:<@user> [delta:<n>|mmr:<n>]`** — manually adjust a player's
   MMR. Provide exactly one of `delta:` (relative) or `mmr:` (absolute).
 - **`/admin force-leave target:<@user>`** — dequeue a player and/or void any active series
@@ -312,3 +314,14 @@ synthetic test data (`is_test_data = true`) to exercise the leaderboard boards w
 live Discord community generating real games. Test-data players/series are excluded from
 band recomputes and season close, so they can't pollute real standings. Remove or re-gate
 this panel before this stops being useful for verification.
+
+## Known limitations & future features
+
+- **Queue timeout** — players can sit in a queue indefinitely. A 30-minute auto-leave after
+  no pop would be a nice UX improvement (infrastructure is ready: `queue_members.joined_at`
+  exists, just needs sweep-route logic).
+- **Dispute resolution** — no formal appeal/review process for abandoned series or
+  incorrect reports (besides admin manually running `/admin unreport`).
+- **Website features** — the leaderboard is the only user-facing page. Season stats,
+  all-time stats, and detailed player profiles are implemented but basic. Future: add match
+  history, team statistics, replay links, etc.
