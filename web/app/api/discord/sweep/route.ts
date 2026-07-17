@@ -192,7 +192,7 @@ export async function POST(request: Request) {
   return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired });
 }
 
-async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, dmMessage: string) {
+async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, message: string) {
   const { error } = await supabase
     .from("crl6mansqueuebot_series")
     .update({ status: "void" })
@@ -203,22 +203,12 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
     return;
   }
 
-  // DM the players directly rather than posting into queue_channel_id — that channel gets
-  // deleted a few lines below, so a channel message would go unread by anyone not already
-  // watching in the few seconds before deletion.
-  const { data: lobbyRows } = await supabase
-    .from("crl6mansqueuebot_series_lobby")
-    .select("player_id")
-    .eq("series_id", series.id);
-  if (lobbyRows && lobbyRows.length > 0) {
-    const { data: players } = await supabase
-      .from("crl6mansqueuebot_players")
-      .select("discord_id")
-      .in(
-        "id",
-        lobbyRows.map((r) => r.player_id),
-      );
-    await Promise.all((players ?? []).map((p) => sendDirectMessage(p.discord_id, dmMessage)));
+  // Post message to the queue channel
+  if (series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content: message }),
+    }).catch((err) => console.error(`Failed to post series void message to queue channel`, err));
   }
 
   await clearPendingSeriesState(supabase, series.id);
