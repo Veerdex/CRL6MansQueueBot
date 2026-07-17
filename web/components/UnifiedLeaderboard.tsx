@@ -20,7 +20,7 @@ interface UnifiedLeaderboardProps {
 function viewButtonClass(active: boolean) {
   return active
     ? "bg-brand-blue text-white shadow-lg font-semibold"
-    : "bg-white/5 text-brand-blue/60 hover:bg-white/15 hover:text-brand-blue/90 transition-all";
+    : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600 hover:text-zinc-200 transition-all";
 }
 
 export default function UnifiedLeaderboard({
