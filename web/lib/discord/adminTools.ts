@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendDirectMessage, editOriginalResponse, discordFetch, getGuildId } from "./rest";
+import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, discordFetch, getGuildId } from "./rest";
 import { getConfigNumber, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
@@ -543,10 +543,14 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
     }
   }
 
-  // Final message telling admin to join
+  // Final message telling admin to join, then delete it so it auto-dismisses
   await editOriginalResponse(interaction.token, {
     content: `✅ Test bot queue is ready (${addedBots.length}/5 bots added)!\n\n**Now use /q to join as the 6th player and start the match.**\n\nThe vote screen with **${mode}** buttons will appear automatically when all 6 players are ready.`,
   });
+
+  // Delete the deferred response so it auto-dismisses after a short delay
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await deleteOriginalResponse(interaction.token);
 
   await logAdminAction(actorId, "test_flow", "queue_setup", `${queueType} queue, mode=${mode} with 5 test bots`);
 }
