@@ -6,9 +6,9 @@ import { sendDirectMessage, editOriginalResponse } from "./rest";
 import { getConfigNumber, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
-import { refreshQueueMessage } from "./queue";
+import { refreshQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { claimSeriesVoid, closeMatchChannelsAfterDelay } from "./matchChannels";
-import { interactionUserId, type CommandOption, type DiscordInteraction } from "./types";
+import { interactionUserId, interactionDisplayName, type CommandOption, type DiscordInteraction } from "./types";
 import type { SeriesRow, PlayerRow } from "@/lib/supabase/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -126,29 +126,6 @@ async function processAdminCommand(interaction: DiscordInteraction) {
 }
 
 // ---------------------------------------------------------------------------
-// /end — same as /admin cancel-series but always channel-inferred, no id: param, for
-// abruptly ending + deleting the match a player is currently sitting in. See CLAUDE.md,
-// "Admin commands".
-// ---------------------------------------------------------------------------
-
-export function handleEndCommand(interaction: DiscordInteraction) {
-  return deferredEphemeral(() => processEndCommand(interaction));
-}
-
-async function processEndCommand(interaction: DiscordInteraction) {
-  const actorId = interactionUserId(interaction);
-  if (!actorId) {
-    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
-    return;
-  }
-  if (!(await hasAdminAccess(interaction))) {
-    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
-    return;
-  }
-  await processCancelSeries(interaction, actorId, null);
-}
-
-// ---------------------------------------------------------------------------
 // /admin unreport id:<series_id> — reverses a reported series back to 'void' (reusing the
 // existing status rather than adding a new one; the audit log entry is what distinguishes an
 // admin-corrected void from a genuine timeout/abandon void). Unwinds each affected player's
@@ -203,33 +180,35 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
 }
 
 // ---------------------------------------------------------------------------
-// /admin cancel-series [id] and /end — void an in-progress (forming/active) series. Shares
+// /admin cancel-series [id] — void an in-progress (forming/active) series. Shares
 // claimSeriesVoid/closeMatchChannelsAfterDelay (matchChannels.ts) with /admin force-leave's
 // active-series case, and the same reply-then-delay ordering /report and /abandon use so the
-// admin's ephemeral confirmation isn't blocked on the 30s closing warning.
+// admin's ephemeral confirmation isn't blocked on the 30s closing warning. With no id:, resolves
+// to whichever match the calling admin is currently sitting in (via membership, not channel —
+// queue_channel_id is a shared rank/universal queue channel, so multiple concurrently active
+// series can share it); an admin who isn't a participant must pass id: explicitly.
 // ---------------------------------------------------------------------------
 
-async function resolveSeriesForAdmin(supabase: AdminClient, interaction: DiscordInteraction, seriesIdOverride: string | null): Promise<SeriesRow | null> {
+async function resolveSeriesForAdmin(
+  supabase: AdminClient,
+  interaction: DiscordInteraction,
+  seriesIdOverride: string | null,
+  actorId: string,
+): Promise<SeriesRow | null> {
   if (seriesIdOverride) {
     const { data } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesIdOverride).maybeSingle();
     return data;
   }
-  if (!interaction.channel_id) return null;
-  const { data } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("*")
-    .eq("text_channel_id", interaction.channel_id)
-    .in("status", ["forming", "active"])
-    .maybeSingle();
-  return data;
+  const caller = await getOrCreatePlayer(supabase, actorId, interactionDisplayName(interaction));
+  return getLockedSeriesForPlayer(supabase, caller.id);
 }
 
 async function processCancelSeries(interaction: DiscordInteraction, actorId: string, seriesIdOverride: string | null) {
   const supabase = createAdminClient();
-  const series = await resolveSeriesForAdmin(supabase, interaction, seriesIdOverride);
+  const series = await resolveSeriesForAdmin(supabase, interaction, seriesIdOverride, actorId);
   if (!series) {
     await editOriginalResponse(interaction.token, {
-      content: seriesIdOverride ? "Series not found." : "Run this inside a match channel, or pass id: for /admin cancel-series.",
+      content: seriesIdOverride ? "Series not found." : "You're not part of an active match — pass id: to cancel a different one.",
     });
     return;
   }

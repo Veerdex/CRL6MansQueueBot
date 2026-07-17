@@ -11,14 +11,13 @@ import {
 } from "@/lib/discord/adminCommands";
 import { handleNewSeasonCommand } from "@/lib/discord/seasons";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
-import { handleVoteButton, handleDraftPickButton, handleCancelButton } from "@/lib/discord/teamFormation";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleSubAcceptButton } from "@/lib/discord/sub";
-import { handleAbandonCommand } from "@/lib/discord/abandon";
+import { handleVoteButton, handleCancelButton, handleDraftPickButton } from "@/lib/discord/teamFormation";
+import type { VoteChoice } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand } from "@/lib/discord/bands";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
-import type { VoteChoice } from "@/lib/supabase/types";
 
 // /report posts a public result message, then sleeps 30s before deleting the match channels
 // (see CLAUDE.md, "Series end") — comfortably inside this, but well past the ~10s a plain
@@ -46,20 +45,20 @@ export async function POST(request: Request) {
     const customId = interaction.data?.custom_id ?? "";
     const [action, arg1, arg2] = customId.split(":");
 
-    if (action === "vote" && arg1 && (arg2 === "balanced" || arg2 === "captains")) {
-      return NextResponse.json(handleVoteButton(interaction, arg1, arg2 as VoteChoice));
+    if (action === "sub_accept" && arg1 && arg2) {
+      return NextResponse.json(handleSubAcceptButton(interaction, arg1, arg2));
     }
 
-    if (action === "draft_pick" && arg1 && arg2) {
-      return NextResponse.json(handleDraftPickButton(interaction, arg1, arg2));
+    if (action === "vote" && arg1 && (arg2 === "balanced" || arg2 === "captains")) {
+      return NextResponse.json(handleVoteButton(interaction, arg1, arg2 as VoteChoice));
     }
 
     if (action === "cancel" && arg1) {
       return NextResponse.json(handleCancelButton(interaction, arg1));
     }
 
-    if (action === "sub_accept" && arg1 && arg2) {
-      return NextResponse.json(handleSubAcceptButton(interaction, arg1, arg2));
+    if (action === "draft_pick" && arg1 && arg2) {
+      return NextResponse.json(handleDraftPickButton(interaction, arg1, arg2));
     }
 
     return NextResponse.json({
@@ -121,10 +120,6 @@ export async function POST(request: Request) {
 
     if (commandName === "sub") {
       return NextResponse.json(handleSubCommand(interaction));
-    }
-
-    if (commandName === "abandon") {
-      return NextResponse.json(handleAbandonCommand(interaction));
     }
 
     if (commandName === "setbandrole") {

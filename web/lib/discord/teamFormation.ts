@@ -346,7 +346,7 @@ async function beginCaptainsDraft(supabase: AdminClient, guildId: string, series
 // resolve in one pass.
 async function autoAdvanceDraftIfFake(supabase: AdminClient, guildId: string, seriesId: string) {
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
-  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.text_channel_id || !series.formation_message_id) return;
+  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) return;
 
   const lobby = await fetchLobbyRowsWithPlayers(supabase, seriesId);
   const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
@@ -385,13 +385,13 @@ async function autoAdvanceDraftIfFake(supabase: AdminClient, guildId: string, se
       await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("series_id", seriesId).eq("player_id", lastRemaining.row.player_id);
       teamAssignments.set(lastRemaining.row.player_id, "A");
     }
-    await finalizeTeams(supabase, guildId, seriesId, series.text_channel_id, series.formation_message_id, allMembers, teamAssignments);
+    await finalizeTeams(supabase, guildId, seriesId, series.queue_channel_id, series.formation_message_id, allMembers, teamAssignments);
     return;
   }
 
   const nextTurn = deriveTurnCaptain(newAssignedCount)!;
   const remaining = nonCaptainRows.filter((x) => x.row.player_id !== target.row.player_id && !x.row.team).map((x) => x.player);
-  await sendDraftPickPrompt(series.text_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
+  await sendDraftPickPrompt(series.queue_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
 
   await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
 }
@@ -484,7 +484,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const guildId = interaction.guild_id ?? (await getGuildId());
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
-  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.text_channel_id || !series.formation_message_id) {
+  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) {
     await editOriginalResponse(interaction.token, { content: "The draft isn't active for this match." });
     return;
   }
@@ -543,11 +543,11 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
       await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("series_id", seriesId).eq("player_id", lastRemaining.row.player_id);
       teamAssignments.set(lastRemaining.row.player_id, "A");
     }
-    await finalizeTeams(supabase, guildId, seriesId, series.text_channel_id, series.formation_message_id, allMembers, teamAssignments);
+    await finalizeTeams(supabase, guildId, seriesId, series.queue_channel_id, series.formation_message_id, allMembers, teamAssignments);
   } else {
     const nextTurn = deriveTurnCaptain(newAssignedCount)!;
     const remaining = nonCaptainRows.filter((x) => x.row.player_id !== pickedPlayerId && !x.row.team).map((x) => x.player);
-    await sendDraftPickPrompt(series.text_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
+    await sendDraftPickPrompt(series.queue_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
     await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
   }
 }

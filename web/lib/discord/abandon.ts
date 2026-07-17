@@ -4,8 +4,9 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse } from "./rest";
 import { hasAdminAccess } from "./admin";
+import { getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
-import { interactionUserId, type DiscordInteraction } from "./types";
+import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -42,20 +43,17 @@ async function resolveSeriesForCommand(
   supabase: AdminClient,
   interaction: DiscordInteraction,
   seriesIdOverride: string | null,
+  playerId: string,
 ): Promise<SeriesRow | null | "forbidden"> {
   if (seriesIdOverride) {
     if (!(await hasAdminAccess(interaction))) return "forbidden";
     const { data } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesIdOverride).maybeSingle();
     return data;
   }
-  if (!interaction.channel_id) return null;
-  const { data } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("*")
-    .eq("text_channel_id", interaction.channel_id)
-    .in("status", ["forming", "active"])
-    .maybeSingle();
-  return data;
+  // Resolved by the caller's own membership, not the channel — queue_channel_id is a shared
+  // rank/universal queue channel, so multiple concurrently active series can share it. See
+  // CLAUDE.md, "Queue channels".
+  return getLockedSeriesForPlayer(supabase, playerId);
 }
 
 async function processAbandon(interaction: DiscordInteraction, seriesIdOverride: string | null, targetDiscordId: string | null) {
@@ -70,13 +68,14 @@ async function processAbandon(interaction: DiscordInteraction, seriesIdOverride:
     return;
   }
 
-  const series = await resolveSeriesForCommand(supabase, interaction, seriesIdOverride);
+  const caller = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+  const series = await resolveSeriesForCommand(supabase, interaction, seriesIdOverride, caller.id);
   if (series === "forbidden") {
     await editOriginalResponse(interaction.token, { content: "Only admins can report abandonment by id: from outside the match channel." });
     return;
   }
   if (!series) {
-    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "No active match to report abandonment in this channel." });
+    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "You're not part of an active match." });
     return;
   }
   if (series.status === "forming") {
@@ -143,8 +142,8 @@ async function processAbandon(interaction: DiscordInteraction, seriesIdOverride:
   await clearPendingSeriesState(supabase, series.id);
   await editOriginalResponse(interaction.token, { content: "Vote recorded — series cancelled." });
 
-  if (series.text_channel_id) {
-    await discordFetch(`/channels/${series.text_channel_id}/messages`, {
+  if (series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
       method: "POST",
       body: JSON.stringify({
         content: `**Series cancelled** — <@${targetDiscordId}> was voted as abandoned by ${ABANDON_VOTE_THRESHOLD} teammates. No MMR change.\n\nThis channel will close in 30 seconds.`,

@@ -85,9 +85,11 @@ async function processTestMatch(interaction: DiscordInteraction, queueType: Queu
   const fakePlayers = await createFakePlayers(supabase, adminPlayer);
   const members = [adminPlayer, ...fakePlayers];
 
+  // Uses the command channel as the "queue channel" for this test series, same as handlePop
+  // does with the real queue channel — see CLAUDE.md's queue_channel_id migration note.
   const { data: series, error: seriesError } = await supabase
     .from("crl6mansqueuebot_series")
-    .insert({ season_id: season.id, queue_type: queueType, status: "forming", is_test_data: true })
+    .insert({ season_id: season.id, queue_type: queueType, status: "forming", is_test_data: true, queue_channel_id: interaction.channel_id ?? null })
     .select("id")
     .single();
   if (seriesError || !series) {
@@ -109,14 +111,14 @@ async function processTestMatch(interaction: DiscordInteraction, queueType: Queu
   // so the admin's own click through the real button decides the outcome, exercising both the
   // vote UI and whichever team-formation path they pick.
   const { data: seriesRow } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", series.id).maybeSingle();
-  if (seriesRow?.text_channel_id && seriesRow.formation_message_id) {
+  if (seriesRow?.queue_channel_id && seriesRow.formation_message_id) {
     const voteChoices: ("balanced" | "captains")[] = ["balanced", "balanced", "captains", "captains"];
     for (let i = 0; i < voteChoices.length; i++) {
       await castVote(
         supabase,
         interaction.guild_id,
         series.id,
-        seriesRow.text_channel_id,
+        seriesRow.queue_channel_id,
         seriesRow.formation_message_id,
         members,
         fakePlayers[i].id,
@@ -179,7 +181,7 @@ async function processEndTest(interaction: DiscordInteraction) {
   const { data: series } = await supabase
     .from("crl6mansqueuebot_series")
     .select("*")
-    .eq("text_channel_id", interaction.channel_id)
+    .eq("queue_channel_id", interaction.channel_id)
     .eq("is_test_data", true)
     .in("status", ["forming", "active"])
     .maybeSingle();

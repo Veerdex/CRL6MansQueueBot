@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags, MessageComponentTypes, ButtonStyleTypes } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse } from "./rest";
-import { getOrCreatePlayer, isPlayerLockedInActiveSeries } from "./queue";
+import { getOrCreatePlayer, isPlayerLockedInActiveSeries, getLockedSeriesForPlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { VIEW_CHANNEL, CONNECT, MEMBER_TYPE } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -34,20 +34,17 @@ async function resolveSeriesForCommand(
   supabase: AdminClient,
   interaction: DiscordInteraction,
   seriesIdOverride: string | null,
+  playerId: string,
 ): Promise<SeriesRow | null | "forbidden"> {
   if (seriesIdOverride) {
     if (!(await hasAdminAccess(interaction))) return "forbidden";
     const { data } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesIdOverride).maybeSingle();
     return data;
   }
-  if (!interaction.channel_id) return null;
-  const { data } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("*")
-    .eq("text_channel_id", interaction.channel_id)
-    .in("status", ["forming", "active"])
-    .maybeSingle();
-  return data;
+  // Resolved by the caller's own membership, not the channel — queue_channel_id is a shared
+  // rank/universal queue channel, so multiple concurrently active series can share it. See
+  // CLAUDE.md, "Queue channels".
+  return getLockedSeriesForPlayer(supabase, playerId);
 }
 
 async function processSub(interaction: DiscordInteraction, seriesIdOverride: string | null, nomineeDiscordId: string | null) {
@@ -62,13 +59,14 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  const series = await resolveSeriesForCommand(supabase, interaction, seriesIdOverride);
+  const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+  const series = await resolveSeriesForCommand(supabase, interaction, seriesIdOverride, player.id);
   if (series === "forbidden") {
     await editOriginalResponse(interaction.token, { content: "Only admins can sub by id: from outside the match channel." });
     return;
   }
   if (!series) {
-    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "No active match to sub in this channel." });
+    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "You're not part of an active match." });
     return;
   }
   if (series.status === "forming") {
@@ -79,7 +77,7 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     await editOriginalResponse(interaction.token, { content: "This match has already been settled." });
     return;
   }
-  if (!series.text_channel_id) {
+  if (!series.queue_channel_id) {
     await editOriginalResponse(interaction.token, { content: "This match's channel is missing — ask an admin to check it." });
     return;
   }
@@ -90,7 +88,6 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
   const leavingRow = seriesPlayers.find((sp) => sp.player_id === player.id);
   if (!leavingRow) {
     await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
@@ -121,7 +118,7 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  const message = (await discordFetch(`/channels/${series.text_channel_id}/messages`, {
+  const message = (await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
     method: "POST",
     body: JSON.stringify({
       content: `<@${nomineeDiscordId}> — <@${discordId}> wants to sub out and nominated you to take their seat (Team ${leavingRow.team}). Accept to join the match.`,
@@ -236,13 +233,13 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
   // vote wrongly void the series after they've already been properly replaced.
   await supabase.from("crl6mansqueuebot_abandon_votes").delete().eq("series_id", seriesId).or(`voter_player_id.eq.${leavingPlayerId},target_player_id.eq.${leavingPlayerId}`);
 
-  if (series.text_channel_id) {
-    await discordFetch(`/channels/${series.text_channel_id}/permissions/${nominee.discord_id}`, {
+  if (series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/permissions/${nominee.discord_id}`, {
       method: "PUT",
       body: JSON.stringify({ type: MEMBER_TYPE, allow: VIEW_CHANNEL.toString() }),
     }).catch((err) => console.error(`Failed to grant text channel access to sub ${nominee.discord_id}`, err));
     if (leavingPlayer) {
-      await discordFetch(`/channels/${series.text_channel_id}/permissions/${leavingPlayer.discord_id}`, { method: "DELETE" }).catch((err) =>
+      await discordFetch(`/channels/${series.queue_channel_id}/permissions/${leavingPlayer.discord_id}`, { method: "DELETE" }).catch((err) =>
         console.error(`Failed to revoke text channel access from ${leavingPlayer.discord_id}`, err),
       );
     }
@@ -267,8 +264,8 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
     }
   }
 
-  if (subRequest.message_id && series.text_channel_id) {
-    await discordFetch(`/channels/${series.text_channel_id}/messages/${subRequest.message_id}`, {
+  if (subRequest.message_id && series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages/${subRequest.message_id}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: `<@${nominee.discord_id}> accepted and has subbed in for <@${leavingPlayer?.discord_id ?? "?"}> on Team ${team}.`,

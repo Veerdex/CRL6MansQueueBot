@@ -41,7 +41,7 @@ export type SeriesRow = {
   created_at: string;
   reported_at: string | null;
   category_id: string | null;
-  text_channel_id: string | null;
+  queue_channel_id: string | null;
   voice_channel_a_id: string | null;
   voice_channel_b_id: string | null;
   vote_result: VoteChoice | null;

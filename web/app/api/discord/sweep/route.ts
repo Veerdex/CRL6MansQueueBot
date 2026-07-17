@@ -83,7 +83,10 @@ export async function POST(request: Request) {
     .select("*")
     .eq("status", "reported")
     .lt("reported_at", reportedCutoff)
-    .or("category_id.not.is.null,text_channel_id.not.is.null,voice_channel_a_id.not.is.null,voice_channel_b_id.not.is.null");
+    // queue_channel_id deliberately excluded — it's the shared rank/universal queue channel,
+    // always populated and never cleared, not a per-match resource deleteMatchChannels cleans
+    // up. Including it here would re-match (and no-op re-sweep) every reported series forever.
+    .or("category_id.not.is.null,voice_channel_a_id.not.is.null,voice_channel_b_id.not.is.null");
 
   if (orphanError) {
     console.error("Sweep: failed to fetch orphaned reported-series channels", orphanError);
@@ -123,9 +126,9 @@ export async function POST(request: Request) {
     if (!claimed || claimed.length === 0) continue;
 
     if (request.message_id) {
-      const { data: series } = await supabase.from("crl6mansqueuebot_series").select("text_channel_id").eq("id", request.series_id).maybeSingle();
-      if (series?.text_channel_id) {
-        await discordFetch(`/channels/${series.text_channel_id}/messages/${request.message_id}`, {
+      const { data: series } = await supabase.from("crl6mansqueuebot_series").select("queue_channel_id").eq("id", request.series_id).maybeSingle();
+      if (series?.queue_channel_id) {
+        await discordFetch(`/channels/${series.queue_channel_id}/messages/${request.message_id}`, {
           method: "PATCH",
           body: JSON.stringify({
             content: `Sub request to <@${request.nominee_discord_id}> expired without a response.`,
@@ -151,7 +154,7 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
     return;
   }
 
-  // DM the players directly rather than posting into text_channel_id — that channel gets
+  // DM the players directly rather than posting into queue_channel_id — that channel gets
   // deleted a few lines below, so a channel message would go unread by anyone not already
   // watching in the few seconds before deletion.
   const { data: lobbyRows } = await supabase

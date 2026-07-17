@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { PlayerRow, QueueType } from "@/lib/supabase/types";
+import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
 import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -168,6 +168,30 @@ export async function isPlayerLockedInActiveSeries(supabase: AdminClient, player
   return (activeSeries?.length ?? 0) > 0;
 }
 
+// Same lobby∪series_players lookup as isPlayerLockedInActiveSeries, but returns the series
+// row itself rather than a boolean — used by /sub and /abandon to resolve "the caller's
+// match" by membership instead of by channel. queue_channel_id is a shared rank/universal
+// queue channel, not a per-match channel, so multiple concurrently forming/active series can
+// have the same queue_channel_id; a player can only be locked into one at a time, so
+// membership is the unambiguous key (mirrors report.ts's own resolution, which never used
+// channel inference at all).
+export async function getLockedSeriesForPlayer(supabase: AdminClient, playerId: string): Promise<SeriesRow | null> {
+  const [{ data: lobbyRows }, { data: seriesPlayerRows }] = await Promise.all([
+    supabase.from("crl6mansqueuebot_series_lobby").select("series_id").eq("player_id", playerId),
+    supabase.from("crl6mansqueuebot_series_players").select("series_id").eq("player_id", playerId),
+  ]);
+  const seriesIds = [...new Set([...(lobbyRows ?? []).map((r) => r.series_id), ...(seriesPlayerRows ?? []).map((r) => r.series_id)])];
+  if (seriesIds.length === 0) return null;
+
+  const { data } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .in("id", seriesIds)
+    .in("status", ["forming", "active"])
+    .maybeSingle();
+  return data;
+}
+
 // ---------------------------------------------------------------------------
 // /q, /queue (join) and /l, /leave (leave) — channel-inferred queue type via the
 // crl6mansqueuebot_queue_messages mapping set up by /setqueuechannel. Replies ephemerally to
@@ -235,7 +259,6 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       return;
     }
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`);
-    await editOriginalResponse(interaction.token, { content: "Left queue." });
     return;
   }
 
@@ -272,10 +295,8 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
   if (result?.status === "joined" && result.queue_size >= 6) {
     const guildId = interaction.guild_id ?? (await getGuildId());
     await handlePop(supabase, queueType, guildId, channelId);
-    await editOriginalResponse(interaction.token, { content: "Joined queue — match found!" });
   } else {
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
-    await editOriginalResponse(interaction.token, { content: "Joined queue." });
   }
 }
 
@@ -303,7 +324,7 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
 
   const { data: series, error: seriesError } = await supabase
     .from("crl6mansqueuebot_series")
-    .insert({ season_id: season.id, queue_type: queueType, status: "forming" })
+    .insert({ season_id: season.id, queue_type: queueType, status: "forming", queue_channel_id: queueChannelId })
     .select("id")
     .single();
   if (seriesError || !series) {
