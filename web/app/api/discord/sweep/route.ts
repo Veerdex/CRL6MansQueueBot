@@ -203,11 +203,18 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
     return;
   }
 
-  // Post message to the queue channel
+  // Post error embed to the queue channel
   if (series.queue_channel_id) {
     await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content: message }),
+      body: JSON.stringify({
+        embeds: [
+          {
+            color: 0xef476f,
+            description: message,
+          },
+        ],
+      }),
     }).catch((err) => console.error(`Failed to post series void message to queue channel`, err));
   }
 
