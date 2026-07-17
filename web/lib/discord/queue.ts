@@ -436,7 +436,17 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
     }),
   }).catch((err) => console.error(`Failed to post pop notification in queue channel`, err));
 
-  await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
+  try {
+    await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
+  } catch (err) {
+    console.error(`Failed to start team formation for series ${seriesId}`, err);
+    await discordFetch(`/channels/${queueChannelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: `**Error:** Failed to start team formation. Ask an admin to check logs.`,
+      }),
+    }).catch((logErr) => console.error(`Failed to post error message`, logErr));
+  }
 }
 
 // ---------------------------------------------------------------------------
