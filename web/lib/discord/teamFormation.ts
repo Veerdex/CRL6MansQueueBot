@@ -8,7 +8,7 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, editOriginalResponse, sendDirectMessage, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, editOriginalResponse, deleteOriginalResponse, sendDirectMessage, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds } from "./admin";
 import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -183,7 +183,7 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
 
   const members = await fetchLobbyMembers(supabase, seriesId);
   await castVote(supabase, interaction.guild_id, seriesId, interaction.channel_id, series.formation_message_id, members, player.id, choice);
-  await editOriginalResponse(interaction.token, { content: `Voted ${choice === "balanced" ? "Balanced" : "Captains"}.` });
+  await deleteOriginalResponse(interaction.token);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
       await supabase.from("crl6mansqueuebot_series_votes").delete().eq("series_id", seriesId);
       await supabase.from("crl6mansqueuebot_cancel_votes").delete().eq("series_id", seriesId);
       await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
-      await editOriginalResponse(interaction.token, { content: "Match cancelled." });
+      await deleteOriginalResponse(interaction.token);
       return;
     }
   }
@@ -257,7 +257,7 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
     body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
   });
 
-  await editOriginalResponse(interaction.token, { content: "Vote to cancel recorded." });
+  await deleteOriginalResponse(interaction.token);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +578,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
     return;
   }
 
-  await editOriginalResponse(interaction.token, { content: `You picked <@${target.player.discord_id}>.` });
+  await deleteOriginalResponse(interaction.token);
 
   const newAssignedCount = assignedCount + 1;
   const allMembers = lobby.map((x) => x.player);
