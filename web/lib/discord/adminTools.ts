@@ -250,7 +250,6 @@ async function processCancelSeries(interaction: DiscordInteraction, actorId: str
 
 // ---------------------------------------------------------------------------
 // /admin cancel-matches — cancels all active and forming series at once.
-// Posts an embed message to each affected queue channel.
 // ---------------------------------------------------------------------------
 
 async function processCancelMatches(interaction: DiscordInteraction, actorId: string) {
@@ -269,33 +268,14 @@ async function processCancelMatches(interaction: DiscordInteraction, actorId: st
 
   const seriesList = activeSeries as SeriesRow[];
   let cancelledCount = 0;
-  const channelsNotified = new Set<string>();
 
   // Cancel each series
   for (const series of seriesList) {
     const ok = await claimSeriesVoid(supabase, series, "**All matches cancelled by an admin.** No MMR change.");
     if (ok) {
       cancelledCount++;
-      if (series.queue_channel_id) {
-        channelsNotified.add(series.queue_channel_id);
-      }
       await closeMatchChannelsAfterDelay(supabase, series);
     }
-  }
-
-  // Post notification to each affected queue channel
-  for (const channelId of channelsNotified) {
-    await discordFetch(`/channels/${channelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        embeds: [
-          {
-            color: 0xef476f,
-            description: "**All matches cancelled by an admin.** No MMR change.",
-          },
-        ],
-      }),
-    }).catch((err) => console.error(`Failed to post cancellation message to queue channel ${channelId}`, err));
   }
 
   await logAdminAction(actorId, "cancel_matches", "all", `cancelled=${cancelledCount}`);
