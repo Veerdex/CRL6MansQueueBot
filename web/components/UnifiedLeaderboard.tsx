@@ -93,48 +93,52 @@ export default function UnifiedLeaderboard({
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-10">
-      <h1 className="mb-1 text-2xl font-bold text-brand-blue dark:text-white">Leaderboard</h1>
+      {/* Settings Row */}
+      <div className="mb-6 flex flex-wrap items-center gap-4">
+        {/* View Mode Selection */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-brand-blue/60">View:</span>
+          {(["top-players", "main", "all-time"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(viewMode === mode)}`}
+              onClick={() => setViewMode(mode)}
+            >
+              {mode === "top-players" && "Top Players"}
+              {mode === "main" && "Main"}
+              {mode === "all-time" && "All-Time Stats"}
+            </button>
+          ))}
+        </div>
 
-      {/* View Mode Selection */}
-      <div className="mb-6 flex flex-wrap items-center gap-2">
-        <span className="text-sm text-brand-blue/60">View:</span>
-        {(["top-players", "main", "all-time"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(viewMode === mode)}`}
-            onClick={() => setViewMode(mode)}
-          >
-            {mode === "top-players" && "Top Players"}
-            {mode === "main" && "Main"}
-            {mode === "all-time" && "All-Time Stats"}
-          </button>
-        ))}
+        {/* Season Toggle (for Main and All-Time views) */}
+        {(viewMode === "main" || viewMode === "all-time") && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-brand-blue/60">Season:</span>
+            <button
+              type="button"
+              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(seasonScope === "current")}`}
+              onClick={() => setSeasonScope("current")}
+            >
+              Current{activeSeason ? ` (#${activeSeason.season_number})` : ""}
+            </button>
+            <button
+              type="button"
+              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(seasonScope === "previous")} ${
+                previousSeason ? "" : "cursor-not-allowed opacity-50"
+              }`}
+              onClick={() => previousSeason && setSeasonScope("previous")}
+              disabled={!previousSeason}
+            >
+              Previous{previousSeason ? ` (#${previousSeason.season_number})` : ""}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Season Toggle (for Main and All-Time views) */}
-      {(viewMode === "main" || viewMode === "all-time") && (
-        <div className="mb-6 flex items-center gap-2">
-          <span className="text-sm text-brand-blue/60">Season:</span>
-          <button
-            type="button"
-            className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(seasonScope === "current")}`}
-            onClick={() => setSeasonScope("current")}
-          >
-            Current{activeSeason ? ` (#${activeSeason.season_number})` : ""}
-          </button>
-          <button
-            type="button"
-            className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(seasonScope === "previous")} ${
-              previousSeason ? "" : "cursor-not-allowed opacity-50"
-            }`}
-            onClick={() => previousSeason && setSeasonScope("previous")}
-            disabled={!previousSeason}
-          >
-            Previous{previousSeason ? ` (#${previousSeason.season_number})` : ""}
-          </button>
-        </div>
-      )}
+      {/* Title below settings */}
+      <h1 className="mb-6 text-2xl font-bold text-brand-blue dark:text-white">Leaderboard</h1>
 
       <div className="rounded-2xl border border-zinc-800 bg-black p-4 shadow-sm sm:p-6">
         {viewMode === "top-players" && (
