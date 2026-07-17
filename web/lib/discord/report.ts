@@ -12,9 +12,8 @@ import { cleanupTestMatchRows } from "./testMatch";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team } from "@/lib/supabase/types";
 
-// Time between the public "reported" message and category deletion — see CLAUDE.md,
-// "Match channels (created per series on pop)", "Series end".
-const CLOSE_WARNING_MS = 30_000;
+// Instant deletion of voice channels after report
+const CLOSE_WARNING_MS = 0;
 
 // ---------------------------------------------------------------------------
 // /report — run inside a match text channel; series is inferred from the channel. `id:` is
@@ -24,16 +23,23 @@ const CLOSE_WARNING_MS = 30_000;
 // ---------------------------------------------------------------------------
 
 export function handleReportCommand(interaction: DiscordInteraction) {
+  const resultOption = interaction.data?.options?.find((o) => o.name === "result")?.value;
   const idOption = interaction.data?.options?.find((o) => o.name === "id")?.value;
   const seriesIdOverride = typeof idOption === "string" && idOption.length > 0 ? idOption : null;
-  after(() => processReport(interaction, seriesIdOverride));
+  const result = typeof resultOption === "string" ? resultOption : null;
+  after(() => processReport(interaction, seriesIdOverride, result));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
-async function processReport(interaction: DiscordInteraction, seriesIdOverride: string | null) {
+async function processReport(interaction: DiscordInteraction, seriesIdOverride: string | null, result: string | null) {
+  if (!result || (result !== "win" && result !== "loss")) {
+    await editOriginalResponse(interaction.token, { content: "Invalid result. Use 'win' or 'loss'." });
+    return;
+  }
+
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
@@ -97,7 +103,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
     return;
   }
-  const winner: Team = reporterRow.team;
+  const winner: Team = result === "win" ? reporterRow.team : (reporterRow.team === "A" ? "B" : "A");
 
   // Atomic settle claim: same UPDATE...WHERE-status pattern as the vote/draft resolution in
   // teamFormation.ts — Postgres row locking means only one concurrent /report call wins.
@@ -175,7 +181,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
       const band = p.band ?? "NA";
       pushLine(
         sp,
-        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} (${band})${r.wasProvisional ? " (provisional)" : ""}`,
+        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} (${band})`,
       );
     }
   } else {
@@ -193,7 +199,6 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     }
   }
 
-  await editOriginalResponse(interaction.token, { content: `Reported — Team ${winner} wins.` });
 
   // Fetch admin-specified report channel
   const { data: reportChannelConfig } = await supabase

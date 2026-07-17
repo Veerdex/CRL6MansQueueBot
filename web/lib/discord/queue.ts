@@ -437,24 +437,38 @@ async function processSetQueueChannel(
 // ---------------------------------------------------------------------------
 
 export function handleSet6mansCallCategoryCommand(interaction: DiscordInteraction) {
-  const categoryId = interaction.data?.options?.find((o) => o.name === "category")?.value;
-  after(() => processSet6mansCallCategory(interaction, categoryId));
+  const categoryIdParam = interaction.data?.options?.find((o) => o.name === "category")?.value;
+  after(() => processSet6mansCallCategory(interaction, categoryIdParam));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
-async function processSet6mansCallCategory(interaction: DiscordInteraction, categoryIdRaw: string | number | boolean | undefined) {
+async function processSet6mansCallCategory(interaction: DiscordInteraction, categoryIdParamRaw: string | number | boolean | undefined) {
   if (!(await hasAdminAccess(interaction))) {
     await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
     return;
   }
-  if (!categoryIdRaw) {
-    await editOriginalResponse(interaction.token, { content: "Missing category." });
+
+  let categoryId: string | undefined;
+  if (categoryIdParamRaw) {
+    categoryId = String(categoryIdParamRaw);
+  } else if (interaction.channel_id) {
+    // If no parameter, use the parent category of the current channel
+    try {
+      const channel = (await discordFetch(`/channels/${interaction.channel_id}`)) as { parent_id?: string };
+      categoryId = channel.parent_id;
+    } catch (err) {
+      console.error("Failed to fetch channel details", err);
+    }
+  }
+
+  if (!categoryId) {
+    await editOriginalResponse(interaction.token, { content: "Could not determine category. Run this in a channel inside the category you want to use." });
     return;
   }
-  const categoryId = String(categoryIdRaw);
+
   const supabase = createAdminClient();
   await supabase.from("crl6mansqueuebot_config").upsert({ key: "6mans_call_category_id", value: categoryId });
   await editOriginalResponse(interaction.token, { content: `6-mans call category set to <#${categoryId}>.` });
@@ -466,24 +480,27 @@ async function processSet6mansCallCategory(interaction: DiscordInteraction, cate
 // ---------------------------------------------------------------------------
 
 export function handleSetReportChannelCommand(interaction: DiscordInteraction) {
-  const channelId = interaction.data?.options?.find((o) => o.name === "channel")?.value;
-  after(() => processSetReportChannel(interaction, channelId));
+  const channelIdParam = interaction.data?.options?.find((o) => o.name === "channel")?.value;
+  after(() => processSetReportChannel(interaction, channelIdParam));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
-async function processSetReportChannel(interaction: DiscordInteraction, channelIdRaw: string | number | boolean | undefined) {
+async function processSetReportChannel(interaction: DiscordInteraction, channelIdParamRaw: string | number | boolean | undefined) {
   if (!(await hasAdminAccess(interaction))) {
     await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
     return;
   }
-  if (!channelIdRaw) {
-    await editOriginalResponse(interaction.token, { content: "Missing channel." });
+
+  const channelId = channelIdParamRaw ? String(channelIdParamRaw) : interaction.channel_id;
+
+  if (!channelId) {
+    await editOriginalResponse(interaction.token, { content: "Could not determine channel. Run this in the channel you want to use as the report channel." });
     return;
   }
-  const channelId = String(channelIdRaw);
+
   const supabase = createAdminClient();
   await supabase.from("crl6mansqueuebot_config").upsert({ key: "report_channel_id", value: channelId });
   await editOriginalResponse(interaction.token, { content: `Report channel set to <#${channelId}>.` });

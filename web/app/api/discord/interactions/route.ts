@@ -111,7 +111,7 @@ export async function POST(request: Request) {
       return NextResponse.json(handleVoteDefaultCommand(interaction));
     }
 
-    if (commandName === "report") {
+    if (commandName === "report" || commandName === "r") {
       return NextResponse.json(handleReportCommand(interaction));
     }
 

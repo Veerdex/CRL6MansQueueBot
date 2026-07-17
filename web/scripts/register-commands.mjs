@@ -68,27 +68,27 @@ const commands = [
   },
   {
     name: "set6manscallcategory",
-    description: "Set the category where 6-mans match voice channels are created.",
+    description: "Set the 6-mans voice channel category (infers parent if omitted).",
     type: 1,
     options: [
       {
         name: "category",
-        description: "The category to create match voice channels in.",
+        description: "The category for voice channels.",
         type: 7,
-        required: true,
+        required: false,
       },
     ],
   },
   {
     name: "setreportchannel",
-    description: "Set the channel where match results are reported.",
+    description: "Set the match report channel (infers current channel if omitted).",
     type: 1,
     options: [
       {
         name: "channel",
-        description: "The channel to post match results in.",
+        description: "The channel to post results in.",
         type: 7,
-        required: true,
+        required: false,
       },
     ],
   },
@@ -167,12 +167,45 @@ const commands = [
   },
   {
     name: "report",
-    description: "Report your match's result (run inside the match channel). Result is inferred from your own team.",
+    description: "Report your match's result.",
     type: 1,
     options: [
       {
+        name: "result",
+        description: "Did your team win or lose?",
+        type: STRING_OPTION,
+        required: true,
+        choices: [
+          { name: "win", value: "win" },
+          { name: "loss", value: "loss" },
+        ],
+      },
+      {
         name: "id",
-        description: "Series id override — admins only, for reporting from outside the match channel.",
+        description: "Series id override — admins only.",
+        type: STRING_OPTION,
+        required: false,
+      },
+    ],
+  },
+  {
+    name: "r",
+    description: "Report your match's result (alias for /report).",
+    type: 1,
+    options: [
+      {
+        name: "result",
+        description: "Did your team win or lose?",
+        type: STRING_OPTION,
+        required: true,
+        choices: [
+          { name: "win", value: "win" },
+          { name: "loss", value: "loss" },
+        ],
+      },
+      {
+        name: "id",
+        description: "Series id override — admins only.",
         type: STRING_OPTION,
         required: false,
       },
