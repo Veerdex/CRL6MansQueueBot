@@ -190,7 +190,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const emoji = emojiByBand.get(p.band) || "❓";
-      pushLine(sp, `${emoji} <@${p.discord_id}> — Universal Queue, no MMR change`);
+      pushLine(sp, `${emoji} <@${p.discord_id}>`);
     }
   }
 
