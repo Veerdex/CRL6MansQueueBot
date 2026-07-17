@@ -161,13 +161,6 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
       }
     }
 
-    const message =
-      action === "placed"
-        ? `You've been placed! Welcome to **${targetBand}**.`
-        : action === "promoted"
-          ? `You've been promoted to **${targetBand}**!`
-          : `You've been demoted to **${targetBand}**.`;
-    await sendDirectMessage(player.discord_id, message);
 
     summary[action] += 1;
   }
