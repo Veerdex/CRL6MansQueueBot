@@ -21,7 +21,7 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // See CLAUDE.md, "Team formation (on pop)" / "Team formation, in the match channel".
 // ---------------------------------------------------------------------------
 
-function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds: number) {
+function voteEmbed(balancedCount: number, captainsCount: number, cancelCount: number, timeoutSeconds: number) {
   const minutes = Math.round(timeoutSeconds / 60);
   return {
     color: BRAND_COLOR,
@@ -31,6 +31,7 @@ function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds:
     fields: [
       { name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true },
       { name: "Captains", value: `${captainsCount} / 3`, inline: true },
+      { name: "Cancel", value: `${cancelCount} / 4`, inline: true },
     ],
   };
 }
@@ -42,6 +43,12 @@ function voteButtons(seriesId: string) {
       components: [
         { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Balanced", custom_id: `vote:${seriesId}:balanced` },
         { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Captains", custom_id: `vote:${seriesId}:captains` },
+      ],
+    },
+    {
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.SECONDARY, label: "Cancel", custom_id: `cancel:${seriesId}` },
       ],
     },
   ];
@@ -75,7 +82,7 @@ export async function startTeamFormation(supabase: AdminClient, guildId: string,
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ embeds: [voteEmbed(0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
+    body: JSON.stringify({ embeds: [voteEmbed(0, 0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
@@ -100,8 +107,11 @@ export async function castVote(
   await supabase.from("crl6mansqueuebot_series_votes").upsert({ series_id: seriesId, player_id: playerId, choice });
 
   const { data: votes } = await supabase.from("crl6mansqueuebot_series_votes").select("choice").eq("series_id", seriesId);
+  const { data: cancelVotes } = await supabase.from("crl6mansqueuebot_cancel_votes").select("player_id").eq("series_id", seriesId);
+
   const balancedCount = (votes ?? []).filter((v) => v.choice === "balanced").length;
   const captainsCount = (votes ?? []).filter((v) => v.choice === "captains").length;
+  const cancelCount = (cancelVotes ?? []).length;
 
   let winner: VoteChoice | null = null;
   if (balancedCount >= 3) winner = "balanced";
@@ -112,7 +122,7 @@ export async function castVote(
     const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
     await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds)], components: voteButtons(seriesId) }),
+      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
     });
     return;
   }
@@ -173,6 +183,80 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
   const members = await fetchLobbyMembers(supabase, seriesId);
   await castVote(supabase, interaction.guild_id, seriesId, interaction.channel_id, series.formation_message_id, members, player.id, choice);
   await editOriginalResponse(interaction.token, { content: `Voted ${choice === "balanced" ? "Balanced" : "Captains"}.` });
+}
+
+// ---------------------------------------------------------------------------
+// Cancel button entry point
+// ---------------------------------------------------------------------------
+
+export function handleCancelButton(interaction: DiscordInteraction, seriesId: string) {
+  after(() => processCancelButton(interaction, seriesId));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processCancelButton(interaction: DiscordInteraction, seriesId: string) {
+  const supabase = createAdminClient();
+  const discordId = interactionUserId(interaction);
+  if (!discordId || !interaction.guild_id || !interaction.channel_id) {
+    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    return;
+  }
+
+  const { data: player } = await supabase.from("crl6mansqueuebot_players").select("*").eq("discord_id", discordId).maybeSingle();
+  const { data: lobbyRow } = player
+    ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
+    : { data: null };
+  if (!player || !lobbyRow) {
+    await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
+    return;
+  }
+
+  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
+  if (!series || series.vote_result || series.status !== "forming" || !series.formation_message_id) {
+    await editOriginalResponse(interaction.token, { content: "Match is no longer in voting phase." });
+    return;
+  }
+
+  // Upsert cancel vote (same player can't double-vote)
+  await supabase.from("crl6mansqueuebot_cancel_votes").upsert({ series_id: seriesId, player_id: player.id });
+
+  const { data: cancelVotes } = await supabase.from("crl6mansqueuebot_cancel_votes").select("player_id").eq("series_id", seriesId);
+  const cancelCount = (cancelVotes ?? []).length;
+
+  // If 4+ players voted to cancel, void the series
+  if (cancelCount >= 4) {
+    // Atomic void claim
+    const { data: claimed } = await supabase
+      .from("crl6mansqueuebot_series")
+      .update({ status: "void" })
+      .eq("id", seriesId)
+      .eq("status", "forming")
+      .select("id");
+    if (claimed && claimed.length > 0) {
+      // Clear pending series state and remove message
+      await supabase.from("crl6mansqueuebot_series_votes").delete().eq("series_id", seriesId);
+      await supabase.from("crl6mansqueuebot_cancel_votes").delete().eq("series_id", seriesId);
+      await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
+      await editOriginalResponse(interaction.token, { content: "Match cancelled." });
+      return;
+    }
+  }
+
+  // Update the message to show new cancel count
+  const { data: votes } = await supabase.from("crl6mansqueuebot_series_votes").select("choice").eq("series_id", seriesId);
+  const balancedCount = (votes ?? []).filter((v) => v.choice === "balanced").length;
+  const captainsCount = (votes ?? []).filter((v) => v.choice === "captains").length;
+  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+
+  await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
+  });
+
+  await editOriginalResponse(interaction.token, { content: "Vote to cancel recorded." });
 }
 
 // ---------------------------------------------------------------------------

@@ -407,11 +407,6 @@ const commands = [
     ],
   },
   {
-    name: "end",
-    description: "Abruptly end + delete your current match's channels (run inside the match channel).",
-    type: 1,
-  },
-  {
     name: "test-rank-match",
     description: "Admin: spin up a simulated Rank Queue match (you + 5 test bots) to try the flow yourself.",
     type: 1,

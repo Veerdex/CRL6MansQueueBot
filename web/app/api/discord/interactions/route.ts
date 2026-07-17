@@ -11,12 +11,12 @@ import {
 } from "@/lib/discord/adminCommands";
 import { handleNewSeasonCommand } from "@/lib/discord/seasons";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
-import { handleVoteButton, handleDraftPickButton } from "@/lib/discord/teamFormation";
+import { handleVoteButton, handleDraftPickButton, handleCancelButton } from "@/lib/discord/teamFormation";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleSubAcceptButton } from "@/lib/discord/sub";
 import { handleAbandonCommand } from "@/lib/discord/abandon";
 import { handleSetBandRoleCommand } from "@/lib/discord/bands";
-import { handleAdminCommand, handleEndCommand } from "@/lib/discord/adminTools";
+import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
 import type { VoteChoice } from "@/lib/supabase/types";
 
@@ -52,6 +52,10 @@ export async function POST(request: Request) {
 
     if (action === "draft_pick" && arg1 && arg2) {
       return NextResponse.json(handleDraftPickButton(interaction, arg1, arg2));
+    }
+
+    if (action === "cancel" && arg1) {
+      return NextResponse.json(handleCancelButton(interaction, arg1));
     }
 
     if (action === "sub_accept" && arg1 && arg2) {
@@ -129,10 +133,6 @@ export async function POST(request: Request) {
 
     if (commandName === "admin") {
       return NextResponse.json(handleAdminCommand(interaction));
-    }
-
-    if (commandName === "end") {
-      return NextResponse.json(handleEndCommand(interaction));
     }
 
     if (commandName === "test-rank-match") {
