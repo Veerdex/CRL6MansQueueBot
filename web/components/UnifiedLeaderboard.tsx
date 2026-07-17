@@ -5,6 +5,7 @@ import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
 import { SEASON_RANK_DISPLAY_MIN_GAMES } from "@/lib/leaderboard/constants";
 import { bandRank, computeStats, filterGames } from "@/lib/leaderboard/stats";
+import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
 import type { SeasonHistoryRow } from "@/lib/supabase/types";
 
@@ -157,11 +158,12 @@ export default function UnifiedLeaderboard({
                       <div className="text-lg font-bold text-white truncate">{row.displayName}</div>
                     </div>
                     <div className="text-right">
-                      {row.band ? (
-                        <div className="text-sm">{row.band}</div>
-                      ) : (
-                        <div className="text-sm text-brand-orange/50">NA</div>
-                      )}
+                      <img
+                        src={getRankIconPath(row.band)}
+                        alt={getRankLabel(row.band)}
+                        title={getRankLabel(row.band)}
+                        className="h-6 w-6"
+                      />
                     </div>
                     <div className="text-right min-w-fit">
                       {row.mmr !== null ? (

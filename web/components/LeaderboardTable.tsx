@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import type { Band } from "@/lib/supabase/types";
 
 export interface MainBoardRow {
@@ -73,7 +74,14 @@ export default function LeaderboardTable({
                   >
                     <td className="py-2 pr-3 pl-4">{position}</td>
                     <td className="py-2 pr-3 font-medium">{row.displayName}</td>
-                    <td className="py-2 pr-3">{row.band ?? "NA"}</td>
+                    <td className="py-2 pr-3">
+                      <img
+                        src={getRankIconPath(row.band)}
+                        alt={getRankLabel(row.band)}
+                        title={getRankLabel(row.band)}
+                        className="h-6 w-6"
+                      />
+                    </td>
                     <td className="py-2 pr-3">{row.mmr === null ? "NA" : Math.round(row.mmr)}</td>
                     <td className="py-2 pr-3">{row.wins}</td>
                     <td className="py-2 pr-3">{row.losses}</td>
