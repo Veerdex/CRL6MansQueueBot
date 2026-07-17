@@ -478,11 +478,13 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
   // Send initial message
   const queueLabel = queueType === "rank" ? "Rank Queue" : "Universal Queue";
   await editOriginalResponse(interaction.token, {
-    content: `🤖 Creating test bots and adding them to the ${queueLabel}...\nOnce all 5 bots have joined, use /q to join yourself and start the match!`,
+    content: `🤖 Creating test bots and adding them to the ${queueLabel}...`,
   });
 
   // Create 5 bots one at a time and add each to the queue
   const baseMMR = admin.mmr || 1000;
+  const addedBots: string[] = [];
+
   for (let i = 0; i < 5; i++) {
     const botMMR = baseMMR + (Math.random() * 400 - 200);
     const botDiscordId = `test_bot_${Date.now()}_${i}`;
@@ -505,43 +507,45 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
     const queueResult = Array.isArray(queueResults) ? queueResults[0] : queueResults;
 
     if (queueResult?.status === "joined") {
-      // Fetch updated queue members and post fresh queue message
-      const { data: memberRows } = await supabase
-        .from("crl6mansqueuebot_queue_members")
-        .select("player_id")
-        .eq("queue_type", "rank")
-        .order("joined_at", { ascending: true });
-
-      if (memberRows) {
-        const playerIds = memberRows.map((r) => r.player_id);
-        const { data: players } = await supabase
-          .from("crl6mansqueuebot_players")
-          .select("*")
-          .in("id", playerIds);
-
-        if (players) {
-          const memberMentions = players.map((p) => `<@${p.discord_id}>`).join(" ");
-          const embed = {
-            color: 0x57f287,
-            description: `**Current Queue Members: ${players.length}**\n${memberMentions}`,
-            footer: { text: "Run /q to join the Rank Queue or /l to leave." },
-          };
-
-          await discordFetch(`/channels/${queueChannelId}/messages`, {
-            method: "POST",
-            body: JSON.stringify({ embeds: [embed] }),
-          }).catch((err) => console.error(`Failed to post queue update`, err));
-        }
-      }
+      addedBots.push(bot.discord_id);
     }
 
     // Small delay between joins for visibility
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
+  // Fetch all queue members and post final queue status
+  const { data: memberRows } = await supabase
+    .from("crl6mansqueuebot_queue_members")
+    .select("player_id")
+    .eq("queue_type", queueType)
+    .order("joined_at", { ascending: true });
+
+  if (memberRows) {
+    const playerIds = memberRows.map((r) => r.player_id);
+    const { data: players } = await supabase
+      .from("crl6mansqueuebot_players")
+      .select("*")
+      .in("id", playerIds);
+
+    if (players) {
+      const memberMentions = players.map((p) => `<@${p.discord_id}>`).join(" ");
+      const embed = {
+        color: 0x57f287,
+        description: `**Current Queue Members: ${players.length}**\n${memberMentions}`,
+        footer: { text: `Run /q to join as the 6th player. Mode: ${mode}` },
+      };
+
+      await discordFetch(`/channels/${queueChannelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ embeds: [embed] }),
+      }).catch((err) => console.error(`Failed to post queue update`, err));
+    }
+  }
+
   // Final message telling admin to join
   await editOriginalResponse(interaction.token, {
-    content: `✅ All 5 test bots are in the ${queueLabel}!\n\n**Now use /q to join as the 6th player and start the match.**\n\nThe vote screen with ${mode} buttons will appear automatically when all 6 players are ready.`,
+    content: `✅ Test bot queue is ready (${addedBots.length}/5 bots added)!\n\n**Now use /q to join as the 6th player and start the match.**\n\nThe vote screen with **${mode}** buttons will appear automatically when all 6 players are ready.`,
   });
 
   await logAdminAction(actorId, "test_flow", "queue_setup", `${queueType} queue, mode=${mode} with 5 test bots`);
