@@ -13,6 +13,7 @@ import { getAdminRoleIds } from "./admin";
 import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, type DiscordInteraction } from "./types";
+import { createVoiceChannels } from "./queue";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -691,6 +692,9 @@ async function finalizeTeams(
 
   const teamA = members.filter((m) => teamAssignments.get(m.id) === "A");
   const teamB = members.filter((m) => teamAssignments.get(m.id) === "B");
+
+  // Create voice channels now that teams are finalized
+  await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB);
 
   const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
   const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");

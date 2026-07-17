@@ -384,6 +384,26 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
 }
 
 export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[], queueChannelId: string) {
+  try {
+    await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
+  } catch (err) {
+    console.error(`Failed to start team formation for series ${seriesId}`, err);
+    await discordFetch(`/channels/${queueChannelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: `**Error:** Failed to start team formation. Ask an admin to check logs.`,
+      }),
+    }).catch((logErr) => console.error(`Failed to post error message`, logErr));
+  }
+}
+
+export async function createVoiceChannels(
+  supabase: AdminClient,
+  seriesId: string,
+  guildId: string,
+  teamA: PlayerRow[],
+  teamB: PlayerRow[],
+) {
   const adminRoleIds = await getAdminRoleIds();
   const botUserId = process.env.DISCORD_APPLICATION_ID;
   const shortId = seriesId.slice(0, 8);
@@ -397,13 +417,7 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
 
   const categoryId = categoryConfig?.value;
   if (!categoryId) {
-    // Post error in queue channel
-    await discordFetch(`/channels/${queueChannelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        content: `**Admin:** 6-mans call category not configured. Run \`/set6manscallcategory\` to set it up.`,
-      }),
-    }).catch((err) => console.error(`Failed to post error in queue channel`, err));
+    console.error(`6-mans call category not configured for series ${seriesId}`);
     return;
   }
 
@@ -419,30 +433,22 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
     ...(botUserId ? [{ id: botUserId, type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() } as PermissionOverwrite] : []),
   ];
 
-  const voiceA = (await discordFetch(`/guilds/${guildId}/channels`, {
-    method: "POST",
-    body: JSON.stringify({ name: `Team A - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(members.filter((_, i) => i < 3)) }),
-  })) as { id: string };
-  const voiceB = (await discordFetch(`/guilds/${guildId}/channels`, {
-    method: "POST",
-    body: JSON.stringify({ name: `Team B - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(members.filter((_, i) => i >= 3)) }),
-  })) as { id: string };
-
-  await supabase
-    .from("crl6mansqueuebot_series")
-    .update({ voice_channel_a_id: voiceA.id, voice_channel_b_id: voiceB.id })
-    .eq("id", seriesId);
-
   try {
-    await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
-  } catch (err) {
-    console.error(`Failed to start team formation for series ${seriesId}`, err);
-    await discordFetch(`/channels/${queueChannelId}/messages`, {
+    const voiceA = (await discordFetch(`/guilds/${guildId}/channels`, {
       method: "POST",
-      body: JSON.stringify({
-        content: `**Error:** Failed to start team formation. Ask an admin to check logs.`,
-      }),
-    }).catch((logErr) => console.error(`Failed to post error message`, logErr));
+      body: JSON.stringify({ name: `Team A - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamA) }),
+    })) as { id: string };
+    const voiceB = (await discordFetch(`/guilds/${guildId}/channels`, {
+      method: "POST",
+      body: JSON.stringify({ name: `Team B - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamB) }),
+    })) as { id: string };
+
+    await supabase
+      .from("crl6mansqueuebot_series")
+      .update({ voice_channel_a_id: voiceA.id, voice_channel_b_id: voiceB.id })
+      .eq("id", seriesId);
+  } catch (err) {
+    console.error(`Failed to create voice channels for series ${seriesId}`, err);
   }
 }
 
