@@ -30,7 +30,7 @@ day-to-day command usage.
   gateway/WebSocket connection.
 - **Database** — Supabase (Postgres), shared source of truth for both the website and the
   bot.
-- **Background jobs** — Supabase `pg_cron` + `pg_net` hit two secret-guarded routes on a
+- **Background jobs** — Supabase `pg_cron` + `pg_net` hit secret-guarded routes on a
   schedule: `/api/discord/sweep` (every minute — series/vote/sub timeouts) and
   `/api/discord/recompute-bands` (daily — band promotion/demotion).
 
@@ -162,15 +162,14 @@ In Server Settings → Roles, create (empty is fine — no Discord permissions n
 of these; the bot uses them purely as tags):
 
 - **Iron**, **Garnet**, **Emerald**, **Sapphire** — the four bands
-- **Placed** — informational only: confirms a player has been assigned a real band by
-  the daily recompute. It does **not** gate `#rank-queue` — Rank Queue is open to
-  everyone from game one.
+- **Unranked** — informational only: the role for players who don't yet have a real band
+  (show players in the unbanded state before placement).
 - **Prism** — only matters once you're running seasons (Top 10 role); can be added later
 - One or more **admin role(s)** (e.g. "6 Mans Admin") — optional. The server owner always
   has admin access even with none of these granted; add a role only if you want other
   people to be able to run admin commands.
 
-Confirm the bot's own role sits above the band/Placed/Prism roles (step 4 above) — do
+Confirm the bot's own role sits above the band/Unranked/Prism roles (step 4 above) — do
 this now, before anyone plays, since a missed promotion is invisible until someone
 notices their role never changed.
 
@@ -189,9 +188,10 @@ Run inside each channel:
 /setqueuechannel queue_type:rank           (run inside #rank-queue)
 ```
 
-Each posts the persistent Join/Leave-button message the bot will keep editing from then
-on — don't post it manually, and don't run this a second time in the same channel unless
-you want to relocate it.
+Each posts the persistent queue-status message the bot will update whenever someone joins or
+leaves. The message shows the current queue member list and queue count. Players use `/q` and
+`/l` to join/leave — don't post the message manually, and don't run this a second time in
+the same channel unless you want to relocate it.
 
 ### 4. Map bands to roles
 
@@ -202,7 +202,7 @@ Run once per row:
 /setbandrole band:Garnet role:@Garnet
 /setbandrole band:Emerald role:@Emerald
 /setbandrole band:Sapphire role:@Sapphire
-/setbandrole band:Placed role:@Placed
+/setbandrole band:Unranked role:@Unranked
 /setbandrole band:Prism role:@Prism        (can wait until your first /newseason)
 ```
 
@@ -221,7 +221,7 @@ can be added anytime later. `/list-admin-roles` shows current grants.
 ### 6. Bootstrap the first season
 
 ```
-/newseason
+/newseason confirmation:NEW SEASON
 ```
 
 **Don't skip this.** Every popped queue needs an active season row to attach the series
@@ -238,11 +238,11 @@ the 6 players, `/help` responds, and an admin command like `/admin audit-log` wo
 
 ## Player usage
 
-- **Queueing** — slash commands `/q` (or `/queue`) to join, `/l` (or `/leave`) to leave.
-  `#universal-queue` and `#rank-queue` each have one persistent bot message showing the
-  current queue list and a **Join/Leave** option. Both queues are open immediately, no
-  placement requirement — Rank Queue results affect your MMR from your very first game.
-  You can sit in both queues at once; popping one auto-removes you from the other.
+- **Queueing** — use `/q` (or `/queue`) to join the queue channel's queue, `/l` (or `/leave`)
+  to leave. `#universal-queue` and `#rank-queue` each have one persistent bot message showing
+  the current queue list. Both queues are open immediately, no placement requirement — Rank
+  Queue results affect your MMR from your very first game. You can sit in both queues at
+  once; popping one auto-removes you from the other.
 - **On pop (6/6)** — the bot creates a private match category with two voice channels
   (Team A and Team B) visible only to the 6 players (plus admins). Vote **Balanced** or
   **Captains** using the buttons that appear in the queue channel; your `/vote-default`
@@ -257,7 +257,8 @@ the 6 players, `/help` responds, and an admin command like `/admin audit-log` wo
 - **`/report result:<win|loss>`** — once the game is over, report your team's result from
   anywhere (no channel restriction). Settles immediately, no confirmation needed from the
   other team. Rank Queue series update MMR; Universal Queue series are unranked but still
-  count toward placement and season stats.
+  count toward placement and season stats. The match result is posted to the report channel
+  with a match ID (base-71 encoded: 0-9, a-z, A-Z, then !-)).
 - **`/sub nominee:<@user>`** — run inside your match channel if you need to leave
   mid-series; nominates a specific replacement, who must accept via a button before the
   swap happens. The sub inherits your team and plays out the rest of the series.
@@ -275,12 +276,13 @@ role is granted, only the server owner has admin access.
   **`/list-admin-roles`** — manage which Discord roles have admin access.
 - **`/setqueuechannel queue_type:<rank|universal>`** — run inside the channel you want
   that queue's persistent join/leave message posted (or relocated) to.
-- **`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Placed|Prism> role:<@role>`** — map a
-  band (or the `Placed` gate, or the season-end-only `Prism` Top 10 tier) to a Discord
+- **`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role>`** — map a
+  band (or the `Unranked` state, or the season-end-only `Prism` Top 10 tier) to a Discord
   role the bot grants/revokes automatically on change.
-- **`/newseason`** — closes the current season (soft-reset MMR via hyperbolic decay,
-  snapshot final standings, sync the Prism Top 10 role) and opens the next one. Manual
-  trigger only — there's no scheduled monthly rollover.
+- **`/newseason confirmation:NEW SEASON`** — closes the current season (soft-reset MMR via
+  hyperbolic decay, snapshot final standings, sync the Prism Top 10 role) and opens the next
+  one. Requires confirmation text "NEW SEASON". Manual trigger only — there's no scheduled
+  monthly rollover.
 - **`/admin unreport id:<series_id>`** — reverses a reported series and unwinds the
   MMR/games-played changes it caused for all 6 players.
 - **`/admin cancel-series [id:<series_id>]`** — voids an in-progress (forming or active)
@@ -296,6 +298,21 @@ role is granted, only the server owner has admin access.
   or tune any of the config values below.
 - **`/admin audit-log [limit:<n>]`** — show recent admin actions (default 10, max 25).
   Every admin action is logged automatically.
+- **`/admin test-flow mode:<captains|balanced>`** — creates a temporary test match to
+  simulate the queue→team-formation→report flow. Posts 5 sequential bot joins to the queue
+  channel (with delays), then you manually run `/q` to trigger the pop at 6/6. Bots vote
+  according to the specified mode and play out a full match that cleans up after `/report`.
+  Test data is auto-flagged so it won't pollute leaderboards or season stats.
+- **`/admin set-rank-emoji band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> image:<file>`**
+  — uploads a custom emoji image for a rank band and stores it in the database. Used by the
+  bot to display custom rank emoji in report embeds instead of Unicode fallbacks.
+- **`/admin reset confirmation:SEASON RESET`** — **DANGER: wipes all game data** (series,
+  queue members, votes, sub requests, abandonment votes) and resets all player stats to a
+  clean slate. Does not start a new season — run `/newseason` separately if needed. Requires
+  confirmation text "SEASON RESET".
+- **`/admin checklist`** — shows a setup status checklist indicating which configuration
+  items are complete: queue channels (rank & universal), report channel, 6-mans call
+  category, 6 custom rank emoji, 6 band roles, admin roles.
 
 ### Config values (tunable via `/admin config set`)
 
@@ -317,9 +334,6 @@ this panel before this stops being useful for verification.
 
 ## Known limitations & future features
 
-- **Queue timeout** — players can sit in a queue indefinitely. A 30-minute auto-leave after
-  no pop would be a nice UX improvement (infrastructure is ready: `queue_members.joined_at`
-  exists, just needs sweep-route logic).
 - **Dispute resolution** — no formal appeal/review process for abandoned series or
   incorrect reports (besides admin manually running `/admin unreport`).
 - **Website features** — the leaderboard is the only user-facing page. Season stats,
