@@ -182,12 +182,6 @@ const commands = [
           { name: "loss", value: "loss" },
         ],
       },
-      {
-        name: "id",
-        description: "Series id override — admins only.",
-        type: STRING_OPTION,
-        required: false,
-      },
     ],
   },
   {
@@ -204,12 +198,6 @@ const commands = [
           { name: "win", value: "win" },
           { name: "loss", value: "loss" },
         ],
-      },
-      {
-        name: "id",
-        description: "Series id override — admins only.",
-        type: STRING_OPTION,
-        required: false,
       },
     ],
   },

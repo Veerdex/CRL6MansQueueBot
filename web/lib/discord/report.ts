@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { discordFetch, editOriginalResponse } from "./rest";
+import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR } from "./rest";
 import { getConfigNumber } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
@@ -11,7 +11,7 @@ import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
-import type { SeriesRow, Team } from "@/lib/supabase/types";
+import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
 // Instant deletion of voice channels after report
 const CLOSE_WARNING_MS = 0;
@@ -25,17 +25,15 @@ const CLOSE_WARNING_MS = 0;
 
 export function handleReportCommand(interaction: DiscordInteraction) {
   const resultOption = interaction.data?.options?.find((o) => o.name === "result")?.value;
-  const idOption = interaction.data?.options?.find((o) => o.name === "id")?.value;
-  const seriesIdOverride = typeof idOption === "string" && idOption.length > 0 ? idOption : null;
   const result = typeof resultOption === "string" ? resultOption : null;
-  after(() => processReport(interaction, seriesIdOverride, result));
+  after(() => processReport(interaction, result));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
-async function processReport(interaction: DiscordInteraction, seriesIdOverride: string | null, result: string | null) {
+async function processReport(interaction: DiscordInteraction, result: string | null) {
   if (!result || (result !== "win" && result !== "loss")) {
     await editOriginalResponse(interaction.token, { content: "Invalid result. Use 'win' or 'loss'." });
     return;
@@ -48,39 +46,28 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     return;
   }
 
-  let series: SeriesRow | null = null;
-  if (seriesIdOverride) {
-    if (!(await hasAdminAccess(interaction))) {
-      await editOriginalResponse(interaction.token, { content: "Only admins can report by id:." });
-      return;
-    }
-    const { data } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesIdOverride).maybeSingle();
-    series = data;
-  } else {
-    // Find which active series the player is locked into
-    const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
-    const { data: seriesPlayers } = await supabase
-      .from("crl6mansqueuebot_series_players")
-      .select("series_id")
-      .eq("player_id", player.id);
+  const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+  const { data: playerSeriesIds } = await supabase
+    .from("crl6mansqueuebot_series_players")
+    .select("series_id")
+    .eq("player_id", player.id);
 
-    if (!seriesPlayers || seriesPlayers.length === 0) {
-      await editOriginalResponse(interaction.token, { content: "You're not part of an active match." });
-      return;
-    }
-
-    const seriesIds = seriesPlayers.map((s) => s.series_id);
-    const { data: activeSeries } = await supabase
-      .from("crl6mansqueuebot_series")
-      .select("*")
-      .in("id", seriesIds)
-      .eq("status", "active")
-      .maybeSingle();
-    series = activeSeries;
+  if (!playerSeriesIds || playerSeriesIds.length === 0) {
+    await editOriginalResponse(interaction.token, { content: "You're not part of an active match." });
+    return;
   }
 
+  const seriesIds = playerSeriesIds.map((s) => s.series_id);
+  const { data: activeSeries } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .in("id", seriesIds)
+    .eq("status", "active")
+    .maybeSingle();
+  const series = activeSeries;
+
   if (!series) {
-    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "No active match to report." });
+    await editOriginalResponse(interaction.token, { content: "No active match to report." });
     return;
   }
   if (series.status === "forming") {
@@ -92,14 +79,13 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     return;
   }
 
-  const { data: seriesPlayers } = await supabase.from("crl6mansqueuebot_series_players").select("*").eq("series_id", series.id);
-  if (!seriesPlayers || seriesPlayers.length !== 6) {
+  const { data: allSeriesPlayers } = await supabase.from("crl6mansqueuebot_series_players").select("*").eq("series_id", series.id);
+  if (!allSeriesPlayers || allSeriesPlayers.length !== 6) {
     await editOriginalResponse(interaction.token, { content: "Something's wrong with this match's roster — ask an admin to check it." });
     return;
   }
 
-  const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
-  const reporterRow = seriesPlayers.find((sp) => sp.player_id === player.id);
+  const reporterRow = allSeriesPlayers.find((sp) => sp.player_id === player.id);
   if (!reporterRow) {
     await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
     return;
@@ -124,7 +110,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
   const { data: players } = await supabase
     .from("crl6mansqueuebot_players")
     .select("*")
-    .in("id", seriesPlayers.map((sp) => sp.player_id));
+    .in("id", allSeriesPlayers.map((sp) => sp.player_id));
   const playersById = new Map((players ?? []).map((p) => [p.id, p]));
 
   // Report summary is split by winning/losing team (not one flat list) — each line shows the
@@ -134,12 +120,12 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
   // the most recent daily recompute, not necessarily reflecting this exact game's MMR change.
   const winnerLines: string[] = [];
   const loserLines: string[] = [];
-  const pushLine = (sp: (typeof seriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
+  const pushLine = (sp: (typeof allSeriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
 
   if (series.is_test_data) {
     // Test matches (/test-rank-match, /test-universal-match) never touch real player stats,
     // even when queue_type is "rank" — see CLAUDE.md, "Flag as test data".
-    for (const sp of seriesPlayers) {
+    for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
       pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${rankIconUrl}`);
@@ -152,7 +138,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
       getConfigNumber("provisional_k_multiplier", 1.75),
     ]);
 
-    const eloInputs = seriesPlayers.map((sp) => {
+    const eloInputs = allSeriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
@@ -160,7 +146,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     const resultsById = new Map<string, EloResult>(results.map((r) => [r.playerId, r]));
 
     await Promise.all(
-      seriesPlayers.map(async (sp) => {
+      allSeriesPlayers.map(async (sp) => {
         const p = playersById.get(sp.player_id)!;
         const r = resultsById.get(sp.player_id)!;
         await supabase
@@ -176,7 +162,7 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
       }),
     );
 
-    for (const sp of seriesPlayers) {
+    for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
@@ -191,12 +177,12 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     // Universal Queue: still counts toward total_games_played (placement/lifetime), never
     // touches MMR — see CLAUDE.md, "Queueing".
     await Promise.all(
-      seriesPlayers.map((sp) => {
+      allSeriesPlayers.map((sp) => {
         const p = playersById.get(sp.player_id)!;
         return supabase.from("crl6mansqueuebot_players").update({ total_games_played: p.total_games_played + 1 }).eq("id", p.id);
       }),
     );
-    for (const sp of seriesPlayers) {
+    for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
       pushLine(sp, `<@${p.discord_id}> — Universal Queue, no MMR change ${rankIconUrl}`);
@@ -213,15 +199,11 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
 
   const reportChannelId = reportChannelConfig?.value;
   if (reportChannelId) {
+    const embed = reportResultEmbed(winner, winnerLines, loserLines);
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
-      body: JSON.stringify({
-        content:
-          `**Match reported — Team ${winner} wins!**\n\n` +
-          `**Winners**\n${winnerLines.join("\n")}\n\n` +
-          `**Losers**\n${loserLines.join("\n")}`,
-      }),
-    }).catch((err) => console.error(`Failed to post report summary for series ${series!.id}`, err));
+      body: JSON.stringify({ embeds: [embed] }),
+    }).catch((err) => console.error(`Failed to post report summary for series ${series.id}`, err));
   } else {
     console.error(`Report channel not configured for series ${series.id}`);
   }
@@ -232,4 +214,16 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
   if (series.is_test_data) {
     await cleanupTestMatchRows(supabase, series.id);
   }
+
+  await deleteOriginalResponse(interaction.token);
+}
+
+function reportResultEmbed(winner: Team, winnerLines: string[], loserLines: string[]) {
+  return {
+    color: BRAND_COLOR,
+    title: `Match Reported — Team ${winner} Wins!`,
+    description:
+      `**Winners**\n${winnerLines.join("\n")}\n\n` +
+      `**Losers**\n${loserLines.join("\n")}`,
+  };
 }

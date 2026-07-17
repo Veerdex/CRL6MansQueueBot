@@ -101,3 +101,15 @@ export async function editOriginalResponse(interactionToken: string, body: Recor
     console.error("Failed to edit original interaction response", await res.text());
   }
 }
+
+export async function deleteOriginalResponse(interactionToken: string) {
+  const appId = process.env.DISCORD_APPLICATION_ID;
+  if (!appId) throw new Error("Missing DISCORD_APPLICATION_ID");
+
+  const res = await fetch(`https://discord.com/api/v10/webhooks/${appId}/${interactionToken}/messages/@original`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    console.error("Failed to delete original interaction response", await res.text());
+  }
+}
