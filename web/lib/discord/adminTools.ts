@@ -453,26 +453,20 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
   }
 
   // Determine which queue channel this command is running in
-  const { data: rankChannelConfig } = await supabase
-    .from("crl6mansqueuebot_config")
-    .select("value")
-    .eq("key", "queue_channel_id_rank")
-    .maybeSingle();
-
-  const { data: universalChannelConfig } = await supabase
-    .from("crl6mansqueuebot_config")
-    .select("value")
-    .eq("key", "queue_channel_id_universal")
-    .maybeSingle();
+  const { data: queueMessages } = await supabase.from("crl6mansqueuebot_queue_messages").select("queue_type, channel_id");
+  const queueMessageMap = new Map((queueMessages as any ?? []).map((q: any) => [q.queue_type, q.channel_id]));
 
   let queueChannelId: string | null = null;
   let queueType: "rank" | "universal" | null = null;
 
-  if (rankChannelConfig?.value && interaction.channel_id === rankChannelConfig.value) {
-    queueChannelId = rankChannelConfig.value;
+  const rankChannelId = queueMessageMap.get("rank") as string | undefined;
+  const universalChannelId = queueMessageMap.get("universal") as string | undefined;
+
+  if (rankChannelId && interaction.channel_id === rankChannelId) {
+    queueChannelId = rankChannelId;
     queueType = "rank";
-  } else if (universalChannelConfig?.value && interaction.channel_id === universalChannelConfig.value) {
-    queueChannelId = universalChannelConfig.value;
+  } else if (universalChannelId && interaction.channel_id === universalChannelId) {
+    queueChannelId = universalChannelId;
     queueType = "universal";
   }
 
