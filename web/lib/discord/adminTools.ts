@@ -448,121 +448,89 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
     return;
   }
 
-  // Create 5 test bots with random MMR
-  const bots: PlayerRow[] = [];
+  // Get the rank queue channel to post join messages
+  const { data: queueChannelConfig } = await supabase
+    .from("crl6mansqueuebot_config")
+    .select("value")
+    .eq("key", "queue_channel_id_rank")
+    .maybeSingle();
+
+  if (!queueChannelConfig?.value) {
+    await editOriginalResponse(interaction.token, { content: "Rank queue channel not configured." });
+    return;
+  }
+
+  const queueChannelId = queueChannelConfig.value;
+
+  // Send initial message
+  await editOriginalResponse(interaction.token, {
+    content: `🤖 Creating test bots and adding them to the queue...\nOnce all 5 bots have joined, use /q to join yourself and start the match!`,
+  });
+
+  // Create 5 bots one at a time and add each to the queue
   const baseMMR = admin.mmr || 1000;
   for (let i = 0; i < 5; i++) {
-    const botMMR = baseMMR + (Math.random() * 400 - 200); // ±200 from admin's MMR
+    const botMMR = baseMMR + (Math.random() * 400 - 200);
     const botDiscordId = `test_bot_${Date.now()}_${i}`;
+
+    // Create bot
     const { data: bot } = await supabase
       .from("crl6mansqueuebot_players")
       .insert({ discord_id: botDiscordId, display_name: `Test Bot ${i + 1}`, mmr: botMMR, is_test_data: true })
       .select("*")
       .single();
-    if (bot) bots.push(bot);
-  }
 
-  if (bots.length < 5) {
-    await editOriginalResponse(interaction.token, { content: "Failed to create test bots." });
-    return;
-  }
+    if (!bot) continue;
 
-  const members = [admin, ...bots];
-
-  // Create series
-  const { data: series } = await supabase
-    .from("crl6mansqueuebot_series")
-    .insert({ season_id: season.id, queue_type: "rank", status: "forming", is_test_data: true })
-    .select("*")
-    .single();
-
-  if (!series) {
-    await editOriginalResponse(interaction.token, { content: "Failed to create test series." });
-    return;
-  }
-
-  // Add all to lobby
-  await supabase.from("crl6mansqueuebot_series_lobby").insert(members.map((m) => ({ series_id: series.id, player_id: m.id })));
-
-  // Create a dummy formation message (won't actually post to Discord for test)
-  const { data: updated } = await supabase
-    .from("crl6mansqueuebot_series")
-    .update({ formation_message_id: "test_dummy_message_id" })
-    .eq("id", series.id)
-    .select("*")
-    .single();
-
-  if (!updated) {
-    await editOriginalResponse(interaction.token, { content: "Failed to set up test series." });
-    return;
-  }
-
-  // Auto-cast bot votes
-  for (let i = 0; i < 3; i++) {
-    await supabase.from("crl6mansqueuebot_series_votes").insert({
-      series_id: series.id,
-      player_id: bots[i].id,
-      choice: mode as "captains" | "balanced",
+    // Add bot to queue using RPC
+    const { data: queueResults } = await supabase.rpc("crl6mansqueuebot_join_queue", {
+      p_player_id: bot.id,
+      p_queue_type: "rank",
     });
+
+    const queueResult = Array.isArray(queueResults) ? queueResults[0] : queueResults;
+
+    if (queueResult?.status === "joined") {
+      // Fetch updated queue members and post fresh queue message
+      const { data: memberRows } = await supabase
+        .from("crl6mansqueuebot_queue_members")
+        .select("player_id")
+        .eq("queue_type", "rank")
+        .order("joined_at", { ascending: true });
+
+      if (memberRows) {
+        const playerIds = memberRows.map((r) => r.player_id);
+        const { data: players } = await supabase
+          .from("crl6mansqueuebot_players")
+          .select("*")
+          .in("id", playerIds);
+
+        if (players) {
+          const memberMentions = players.map((p) => `<@${p.discord_id}>`).join(" ");
+          const embed = {
+            color: 0x57f287,
+            description: `**Current Queue Members: ${players.length}**\n${memberMentions}`,
+            footer: { text: "Run /q to join the Rank Queue or /l to leave." },
+          };
+
+          await discordFetch(`/channels/${queueChannelId}/messages`, {
+            method: "POST",
+            body: JSON.stringify({ embeds: [embed] }),
+          }).catch((err) => console.error(`Failed to post queue update`, err));
+        }
+      }
+    }
+
+    // Small delay between joins for visibility
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
-  // Settle the vote
-  await supabase.from("crl6mansqueuebot_series").update({ vote_result: mode as "captains" | "balanced" }).eq("id", series.id);
-
-  // For captains mode, auto-assign teams
-  if (mode === "captains") {
-    const sorted = members.sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
-    const captainA = sorted[0];
-    const captainB = sorted[1];
-    const others = sorted.slice(2);
-
-    // Assign: captain A gets 2, captain B gets 2, last one goes to A
-    await supabase.from("crl6mansqueuebot_series_lobby").update({ is_captain: true, team: "A" }).eq("player_id", captainA.id).eq("series_id", series.id);
-    await supabase.from("crl6mansqueuebot_series_lobby").update({ is_captain: true, team: "B" }).eq("player_id", captainB.id).eq("series_id", series.id);
-
-    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("player_id", others[0].id).eq("series_id", series.id);
-    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B" }).eq("player_id", others[1].id).eq("series_id", series.id);
-    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B" }).eq("player_id", others[2].id).eq("series_id", series.id);
-    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("player_id", others[3].id).eq("series_id", series.id);
-
-    // Move lobby to series_players and set status to active
-    const { data: lobbyRows } = await supabase.from("crl6mansqueuebot_series_lobby").select("*").eq("series_id", series.id);
-    if (lobbyRows) {
-      const seriesPlayerRows = lobbyRows.map((row) => ({
-        series_id: row.series_id,
-        player_id: row.player_id,
-        team: row.team! as Team,
-      }));
-      await supabase.from("crl6mansqueuebot_series_players").insert(seriesPlayerRows);
-      await supabase.from("crl6mansqueuebot_series_lobby").delete().eq("series_id", series.id);
-    }
-  } else {
-    // Balanced: compute best split and assign
-    const sorted = members.sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
-    const teamA = [sorted[0], sorted[3], sorted[4]];
-    const teamB = [sorted[1], sorted[2], sorted[5]];
-
-    const { data: lobbyRows } = await supabase.from("crl6mansqueuebot_series_lobby").select("*").eq("series_id", series.id);
-    if (lobbyRows) {
-      const seriesPlayerRows = lobbyRows.map((row) => ({
-        series_id: row.series_id,
-        player_id: row.player_id,
-        team: (teamA.some((p) => p.id === row.player_id) ? "A" : "B") as Team,
-      }));
-      await supabase.from("crl6mansqueuebot_series_players").insert(seriesPlayerRows);
-      await supabase.from("crl6mansqueuebot_series_lobby").delete().eq("series_id", series.id);
-    }
-  }
-
-  // Set status to active
-  await supabase.from("crl6mansqueuebot_series").update({ status: "active" }).eq("id", series.id);
-
-  // Store series id for cleanup (on /report, test data will be auto-cleaned)
+  // Final message telling admin to join
   await editOriginalResponse(interaction.token, {
-    content: `Test match created! Series ID: ${series.id}\n\nTeams:\n**Team A**: ${members.slice(0, 3).map((m) => m.display_name).join(", ")}\n**Team B**: ${members.slice(3).map((m) => m.display_name).join(", ")}\n\nRun \`/report result:win\` or \`/report result:loss\` to complete the test.`,
+    content: `✅ All 5 test bots are in the queue!\n\n**Now use /q to join as the 6th player and start the match.**\n\nThe vote screen with ${mode} buttons will appear automatically when all 6 players are ready.`,
   });
 
-  await logAdminAction(actorId, "test_flow", series.id, `mode=${mode}`);
+  await logAdminAction(actorId, "test_flow", "queue_setup", `mode=${mode} with 5 test bots`);
 }
 
 // ---------------------------------------------------------------------------
