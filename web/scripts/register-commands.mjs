@@ -441,6 +441,11 @@ const commands = [
           },
         ],
       },
+      {
+        name: "checklist",
+        description: "Show which settings are configured and which still need setup.",
+        type: SUB_COMMAND,
+      },
     ],
   },
   {

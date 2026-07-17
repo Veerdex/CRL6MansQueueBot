@@ -135,6 +135,10 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processReset(interaction, actorId, typeof confirmation === "string" ? confirmation : null);
       return;
     }
+    case "checklist": {
+      await processChecklist(interaction);
+      return;
+    }
     default:
       await editOriginalResponse(interaction.token, { content: "Unrecognized admin subcommand." });
       return;
@@ -601,6 +605,86 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
   } catch (err) {
     console.error("Failed to reset game data", err);
     await editOriginalResponse(interaction.token, { content: "An error occurred while resetting data." });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /admin checklist — shows which settings are configured and which need setup
+// ---------------------------------------------------------------------------
+
+async function processChecklist(interaction: DiscordInteraction) {
+  const supabase = createAdminClient();
+
+  try {
+    // Fetch all config values
+    const { data: configs } = await supabase.from("crl6mansqueuebot_config").select("*");
+    const configMap = new Map((configs ?? []).map((c) => [c.key, c.value]));
+
+    // Fetch rank emoji
+    const { data: emojis } = await supabase.from("crl6mansqueuebot_rank_emoji").select("*");
+    const emojiMap = new Map((emojis as any ?? []).map((e: any) => [e.band, e.emoji_id]));
+
+    // Fetch band roles
+    const { data: bandRoles } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
+    const bandRoleMap = new Map((bandRoles as any ?? []).map((b: any) => [b.band, b.role_id]));
+
+    // Fetch admin roles
+    const { count: adminRoleCount } = await supabase
+      .from("crl6mansqueuebot_admin_roles")
+      .select("*", { count: "exact", head: true });
+
+    // Build checklist
+    const items: string[] = [];
+
+    // Channels
+    items.push(`**Channels**`);
+    items.push(configMap.has("queue_channel_id_rank") ? `✅ Rank Queue channel` : `❌ Rank Queue channel`);
+    items.push(configMap.has("queue_channel_id_universal") ? `✅ Universal Queue channel` : `❌ Universal Queue channel`);
+    items.push(configMap.has("report_channel_id") ? `✅ Report channel` : `❌ Report channel`);
+    items.push(configMap.has("call_category_id") ? `✅ 6-mans call category` : `❌ 6-mans call category`);
+
+    // Rank emoji
+    items.push(``);
+    items.push(`**Rank Emoji**`);
+    items.push(emojiMap.has("Iron") ? `✅ Iron` : `❌ Iron`);
+    items.push(emojiMap.has("Garnet") ? `✅ Garnet` : `❌ Garnet`);
+    items.push(emojiMap.has("Emerald") ? `✅ Emerald` : `❌ Emerald`);
+    items.push(emojiMap.has("Sapphire") ? `✅ Sapphire` : `❌ Sapphire`);
+    items.push(emojiMap.has("Prism") ? `✅ Prism` : `❌ Prism`);
+    items.push(emojiMap.has("Unranked") ? `✅ Unranked` : `❌ Unranked`);
+
+    // Band roles
+    items.push(``);
+    items.push(`**Band Roles**`);
+    items.push(bandRoleMap.has("Iron") ? `✅ Iron role` : `❌ Iron role`);
+    items.push(bandRoleMap.has("Garnet") ? `✅ Garnet role` : `❌ Garnet role`);
+    items.push(bandRoleMap.has("Emerald") ? `✅ Emerald role` : `❌ Emerald role`);
+    items.push(bandRoleMap.has("Sapphire") ? `✅ Sapphire role` : `❌ Sapphire role`);
+    items.push(bandRoleMap.has("Placed") ? `✅ Placed role` : `❌ Placed role`);
+    items.push(bandRoleMap.has("Prism") ? `✅ Prism role` : `❌ Prism role`);
+
+    // Admin roles
+    items.push(``);
+    items.push(`**Admin Setup**`);
+    items.push(adminRoleCount && adminRoleCount > 0 ? `✅ Admin roles (${adminRoleCount} configured)` : `❌ No admin roles configured`);
+
+    const description = items.join("\n");
+    const configured = items.filter((i) => i.startsWith("✅")).length;
+    const total = items.filter((i) => i.startsWith("✅") || i.startsWith("❌")).length;
+
+    await editOriginalResponse(interaction.token, {
+      embeds: [
+        {
+          color: 0x57f287,
+          title: `Setup Checklist`,
+          description,
+          footer: { text: `${configured}/${total} items configured` },
+        },
+      ],
+    });
+  } catch (err) {
+    console.error("Failed to generate checklist", err);
+    await editOriginalResponse(interaction.token, { content: "An error occurred while generating the checklist." });
   }
 }
 
