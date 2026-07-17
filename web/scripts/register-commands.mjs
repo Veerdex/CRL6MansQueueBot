@@ -257,6 +257,29 @@ const commands = [
     ],
   },
   {
+    name: "setmentionrole",
+    description: "Set the role to mention when the first player joins an empty queue.",
+    type: 1,
+    options: [
+      {
+        name: "queue_type",
+        description: "Which queue this role is for.",
+        type: STRING_OPTION,
+        required: true,
+        choices: [
+          { name: "rank", value: "rank" },
+          { name: "universal", value: "universal" },
+        ],
+      },
+      {
+        name: "role",
+        description: "The Discord role to mention.",
+        type: ROLE_OPTION,
+        required: true,
+      },
+    ],
+  },
+  {
     name: "admin",
     description: "Admin tools.",
     type: 1,

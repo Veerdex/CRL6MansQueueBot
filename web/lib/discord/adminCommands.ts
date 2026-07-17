@@ -3,6 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { editOriginalResponse } from "./rest";
 import { hasAdminAccess, addAdminRole, removeAdminRole, listAdminRoles, logAdminAction } from "./admin";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { interactionUserId, type DiscordInteraction } from "./types";
 
 function deferredEphemeral(run: () => Promise<void>) {
@@ -133,4 +134,46 @@ async function processHelp(interaction: DiscordInteraction) {
   }
 
   await editOriginalResponse(interaction.token, { content: lines.join("\n") });
+}
+
+// ---------------------------------------------------------------------------
+// /setmentionrole queue_type:<rank|universal> role:<@role> — admin-gated,
+// sets the role to mention when the first player joins an empty queue.
+// ---------------------------------------------------------------------------
+
+export function handleSetMentionRoleCommand(interaction: DiscordInteraction) {
+  const queueTypeOption = interaction.data?.options?.find((o) => o.name === "queue_type")?.value;
+  const roleOption = interaction.data?.options?.find((o) => o.name === "role")?.value;
+  return deferredEphemeral(() =>
+    processSetMentionRole(interaction, typeof queueTypeOption === "string" ? queueTypeOption : null, typeof roleOption === "string" ? roleOption : null),
+  );
+}
+
+async function processSetMentionRole(interaction: DiscordInteraction, queueType: string | null, roleId: string | null) {
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+    return;
+  }
+  if (queueType !== "rank" && queueType !== "universal") {
+    await editOriginalResponse(interaction.token, { content: "Queue type must be 'rank' or 'universal'." });
+    return;
+  }
+  if (!roleId) {
+    await editOriginalResponse(interaction.token, { content: "Missing role." });
+    return;
+  }
+
+  const supabase = createAdminClient();
+  const actorId = interaction.member?.user?.id;
+
+  if (!actorId) {
+    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    return;
+  }
+
+  await supabase.from("crl6mansqueuebot_queue_mention_roles").upsert({ queue_type: queueType, role_id: roleId, set_by: actorId } as any);
+  await logAdminAction(actorId, "set_mention_role", `${queueType}_queue`, `role_id=${roleId}`);
+  await editOriginalResponse(interaction.token, {
+    content: `<@&${roleId}> will be mentioned when the first player joins the ${queueType === "rank" ? "Rank" : "Universal"} Queue.`,
+  });
 }

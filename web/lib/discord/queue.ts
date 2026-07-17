@@ -298,7 +298,22 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     // Pop succeeded — delete the deferred response so it auto-dismisses
     await deleteOriginalResponse(interaction.token);
   } else if (result?.status === "joined") {
-    await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
+    let headline = `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`;
+
+    // If this is the first join (queue size was 0, now 1), mention the configured role
+    if (result.queue_size === 1) {
+      const { data: mentionRoleRow } = await supabase
+        .from("crl6mansqueuebot_queue_mention_roles")
+        .select("role_id")
+        .eq("queue_type", queueType)
+        .maybeSingle() as any;
+
+      if (mentionRoleRow?.role_id) {
+        headline = `<@&${mentionRoleRow.role_id}> — ${headline}`;
+      }
+    }
+
+    await refreshQueueMessage(supabase, queueType, headline);
   }
 }
 

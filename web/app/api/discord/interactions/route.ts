@@ -8,6 +8,7 @@ import {
   handleRemoveAdminRoleCommand,
   handleListAdminRolesCommand,
   handleHelpCommand,
+  handleSetMentionRoleCommand,
 } from "@/lib/discord/adminCommands";
 import { handleNewSeasonCommand } from "@/lib/discord/seasons";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
@@ -124,6 +125,10 @@ export async function POST(request: Request) {
 
     if (commandName === "setbandrole") {
       return NextResponse.json(handleSetBandRoleCommand(interaction));
+    }
+
+    if (commandName === "setmentionrole") {
+      return NextResponse.json(handleSetMentionRoleCommand(interaction));
     }
 
     if (commandName === "admin") {
