@@ -9,6 +9,7 @@ import { hasAdminAccess } from "./admin";
 import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
+import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team } from "@/lib/supabase/types";
 
@@ -140,7 +141,8 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     // even when queue_type is "rank" — see CLAUDE.md, "Flag as test data".
     for (const sp of seriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      pushLine(sp, `<@${p.discord_id}> — test match, no stat changes`);
+      const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
+      pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${rankIconUrl}`);
     }
   } else if (series.queue_type === "rank") {
     const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
@@ -178,10 +180,11 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
       const p = playersById.get(sp.player_id)!;
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
-      const band = p.band ?? "NA";
+      const rankLabel = getRankLabel(p.band);
+      const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
       pushLine(
         sp,
-        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} (${band})`,
+        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} ${rankIconUrl}`,
       );
     }
   } else {
@@ -195,7 +198,8 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
     );
     for (const sp of seriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      pushLine(sp, `<@${p.discord_id}> — Universal Queue, no MMR change`);
+      const rankIconUrl = `https://crl6mans-queue-bot.vercel.app${getRankIconPath(p.band)}`;
+      pushLine(sp, `<@${p.discord_id}> — Universal Queue, no MMR change ${rankIconUrl}`);
     }
   }
 
@@ -228,6 +232,4 @@ async function processReport(interaction: DiscordInteraction, seriesIdOverride: 
   if (series.is_test_data) {
     await cleanupTestMatchRows(supabase, series.id);
   }
-
-  await editOriginalResponse(interaction.token, { content: "Match reported." });
 }

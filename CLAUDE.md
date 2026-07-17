@@ -153,7 +153,7 @@ All under `/admin`, gated by the admin-roles system above, all audit-logged: `un
 
 ## Config values (admin-tunable, not hardcoded)
 
-`k_factor=32`, `s_scale=400`, `hysteresis_pct=5`, `grace_games=3`, `provisional_games=10`, `provisional_k_multiplier=1.75`, `placement_games_required=10`, `decay_factor=0.25`, `top10_min_games=8`, `series_timeout_hours=2`, `vote_timeout_seconds=180`, `sub_request_timeout_minutes=10`, `band_cutoff_garnet_pctile=40`, `band_cutoff_emerald_pctile=70`, `band_cutoff_sapphire_pctile=90`.
+`k_factor=32`, `s_scale=400`, `hysteresis_pct=5`, `grace_games=3`, `provisional_games=10`, `provisional_k_multiplier=1.75`, `placement_games_required=10`, `decay_factor=0.25`, `top10_min_games=8`, `series_timeout_hours=2`, `vote_timeout_seconds=180`, `sub_request_timeout_minutes=10`, `queue_member_timeout_minutes=30`, `band_cutoff_garnet_pctile=40`, `band_cutoff_emerald_pctile=70`, `band_cutoff_sapphire_pctile=90`.
 
 `mod_role_id` is **retired** (removed in migration `0004_admin_roles.sql`) — superseded by the multi-role `crl6mansqueuebot_admin_roles` table, see "Admin roles" above. Admin access is no longer a config value; it's owner-plus-granted-roles instead.
 

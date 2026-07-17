@@ -98,6 +98,55 @@ export async function POST(request: Request) {
     orphansCleaned += 1;
   }
 
+  // Queue member timeout: auto-remove players who've been queued too long without a pop.
+  // Configurable per-queue-type via `queue_member_timeout_minutes` (default 30).
+  const queueTimeoutMinutes = await getConfigNumber("queue_member_timeout_minutes", 30);
+  const queueCutoff = new Date(Date.now() - queueTimeoutMinutes * 60 * 1000).toISOString();
+
+  const queueTypes = ["rank" as const, "universal" as const];
+  let queueMembersRemoved = 0;
+
+  for (const queueType of queueTypes) {
+    const { data: staleMembers, error: queueError } = await supabase
+      .from("crl6mansqueuebot_queue_members")
+      .select("player_id")
+      .eq("queue_type", queueType)
+      .lt("joined_at", queueCutoff);
+
+    if (queueError) {
+      console.error(`Sweep: failed to fetch stale queue members for ${queueType}`, queueError);
+      continue;
+    }
+
+    if (!staleMembers || staleMembers.length === 0) continue;
+
+    const playerIds = staleMembers.map((m) => m.player_id);
+    const { data: players } = await supabase
+      .from("crl6mansqueuebot_players")
+      .select("id, discord_id")
+      .in("id", playerIds);
+
+    const { data: deleted } = await supabase
+      .from("crl6mansqueuebot_queue_members")
+      .delete()
+      .eq("queue_type", queueType)
+      .in("player_id", playerIds)
+      .select("player_id");
+
+    if (deleted) {
+      queueMembersRemoved += deleted.length;
+      const queueLabel = queueType === "rank" ? "Rank Queue" : "Universal Queue";
+      await Promise.all(
+        (players ?? []).map((p) =>
+          sendDirectMessage(
+            p.discord_id,
+            `You've been auto-removed from the ${queueLabel} after ${queueTimeoutMinutes} minutes without a match. You can rejoin anytime.`,
+          ),
+        ),
+      );
+    }
+  }
+
   // Pending /sub nominations expire on their own timer (sub_request_timeout_minutes) rather
   // than riding the series timeout — a stale nomination shouldn't hang around for up to 2
   // hours just because nobody clicked Accept. See CLAUDE.md, "Substitutes".
@@ -140,7 +189,7 @@ export async function POST(request: Request) {
     subRequestsExpired += 1;
   }
 
-  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, subRequestsExpired });
+  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired });
 }
 
 async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, dmMessage: string) {

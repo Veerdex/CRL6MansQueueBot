@@ -36,6 +36,7 @@ const CONFIG_KEYS = [
   "series_timeout_hours",
   "vote_timeout_seconds",
   "sub_request_timeout_minutes",
+  "queue_member_timeout_minutes",
   "band_cutoff_garnet_pctile",
   "band_cutoff_emerald_pctile",
   "band_cutoff_sapphire_pctile",

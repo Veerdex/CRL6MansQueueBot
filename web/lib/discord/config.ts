@@ -33,6 +33,7 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   series_timeout_hours: 2,
   vote_timeout_seconds: 180,
   sub_request_timeout_minutes: 10,
+  queue_member_timeout_minutes: 30,
   band_cutoff_garnet_pctile: 40,
   band_cutoff_emerald_pctile: 70,
   band_cutoff_sapphire_pctile: 90,
