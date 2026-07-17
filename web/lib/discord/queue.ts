@@ -235,6 +235,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       return;
     }
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`);
+    await editOriginalResponse(interaction.token, { content: "Left queue." });
     return;
   }
 
@@ -271,8 +272,10 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
   if (result?.status === "joined" && result.queue_size >= 6) {
     const guildId = interaction.guild_id ?? (await getGuildId());
     await handlePop(supabase, queueType, guildId, channelId);
+    await editOriginalResponse(interaction.token, { content: "Joined queue — match found!" });
   } else {
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
+    await editOriginalResponse(interaction.token, { content: "Joined queue." });
   }
 }
 
