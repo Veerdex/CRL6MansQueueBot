@@ -448,23 +448,39 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
     return;
   }
 
-  // Get the rank queue channel to post join messages
-  const { data: queueChannelConfig } = await supabase
+  // Determine which queue channel this command is running in
+  const { data: rankChannelConfig } = await supabase
     .from("crl6mansqueuebot_config")
     .select("value")
     .eq("key", "queue_channel_id_rank")
     .maybeSingle();
 
-  if (!queueChannelConfig?.value) {
-    await editOriginalResponse(interaction.token, { content: "Rank queue channel not configured." });
+  const { data: universalChannelConfig } = await supabase
+    .from("crl6mansqueuebot_config")
+    .select("value")
+    .eq("key", "queue_channel_id_universal")
+    .maybeSingle();
+
+  let queueChannelId: string | null = null;
+  let queueType: "rank" | "universal" | null = null;
+
+  if (rankChannelConfig?.value && interaction.channel_id === rankChannelConfig.value) {
+    queueChannelId = rankChannelConfig.value;
+    queueType = "rank";
+  } else if (universalChannelConfig?.value && interaction.channel_id === universalChannelConfig.value) {
+    queueChannelId = universalChannelConfig.value;
+    queueType = "universal";
+  }
+
+  if (!queueChannelId || !queueType) {
+    await editOriginalResponse(interaction.token, { content: "Run this command in a queue channel." });
     return;
   }
 
-  const queueChannelId = queueChannelConfig.value;
-
   // Send initial message
+  const queueLabel = queueType === "rank" ? "Rank Queue" : "Universal Queue";
   await editOriginalResponse(interaction.token, {
-    content: `🤖 Creating test bots and adding them to the queue...\nOnce all 5 bots have joined, use /q to join yourself and start the match!`,
+    content: `🤖 Creating test bots and adding them to the ${queueLabel}...\nOnce all 5 bots have joined, use /q to join yourself and start the match!`,
   });
 
   // Create 5 bots one at a time and add each to the queue
@@ -485,7 +501,7 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
     // Add bot to queue using RPC
     const { data: queueResults } = await supabase.rpc("crl6mansqueuebot_join_queue", {
       p_player_id: bot.id,
-      p_queue_type: "rank",
+      p_queue_type: queueType,
     });
 
     const queueResult = Array.isArray(queueResults) ? queueResults[0] : queueResults;
@@ -527,10 +543,10 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
 
   // Final message telling admin to join
   await editOriginalResponse(interaction.token, {
-    content: `✅ All 5 test bots are in the queue!\n\n**Now use /q to join as the 6th player and start the match.**\n\nThe vote screen with ${mode} buttons will appear automatically when all 6 players are ready.`,
+    content: `✅ All 5 test bots are in the ${queueLabel}!\n\n**Now use /q to join as the 6th player and start the match.**\n\nThe vote screen with ${mode} buttons will appear automatically when all 6 players are ready.`,
   });
 
-  await logAdminAction(actorId, "test_flow", "queue_setup", `mode=${mode} with 5 test bots`);
+  await logAdminAction(actorId, "test_flow", "queue_setup", `${queueType} queue, mode=${mode} with 5 test bots`);
 }
 
 // ---------------------------------------------------------------------------
