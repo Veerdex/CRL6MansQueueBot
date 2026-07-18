@@ -699,20 +699,51 @@ async function finalizeTeams(
   const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
   const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");
 
-  // Post and track the "Teams formed!" message as permanent (won't be deleted by queue updates)
-  await postTrackedQueueMessage(
-    supabase,
-    queueChannelId,
-    {
-      color: BRAND_COLOR,
-      title: "Teams formed!",
-      fields: [
-        { name: "Team Blue", value: teamALine, inline: true },
-        { name: "Team Orange", value: teamBLine, inline: true },
+  // Delete all non-permanent messages, then post the "Teams formed!" message
+  const { data: trackedMessages } = await supabase
+    .from("crl6mansqueuebot_queue_channel_messages")
+    .select("message_id, keep_permanently")
+    .eq("channel_id", queueChannelId) as any;
+
+  if (trackedMessages) {
+    for (const msg of trackedMessages) {
+      if (!(msg as any).keep_permanently) {
+        await discordFetch(`/channels/${queueChannelId}/messages/${msg.message_id}`, { method: "DELETE" }).catch(() => {});
+      }
+    }
+  }
+
+  await supabase
+    .from("crl6mansqueuebot_queue_channel_messages")
+    .delete()
+    .eq("channel_id", queueChannelId)
+    .eq("keep_permanently", false);
+
+  // Post the "Teams formed!" message
+  const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      embeds: [
+        {
+          color: BRAND_COLOR,
+          title: "Teams formed!",
+          fields: [
+            { name: "Team Blue", value: teamALine, inline: true },
+            { name: "Team Orange", value: teamBLine, inline: true },
+          ],
+          footer: { text: "Teams are ready. Join your team's voice channel to start playing. Run /report in the report channel when done." },
+        },
       ],
-      footer: { text: "Teams are ready. Join your team's voice channel to start playing. Run /report in the report channel when done." },
-    },
-    "teams_formed",
-    true,
-  );
+    }),
+  })) as { id: string };
+
+  // Track it as permanent
+  await supabase
+    .from("crl6mansqueuebot_queue_channel_messages")
+    .insert({
+      channel_id: queueChannelId,
+      message_id: message.id,
+      message_type: "teams_formed",
+      keep_permanently: true,
+    } as any);
 }
