@@ -693,8 +693,12 @@ async function finalizeTeams(
   const teamA = members.filter((m) => teamAssignments.get(m.id) === "A");
   const teamB = members.filter((m) => teamAssignments.get(m.id) === "B");
 
+  // Fetch match number for voice channel naming
+  const { data: seriesData } = await supabase.from("crl6mansqueuebot_series").select("match_number").eq("id", seriesId).single();
+  const matchNumber = (seriesData as any)?.match_number;
+
   // Create voice channels now that teams are finalized
-  await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB);
+  await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
 
   const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
   const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");

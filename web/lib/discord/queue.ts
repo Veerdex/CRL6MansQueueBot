@@ -403,6 +403,14 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     return;
   }
 
+  // Assign match number based on count of reported series
+  const { count: reportedCount } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "reported");
+  const matchNumber = reportedCount ?? 0;
+  await supabase.from("crl6mansqueuebot_series").update({ match_number: matchNumber } as any).eq("id", series.id);
+
   await supabase
     .from("crl6mansqueuebot_series_lobby")
     .insert(playerIds.map((playerId) => ({ series_id: series.id, player_id: playerId })));
@@ -461,10 +469,12 @@ export async function createVoiceChannels(
   guildId: string,
   teamA: PlayerRow[],
   teamB: PlayerRow[],
+  matchNumber?: number,
 ) {
   const adminRoleIds = await getAdminRoleIds();
   const botUserId = process.env.DISCORD_APPLICATION_ID;
-  const shortId = seriesId.slice(0, 8);
+  // Use match number if available, otherwise fall back to short series ID
+  const channelIdSuffix = matchNumber !== undefined ? `Match #${matchNumber}` : seriesId.slice(0, 8);
 
   // Fetch admin-specified call category from config
   const { data: categoryConfig } = await supabase
@@ -494,11 +504,11 @@ export async function createVoiceChannels(
   try {
     const voiceA = (await discordFetch(`/guilds/${guildId}/channels`, {
       method: "POST",
-      body: JSON.stringify({ name: `Team Blue - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamA) }),
+      body: JSON.stringify({ name: `Team Blue - ${channelIdSuffix}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamA) }),
     })) as { id: string };
     const voiceB = (await discordFetch(`/guilds/${guildId}/channels`, {
       method: "POST",
-      body: JSON.stringify({ name: `Team Orange - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamB) }),
+      body: JSON.stringify({ name: `Team Orange - ${channelIdSuffix}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamB) }),
     })) as { id: string };
 
     await supabase

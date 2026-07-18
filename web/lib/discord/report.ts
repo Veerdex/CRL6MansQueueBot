@@ -213,22 +213,8 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     .maybeSingle();
 
   const reportChannelId = reportChannelConfig?.value;
-  // Rename voice channels to use the match number
-  const matchId = encodeMatchId(matchNumber);
-  if (series.voice_channel_a_id) {
-    await discordFetch(`/channels/${series.voice_channel_a_id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name: `Team Blue - Match #${matchId}` }),
-    }).catch((err) => console.error(`Failed to rename voice channel A for series ${series.id}`, err));
-  }
-  if (series.voice_channel_b_id) {
-    await discordFetch(`/channels/${series.voice_channel_b_id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name: `Team Orange - Match #${matchId}` }),
-    }).catch((err) => console.error(`Failed to rename voice channel B for series ${series.id}`, err));
-  }
-
   if (reportChannelId) {
+    const matchId = encodeMatchId(matchNumber);
     const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines);
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
