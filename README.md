@@ -99,7 +99,7 @@ provisioned) with:
 | `DISCORD_APPLICATION_ID` | Discord Developer Portal → your app → General Information |
 | `DISCORD_PUBLIC_KEY` | Discord Developer Portal → your app → General Information |
 | `DISCORD_BOT_TOKEN` | Discord Developer Portal → your app → Bot |
-| `DISCORD_GUILD_ID` | *(optional)* only needed if the bot is in more than one server — otherwise auto-detected |
+| `DISCORD_GUILD_ID` | *(optional)* only needed if the bot is in more than one server. Otherwise auto-detected, or can be set later via `/admin setguildid` |
 | `CRON_SWEEP_SECRET` | Any random string — must match the secret the `pg_cron` migrations use to call the sweep/recompute-bands routes |
 | `DEV_PANEL_PASSWORD` | Any password of your choosing — gates the `/dev` test-data panel |
 
@@ -147,8 +147,14 @@ npm run register-commands
 
 This does a bulk overwrite of the guild's command set with everything defined in
 `scripts/register-commands.mjs` — run it again any time commands change. It auto-detects
-the guild the bot is in, so the bot must already be a member of your server (step 4);
-it fails if the bot is in more than one server, unless `DISCORD_GUILD_ID` is set.
+the guild the bot is in, so the bot must already be a member of your server (step 4).
+
+**If the bot is in multiple servers:** either set `DISCORD_GUILD_ID` in your env vars, or
+run `/admin setguildid guild_id:<snowflake>` once the bot is deployed to set it in the database.
+
+**Note:** If you haven't registered commands locally, you can also register them via Discord's
+Developer Portal (Applications → your app → Commands → Create New Command). The `register-commands`
+script just automates this.
 
 ## Discord server setup
 
