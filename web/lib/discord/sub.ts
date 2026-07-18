@@ -107,6 +107,13 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
+  // Check if nominee is locked into another active series
+  const { data: nomineePlayer } = await supabase.from("crl6mansqueuebot_players").select("id").eq("discord_id", nomineeDiscordId).maybeSingle();
+  if (nomineePlayer && (await isPlayerLockedInActiveSeries(supabase, nomineePlayer.id))) {
+    await editOriginalResponse(interaction.token, { content: "That player is currently locked in another match and can't be nominated." });
+    return;
+  }
+
   const { data: existingRequest } = await supabase
     .from("crl6mansqueuebot_sub_requests")
     .select("series_id")
