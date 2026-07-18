@@ -436,11 +436,11 @@ export async function createVoiceChannels(
   try {
     const voiceA = (await discordFetch(`/guilds/${guildId}/channels`, {
       method: "POST",
-      body: JSON.stringify({ name: `Team A - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamA) }),
+      body: JSON.stringify({ name: `Team Blue - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamA) }),
     })) as { id: string };
     const voiceB = (await discordFetch(`/guilds/${guildId}/channels`, {
       method: "POST",
-      body: JSON.stringify({ name: `Team B - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamB) }),
+      body: JSON.stringify({ name: `Team Orange - ${shortId}`, type: 2, parent_id: categoryId, permission_overwrites: voiceOverwrites(teamB) }),
     })) as { id: string };
 
     await supabase
