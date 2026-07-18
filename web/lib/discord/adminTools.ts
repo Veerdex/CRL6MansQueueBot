@@ -198,8 +198,10 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
   );
 
   await logAdminAction(actorId, "unreport", series.id, `queue_type=${series.queue_type} players=${players.length}`);
+  const matchNumber = (series as any).match_number;
+  const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
   await editOriginalResponse(interaction.token, {
-    content: `Unreported series ${series.id} — MMR and game counts reversed for ${players.length} players.`,
+    content: `Unreported ${matchLabel} — MMR and game counts reversed for ${players.length} players.`,
   });
 }
 
