@@ -691,11 +691,11 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
     await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
     await supabase.from("crl6mansqueuebot_queue_channel_messages").delete().neq("channel_id", "");
 
-    // Clear all configuration (delete all rows) except rank emoji
+    // Clear all configuration (delete all rows)
     await (supabase.from("crl6mansqueuebot_config") as any).delete();
     await (supabase.from("crl6mansqueuebot_band_roles") as any).delete();
     await (supabase.from("crl6mansqueuebot_queue_mention_roles") as any).delete();
-    // Note: rank_emoji is preserved — no need to re-upload emoji images
+    await (supabase.from("crl6mansqueuebot_rank_emoji") as any).delete();
 
     // Clear audit log
     await supabase.from("crl6mansqueuebot_audit_log").delete().neq("id", "");

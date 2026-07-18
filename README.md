@@ -314,9 +314,9 @@ role is granted, only the server owner has admin access.
   clean slate. Configuration (channels, roles, emoji) is preserved. Does not start a new
   season — run `/newseason` separately if needed. Requires confirmation text "SEASON RESET".
 - **`/admin full-reset confirmation:FACTORY RESET`** — **DANGER: complete factory reset** —
-  wipes all data including game data, configuration, audit log, and admin roles. Bot becomes
-  brand new and requires full setup again (channels, roles, mention roles, config) except rank
-  emoji is preserved. Requires confirmation text "FACTORY RESET".
+  wipes ALL data including game data, configuration, audit log, admin roles, and rank emoji.
+  Bot becomes completely brand new and requires full setup again from scratch. Requires
+  confirmation text "FACTORY RESET".
 - **`/admin checklist`** — shows a setup status checklist indicating which configuration
   items are complete: queue channels (rank & universal), report channel, 6-mans call
   category, 6 custom rank emoji, 6 band roles, admin roles.
