@@ -104,7 +104,10 @@ provisioned) with:
 
 ### 4. Invite the bot to your server
 
-Developer Portal → your app → **OAuth2** → **URL Generator**:
+**Quick way:** Open `invite-link-generator.html` in this repo (or paste your Application ID
+into the form) to auto-generate an invite link with all required permissions.
+
+**Manual way:** Developer Portal → your app → **OAuth2** → **URL Generator**:
 
 - Scopes: `bot`, `applications.commands`
 - Bot permissions: **View Channels**, **Send Messages**, **Manage Channels** (creates/

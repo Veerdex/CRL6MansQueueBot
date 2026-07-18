@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRL 6 Mans Bot - Invite Link Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            color: #333;
+            font-weight: 500;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .permissions-list {
+            background: #f5f5f5;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 25px;
+            font-size: 13px;
+        }
+
+        .permissions-list h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .permissions-list ul {
+            list-style: none;
+            color: #666;
+            line-height: 1.8;
+        }
+
+        .permissions-list li:before {
+            content: "✓ ";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 5px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .result {
+            display: none;
+            margin-top: 25px;
+            padding: 20px;
+            background: #f0f7ff;
+            border: 2px solid #667eea;
+            border-radius: 4px;
+        }
+
+        .result.show {
+            display: block;
+        }
+
+        .result h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .result-url {
+            background: white;
+            padding: 12px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            word-break: break-all;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 15px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-copy {
+            flex: 1;
+            background: #4CAF50;
+            padding: 10px;
+            font-size: 14px;
+        }
+
+        .btn-copy:hover {
+            background: #45a049;
+        }
+
+        .btn-open {
+            flex: 1;
+            background: #667eea;
+            padding: 10px;
+            font-size: 14px;
+        }
+
+        .btn-open:hover {
+            background: #556cd6;
+        }
+
+        .copy-feedback {
+            display: none;
+            color: #4CAF50;
+            font-size: 12px;
+            margin-top: 5px;
+            font-weight: 500;
+        }
+
+        .copy-feedback.show {
+            display: block;
+        }
+
+        .error {
+            color: #d32f2f;
+            font-size: 12px;
+            margin-top: 5px;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 CRL 6 Mans Bot</h1>
+        <p class="subtitle">Invite Link Generator</p>
+
+        <div class="form-group">
+            <label for="appId">Discord Application ID</label>
+            <input
+                type="text"
+                id="appId"
+                placeholder="Paste your Application ID from Developer Portal"
+            >
+            <div class="error" id="error"></div>
+        </div>
+
+        <div class="permissions-list">
+            <h3>Bot Permissions (Auto-included)</h3>
+            <ul>
+                <li>View Channels</li>
+                <li>Send Messages</li>
+                <li>Manage Channels</li>
+                <li>Manage Roles</li>
+                <li>Connect (Voice)</li>
+                <li>Move Members (Voice)</li>
+            </ul>
+        </div>
+
+        <button onclick="generateInviteLink()">Generate Invite Link</button>
+
+        <div class="result" id="result">
+            <h3>✓ Invite Link Generated</h3>
+            <div class="result-url" id="resultUrl"></div>
+            <div class="button-group">
+                <button class="btn-copy" onclick="copyToClipboard()">📋 Copy Link</button>
+                <button class="btn-open" onclick="openInviteLink()">🔗 Open in Discord</button>
+            </div>
+            <div class="copy-feedback" id="copyFeedback">✓ Copied to clipboard!</div>
+        </div>
+    </div>
+
+    <script>
+        const PERMISSIONS = 286264336; // View Channels + Send Messages + Manage Channels + Manage Roles + Connect + Move Members
+        const SCOPES = 'bot applications.commands';
+
+        function validateApplicationId(appId) {
+            return /^\d{15,20}$/.test(appId);
+        }
+
+        function generateInviteLink() {
+            const appId = document.getElementById('appId').value.trim();
+            const errorEl = document.getElementById('error');
+
+            errorEl.classList.remove('show');
+
+            if (!appId) {
+                errorEl.textContent = 'Please enter your Application ID';
+                errorEl.classList.add('show');
+                return;
+            }
+
+            if (!validateApplicationId(appId)) {
+                errorEl.textContent = 'Invalid Application ID. It should be a number (15-20 digits)';
+                errorEl.classList.add('show');
+                return;
+            }
+
+            const inviteUrl = `https://discord.com/api/oauth2/authorize?client_id=${appId}&scope=${encodeURIComponent(SCOPES)}&permissions=${PERMISSIONS}`;
+
+            document.getElementById('resultUrl').textContent = inviteUrl;
+            document.getElementById('result').classList.add('show');
+            document.getElementById('copyFeedback').classList.remove('show');
+        }
+
+        function copyToClipboard() {
+            const url = document.getElementById('resultUrl').textContent;
+            navigator.clipboard.writeText(url).then(() => {
+                const feedback = document.getElementById('copyFeedback');
+                feedback.classList.add('show');
+                setTimeout(() => {
+                    feedback.classList.remove('show');
+                }, 2000);
+            });
+        }
+
+        function openInviteLink() {
+            const url = document.getElementById('resultUrl').textContent;
+            window.open(url, '_blank');
+        }
+
+        // Allow Enter key to generate
+        document.getElementById('appId').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                generateInviteLink();
+            }
+        });
+    </script>
+</body>
+</html>
