@@ -1,4 +1,5 @@
 import "server-only";
+import { getConfigValue } from "./config";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 
@@ -77,9 +78,15 @@ let cachedGuildId: string | null = null;
 export async function getGuildId(): Promise<string> {
   if (process.env.DISCORD_GUILD_ID) return process.env.DISCORD_GUILD_ID;
   if (cachedGuildId) return cachedGuildId;
+  // Check if guild ID is set in the database config
+  const configGuildId = await getConfigValue("discord_guild_id");
+  if (configGuildId) {
+    cachedGuildId = configGuildId;
+    return cachedGuildId;
+  }
   const guilds = (await discordFetch("/users/@me/guilds")) as { id: string }[];
   if (guilds.length !== 1) {
-    throw new Error(`Expected the bot to be in exactly 1 guild, found ${guilds.length} — set DISCORD_GUILD_ID explicitly.`);
+    throw new Error(`Expected the bot to be in exactly 1 guild, found ${guilds.length} — set DISCORD_GUILD_ID or use /admin setguildid.`);
   }
   cachedGuildId = guilds[0].id;
   return cachedGuildId;

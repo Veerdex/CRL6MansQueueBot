@@ -152,6 +152,11 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processStart(interaction, actorId);
       return;
     }
+    case "setguildid": {
+      const guildId = getParamValue(params, "guild_id");
+      await processSetGuildId(interaction, actorId, typeof guildId === "string" ? guildId : null);
+      return;
+    }
     case "checklist": {
       await processChecklist(interaction);
       return;
@@ -903,4 +908,21 @@ async function processStart(interaction: DiscordInteraction, actorId: string) {
   await setConfigValue("bot_paused", "0");
   await logAdminAction(actorId, "start_bot", "", "bot resumed");
   await editOriginalResponse(interaction.token, { content: "Bot resumed." });
+}
+
+// ---------------------------------------------------------------------------
+// /admin setguildid guild_id:<snowflake> — store the Discord guild ID
+// for this bot instance in the database. Allows moving bot to different
+// servers without changing environment variables.
+// ---------------------------------------------------------------------------
+
+async function processSetGuildId(interaction: DiscordInteraction, actorId: string, guildId: string | null) {
+  if (!guildId || !/^\d+$/.test(guildId)) {
+    await editOriginalResponse(interaction.token, { content: "Invalid guild ID. Must be a valid Discord snowflake (numeric ID)." });
+    return;
+  }
+
+  await setConfigValue("discord_guild_id", guildId);
+  await logAdminAction(actorId, "set_guild_id", guildId, "guild ID configured");
+  await editOriginalResponse(interaction.token, { content: `Guild ID set to ${guildId}. This will be used for auto-detection when the env var is not set.` });
 }

@@ -484,6 +484,19 @@ const commands = [
         ],
       },
       {
+        name: "setguildid",
+        description: "Set the Discord server (guild) ID for this bot instance.",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "guild_id",
+            description: "The Discord server ID (snowflake).",
+            type: STRING_OPTION,
+            required: true,
+          },
+        ],
+      },
+      {
         name: "stop",
         description: "Pause all bot activity (queue joins, team formation, etc.).",
         type: SUB_COMMAND,
