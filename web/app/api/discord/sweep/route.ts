@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage } from "@/lib/discord/rest";
 import { getConfigNumber } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
+import { postTrackedQueueMessage } from "@/lib/discord/queue";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
@@ -203,19 +204,18 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
     return;
   }
 
-  // Post error embed to the queue channel
+  // Post timeout embed to the queue channel
   if (series.queue_channel_id) {
-    await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        embeds: [
-          {
-            color: 0xef476f,
-            description: message,
-          },
-        ],
-      }),
-    }).catch((err) => console.error(`Failed to post series void message to queue channel`, err));
+    await postTrackedQueueMessage(
+      supabase,
+      series.queue_channel_id,
+      {
+        color: 0xef476f,
+        description: message,
+      },
+      "timeout",
+      true,
+    );
   }
 
   await clearPendingSeriesState(supabase, series.id);

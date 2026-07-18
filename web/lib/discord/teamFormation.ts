@@ -13,7 +13,7 @@ import { getAdminRoleIds } from "./admin";
 import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, type DiscordInteraction } from "./types";
-import { createVoiceChannels } from "./queue";
+import { createVoiceChannels, postTrackedQueueMessage } from "./queue";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -698,22 +698,21 @@ async function finalizeTeams(
 
   const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
   const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");
-  await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
-    method: "PATCH",
-    body: JSON.stringify({
-      content: "",
-      embeds: [
-        {
-          color: BRAND_COLOR,
-          title: "Teams formed!",
-          fields: [
-            { name: "Team Blue", value: teamALine, inline: true },
-            { name: "Team Orange", value: teamBLine, inline: true },
-          ],
-          footer: { text: "Teams are ready. Join your team's voice channel to start playing. Run /report in the report channel when done." },
-        },
+
+  // Post and track the "Teams formed!" message as permanent (won't be deleted by queue updates)
+  await postTrackedQueueMessage(
+    supabase,
+    queueChannelId,
+    {
+      color: BRAND_COLOR,
+      title: "Teams formed!",
+      fields: [
+        { name: "Team Blue", value: teamALine, inline: true },
+        { name: "Team Orange", value: teamBLine, inline: true },
       ],
-      components: [],
-    }),
-  });
+      footer: { text: "Teams are ready. Join your team's voice channel to start playing. Run /report in the report channel when done." },
+    },
+    "teams_formed",
+    true,
+  );
 }

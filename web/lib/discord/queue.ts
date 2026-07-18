@@ -86,6 +86,60 @@ async function postFreshQueueMessage(
   });
 }
 
+// Posts a message to a queue channel and tracks it, deleting all other non-permanent messages first.
+// Used for status updates, errors, and settled series notifications.
+export async function postTrackedQueueMessage(
+  supabase: AdminClient,
+  channelId: string,
+  embed: any,
+  messageType: "status" | "error" | "settled" | "teams_formed" | "timeout",
+  keepPermanently: boolean = false,
+): Promise<string | null> {
+  // Delete all non-permanent messages from this channel
+  const { data: trackedMessages } = await supabase
+    .from("crl6mansqueuebot_queue_channel_messages")
+    .select("message_id, keep_permanently")
+    .eq("channel_id", channelId) as any;
+
+  if (trackedMessages) {
+    for (const msg of trackedMessages) {
+      if (!(msg as any).keep_permanently) {
+        await discordFetch(`/channels/${channelId}/messages/${msg.message_id}`, { method: "DELETE" }).catch((err) =>
+          console.error(`Failed to delete queue channel message ${msg.message_id}`, err),
+        );
+      }
+    }
+  }
+
+  // Delete the old non-permanent entries from the tracking table
+  await supabase
+    .from("crl6mansqueuebot_queue_channel_messages")
+    .delete()
+    .eq("channel_id", channelId)
+    .eq("keep_permanently", false);
+
+  // Post the new message
+  try {
+    const message = (await discordFetch(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ embeds: [embed] }),
+    })) as { id: string };
+
+    // Track the new message
+    await supabase.from("crl6mansqueuebot_queue_channel_messages").insert({
+      channel_id: channelId,
+      message_id: message.id,
+      message_type: messageType,
+      keep_permanently: keepPermanently,
+    } as any);
+
+    return message.id;
+  } catch (err) {
+    console.error(`Failed to post tracked queue message`, err);
+    return null;
+  }
+}
+
 // Refreshes whichever channel is currently mapped to `queueType`. No-ops if the queue channel
 // was never set up. `headline` is the "<@user> has joined/left..." line for command-driven
 // refreshes; omitted for headline-less refreshes (admin force-leave, cross-queue-pop removal).
@@ -388,12 +442,16 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
     await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
   } catch (err) {
     console.error(`Failed to start team formation for series ${seriesId}`, err);
-    await discordFetch(`/channels/${queueChannelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        content: `**Error:** Failed to start team formation. Ask an admin to check logs.`,
-      }),
-    }).catch((logErr) => console.error(`Failed to post error message`, logErr));
+    await postTrackedQueueMessage(
+      supabase,
+      queueChannelId,
+      {
+        color: 0xef476f,
+        description: "**Error:** Failed to start team formation. Ask an admin to check logs.",
+      },
+      "error",
+      true,
+    );
   }
 }
 
