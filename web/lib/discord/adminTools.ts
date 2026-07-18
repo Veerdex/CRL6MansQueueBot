@@ -530,7 +530,7 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
     // Create bot
     const { data: bot } = await supabase
       .from("crl6mansqueuebot_players")
-      .insert({ discord_id: botDiscordId, display_name: `Test Bot ${i + 1}`, mmr: botMMR, is_test_data: true })
+      .insert({ discord_id: botDiscordId, display_name: `Test Bot ${i + 1}`, mmr: botMMR, is_test_data: true, vote_default: mode as any })
       .select("*")
       .single();
 
