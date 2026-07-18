@@ -114,14 +114,16 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  const { data: existingRequest } = await supabase
+  // Check if this nominee has already been nominated by this player
+  const { data: duplicateRequest } = await supabase
     .from("crl6mansqueuebot_sub_requests")
     .select("series_id")
     .eq("series_id", series.id)
     .eq("leaving_player_id", player.id)
+    .eq("nominee_discord_id", nomineeDiscordId)
     .maybeSingle();
-  if (existingRequest) {
-    await editOriginalResponse(interaction.token, { content: "You already have a pending sub request out." });
+  if (duplicateRequest) {
+    await editOriginalResponse(interaction.token, { content: "You've already nominated that player for a sub." });
     return;
   }
 
