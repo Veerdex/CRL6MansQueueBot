@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { InteractionType, InteractionResponseType } from "discord-interactions";
 import { verifyDiscordRequest } from "@/lib/discord/verify";
+import { getConfigNumber } from "@/lib/discord/config";
 import type { DiscordInteraction } from "@/lib/discord/types";
 import { handleQueueJoinCommand, handleQueueLeaveCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand } from "@/lib/discord/queue";
 import {
@@ -40,6 +41,17 @@ export async function POST(request: Request) {
   // other side effects, and quickly, or the URL registration in the dev portal fails.
   if (interaction.type === InteractionType.PING) {
     return NextResponse.json({ type: InteractionResponseType.PONG });
+  }
+
+  // Check if bot is paused (unless it's an admin command)
+  const commandName = interaction.data?.name;
+  const isBotPaused = await getConfigNumber("bot_paused", 0);
+  const isAdminCommand = commandName === "admin";
+  if (isBotPaused && !isAdminCommand) {
+    return NextResponse.json({
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: "The bot is currently paused for maintenance. Please try again later.", flags: 64 },
+    });
   }
 
   if (interaction.type === InteractionType.MESSAGE_COMPONENT) {

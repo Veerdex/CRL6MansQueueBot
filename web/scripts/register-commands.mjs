@@ -471,6 +471,16 @@ const commands = [
         ],
       },
       {
+        name: "stop",
+        description: "Pause all bot activity (queue joins, team formation, etc.).",
+        type: SUB_COMMAND,
+      },
+      {
+        name: "start",
+        description: "Resume bot activity after a pause.",
+        type: SUB_COMMAND,
+      },
+      {
         name: "checklist",
         description: "Show which settings are configured and which still need setup.",
         type: SUB_COMMAND,

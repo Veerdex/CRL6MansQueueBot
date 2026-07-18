@@ -139,6 +139,14 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processReset(interaction, actorId, typeof confirmation === "string" ? confirmation : null);
       return;
     }
+    case "stop": {
+      await processStop(interaction, actorId);
+      return;
+    }
+    case "start": {
+      await processStart(interaction, actorId);
+      return;
+    }
     case "checklist": {
       await processChecklist(interaction);
       return;
@@ -820,4 +828,24 @@ async function processSetRankEmoji(
     console.error(`Failed to set rank emoji for ${band}`, err);
     await editOriginalResponse(interaction.token, { content: "An error occurred while setting the emoji." });
   }
+}
+
+// ---------------------------------------------------------------------------
+// /admin stop — pause all bot activity (queue joins, team formation, etc.)
+// ---------------------------------------------------------------------------
+
+async function processStop(interaction: DiscordInteraction, actorId: string) {
+  await setConfigValue("bot_paused", "1");
+  await logAdminAction(actorId, "stop_bot", "", "bot paused");
+  await editOriginalResponse(interaction.token, { content: "Bot paused — all player commands are blocked." });
+}
+
+// ---------------------------------------------------------------------------
+// /admin start — resume bot activity after a pause
+// ---------------------------------------------------------------------------
+
+async function processStart(interaction: DiscordInteraction, actorId: string) {
+  await setConfigValue("bot_paused", "0");
+  await logAdminAction(actorId, "start_bot", "", "bot resumed");
+  await editOriginalResponse(interaction.token, { content: "Bot resumed." });
 }

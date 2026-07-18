@@ -38,6 +38,7 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   band_cutoff_emerald_pctile: 70,
   band_cutoff_sapphire_pctile: 90,
   season_rank_display_min_games: 10,
+  bot_paused: 0,
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {
