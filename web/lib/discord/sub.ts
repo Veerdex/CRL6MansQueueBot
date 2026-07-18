@@ -200,6 +200,7 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
     return;
   }
 
+  // Delete ALL pending sub requests from this leaving player (not just the one being accepted)
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_sub_requests")
     .delete()
