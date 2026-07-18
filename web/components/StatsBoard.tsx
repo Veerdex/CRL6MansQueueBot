@@ -117,7 +117,7 @@ export default function StatsBoard({
         >
           {col.label}
           {sortKey === col.key ? (
-            <span className="text-accent">{sortDir === "desc" ? " ↓" : " ↑"}</span>
+            <span className="text-accent-secondary">{sortDir === "desc" ? " ↓" : " ↑"}</span>
           ) : (
             ""
           )}

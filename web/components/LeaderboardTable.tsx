@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import SearchBar from "./SearchBar";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import type { Band } from "@/lib/supabase/types";
 
@@ -28,13 +29,47 @@ export default function LeaderboardTable({
   topCount: number;
 }) {
   const [page, setPage] = useState(0);
+  const [highlightedPlayerId, setHighlightedPlayerId] = useState<string | null>(null);
+  const highlightRef = useRef<HTMLTableRowElement>(null);
+
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages - 1);
   const start = clampedPage * PAGE_SIZE;
   const pageRows = rows.slice(start, start + PAGE_SIZE);
 
+  function handleSearch(playerId: string | null) {
+    if (!playerId) {
+      setHighlightedPlayerId(null);
+      return;
+    }
+
+    // Find the player's position in the full rows array
+    const playerIndex = rows.findIndex((r) => r.playerId === playerId);
+    if (playerIndex === -1) return;
+
+    // Calculate which page the player is on
+    const playerPage = Math.floor(playerIndex / PAGE_SIZE);
+    setPage(playerPage);
+    setHighlightedPlayerId(playerId);
+  }
+
+  useEffect(() => {
+    if (highlightedPlayerId && highlightRef.current) {
+      // Scroll the row into view
+      highlightRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      // Remove the animation class after it completes (3 cycles * 0.6s = 1.8s)
+      const timer = setTimeout(() => {
+        setHighlightedPlayerId(null);
+      }, 1800);
+
+      return () => clearTimeout(timer);
+    }
+  }, [highlightedPlayerId]);
+
   return (
-    <div>
+    <div className="space-y-4">
+      <SearchBar players={rows} onSearch={handleSearch} />
       <div className="overflow-hidden overflow-x-auto rounded-xl border border-border">
         <table className="w-full min-w-[640px] border-collapse text-sm">
           <thead>
@@ -59,12 +94,14 @@ export default function LeaderboardTable({
               pageRows.map((row, i) => {
                 const position = start + i + 1;
                 const isTopCut = position <= topCount;
+                const isHighlighted = row.playerId === highlightedPlayerId;
                 return (
                   <tr
                     key={row.playerId}
+                    ref={isHighlighted ? highlightRef : null}
                     className={`row-hover border-b border-border text-foreground last:border-b-0 ${
                       isTopCut ? "top-cut" : ""
-                    }`}
+                    } ${isHighlighted ? "highlight-pulse" : ""}`}
                   >
                     <td className="py-2 pr-3 pl-4">{position}</td>
                     <td className="py-2 pr-3 font-medium">{row.displayName}</td>
