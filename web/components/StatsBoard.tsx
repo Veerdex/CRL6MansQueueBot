@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
+import SearchBar from "./SearchBar";
 import type { CompletedGame } from "@/lib/leaderboard/queries";
 import { computeStats, filterGames } from "@/lib/leaderboard/stats";
 import { playTap } from "@/lib/sound";
@@ -46,6 +47,8 @@ export default function StatsBoard({
   const [seasonScope, setSeasonScope] = useState<"current" | "previous">("current");
   const [sortKey, setSortKey] = useState<SortKey>("gamesPlayed");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [highlightedPlayerId, setHighlightedPlayerId] = useState<string | null>(null);
+  const highlightRef = useRef<HTMLTableRowElement>(null);
 
   const selectedSeasonId =
     mode === "season" ? (seasonScope === "current" ? currentSeason?.id : previousSeason?.id) : undefined;
@@ -106,6 +109,24 @@ export default function StatsBoard({
     setQueueFilter(q);
   }
 
+  function handleSearch(playerId: string | null) {
+    setHighlightedPlayerId(playerId);
+  }
+
+  useEffect(() => {
+    if (highlightedPlayerId && highlightRef.current) {
+      // Scroll the row into view
+      highlightRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      // Remove the animation class after it completes (3 cycles * 0.6s = 1.8s)
+      const timer = setTimeout(() => {
+        setHighlightedPlayerId(null);
+      }, 1800);
+
+      return () => clearTimeout(timer);
+    }
+  }, [highlightedPlayerId]);
+
   const header = (
     <tr className="bg-surface-2/60 text-left text-muted">
       <th className="py-2.5 pr-3 pl-4 font-semibold">Player</th>
@@ -165,6 +186,10 @@ export default function StatsBoard({
         </div>
       </div>
 
+      <div className="mb-4 w-full max-w-sm">
+        <SearchBar players={rows} onSearch={handleSearch} />
+      </div>
+
       {sortedRows.length === 0 ? (
         <div className="overflow-hidden rounded-xl border border-border">
           <table className="w-full border-collapse text-sm">
@@ -183,36 +208,45 @@ export default function StatsBoard({
           <table className="w-full min-w-[640px] border-collapse text-sm">
             <thead>{header}</thead>
             <tbody>
-              {sortedRows.map((row) => (
-                <tr key={row.playerId} className="row-hover border-b border-border text-foreground last:border-b-0">
-                  <td className="py-2 pr-3 pl-4 font-medium">{row.displayName}</td>
-                  <td className="py-2 pr-3">{row.gamesPlayed}</td>
-                  <td className="py-2 pr-3">{row.wins}</td>
-                  <td className="py-2 pr-3">{row.losses}</td>
-                  <td className="py-2 pr-3">
-                    {row.winRate === null ? "—" : `${Math.round(row.winRate * 100)}%`}
-                  </td>
-                  <td className="py-2 pr-3">{row.longestWinStreak}</td>
-                  <td className="py-2 pr-3">
-                    {row.currentStreak.type ? (
-                      <span
-                        className={
-                          row.currentStreak.type === "W"
-                            ? "text-green-400"
-                            : row.currentStreak.type === "L"
-                              ? "text-red-400"
-                              : ""
-                        }
-                      >
-                        {row.currentStreak.type}
-                        {row.currentStreak.count}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {sortedRows.map((row) => {
+                const isHighlighted = row.playerId === highlightedPlayerId;
+                return (
+                  <tr
+                    key={row.playerId}
+                    ref={isHighlighted ? highlightRef : null}
+                    className={`row-hover border-b border-border text-foreground last:border-b-0 ${
+                      isHighlighted ? "highlight-pulse" : ""
+                    }`}
+                  >
+                    <td className="py-2 pr-3 pl-4 font-medium">{row.displayName}</td>
+                    <td className="py-2 pr-3">{row.gamesPlayed}</td>
+                    <td className="py-2 pr-3">{row.wins}</td>
+                    <td className="py-2 pr-3">{row.losses}</td>
+                    <td className="py-2 pr-3">
+                      {row.winRate === null ? "—" : `${Math.round(row.winRate * 100)}%`}
+                    </td>
+                    <td className="py-2 pr-3">{row.longestWinStreak}</td>
+                    <td className="py-2 pr-3">
+                      {row.currentStreak.type ? (
+                        <span
+                          className={
+                            row.currentStreak.type === "W"
+                              ? "text-green-400"
+                              : row.currentStreak.type === "L"
+                                ? "text-red-400"
+                                : ""
+                          }
+                        >
+                          {row.currentStreak.type}
+                          {row.currentStreak.count}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
