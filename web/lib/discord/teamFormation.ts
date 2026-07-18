@@ -444,6 +444,19 @@ function draftPickButtonRows(seriesId: string, remaining: PlayerRow[]) {
   return buttonRows;
 }
 
+function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string) {
+  const turnName = turnCaptain === "A" ? "Captain A" : "Captain B";
+  return {
+    color: BRAND_COLOR,
+    title: "Captains Draft",
+    fields: [
+      { name: "Captain A", value: `<@${captainA.discord_id}>`, inline: true },
+      { name: "Captain B", value: `<@${captainB.discord_id}>`, inline: true },
+      { name: "Status", value: status, inline: false },
+    ],
+  };
+}
+
 // Picks are made via DM to whichever captain currently has the turn (not channel buttons —
 // see CLAUDE.md, "Other user commands"/pop-to-report flow: "The bot will send a DM to the
 // first captain... Then a message for the second captain..."). Discord gives bots no way to
@@ -463,12 +476,16 @@ async function sendDraftPickPrompt(
   turnCaptain: Team,
 ) {
   const turnPlayer = turnCaptain === "A" ? captainA : captainB;
-  const header = `**Captains Draft**\nCaptain A: <@${captainA.discord_id}>\nCaptain B: <@${captainB.discord_id}>\n\n`;
 
   if (turnPlayer.is_test_data) {
+    const statusText = `Waiting on <@${turnPlayer.discord_id}> (test bot)...`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content: `${header}Waiting on <@${turnPlayer.discord_id}> (test bot)...`, embeds: [], components: [] }),
+      body: JSON.stringify({
+        content: "",
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText)],
+        components: [],
+      }),
     });
     return;
   }
@@ -526,16 +543,22 @@ async function sendDraftPickPrompt(
   const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows, [embed]);
 
   if (dmSent) {
-    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ content: `${header}<@${turnPlayer.discord_id}> is picking — check your DMs!`, embeds: [], components: [] }),
-    });
-  } else {
+    const statusText = `<@${turnPlayer.discord_id}> is picking — check your DMs!`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
-        content: `${header}<@${turnPlayer.discord_id}> — I couldn't DM you (your DMs are closed). Pick here instead:`,
-        embeds: [],
+        content: "",
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText)],
+        components: [],
+      }),
+    });
+  } else {
+    const statusText = `<@${turnPlayer.discord_id}> — I couldn't DM you (your DMs are closed). Pick from the buttons below:`;
+    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        content: "",
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText)],
         components: buttonRows,
       }),
     });
