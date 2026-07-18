@@ -139,6 +139,11 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processReset(interaction, actorId, typeof confirmation === "string" ? confirmation : null);
       return;
     }
+    case "full-reset": {
+      const confirmation = getParamValue(params, "confirmation");
+      await processFullReset(interaction, actorId, typeof confirmation === "string" ? confirmation : null);
+      return;
+    }
     case "stop": {
       await processStop(interaction, actorId);
       return;
@@ -655,6 +660,56 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
   } catch (err) {
     console.error("Failed to reset game data", err);
     await editOriginalResponse(interaction.token, { content: "An error occurred while resetting data." });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /admin full-reset — complete factory reset, deletes EVERYTHING including
+// configuration, making the bot act as if it's brand new
+// ---------------------------------------------------------------------------
+
+async function processFullReset(interaction: DiscordInteraction, actorId: string, confirmation: string | null) {
+  if (confirmation !== "FACTORY RESET") {
+    await editOriginalResponse(interaction.token, { content: 'Confirmation failed. Type exactly: "FACTORY RESET"' });
+    return;
+  }
+
+  const supabase = createAdminClient();
+
+  try {
+    // Delete in order of foreign key dependencies
+    await supabase.from("crl6mansqueuebot_abandon_votes").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_sub_requests").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series_votes").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series_players").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series_lobby").delete().neq("series_id", "");
+    await supabase.from("crl6mansqueuebot_series").delete().neq("id", "");
+    await supabase.from("crl6mansqueuebot_queue_members").delete().neq("player_id", "");
+    await supabase.from("crl6mansqueuebot_season_history").delete().neq("season_id", "");
+    await supabase.from("crl6mansqueuebot_seasons").delete().neq("id", "");
+    await supabase.from("crl6mansqueuebot_players").delete().neq("id", "");
+    await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
+    await supabase.from("crl6mansqueuebot_queue_channel_messages").delete().neq("channel_id", "");
+
+    // Clear all configuration (delete all rows)
+    await (supabase.from("crl6mansqueuebot_config") as any).delete();
+    await (supabase.from("crl6mansqueuebot_band_roles") as any).delete();
+    await (supabase.from("crl6mansqueuebot_queue_mention_roles") as any).delete();
+    await (supabase.from("crl6mansqueuebot_rank_emoji") as any).delete();
+
+    // Clear audit log
+    await supabase.from("crl6mansqueuebot_audit_log").delete().neq("id", "");
+
+    // Clear admin roles (but NOT the admin_roles table structure itself — that stays)
+    await supabase.from("crl6mansqueuebot_admin_roles").delete().neq("role_id", "");
+
+    await logAdminAction(actorId, "full_reset", "all_data", "Complete factory reset — all data and configuration deleted");
+    await editOriginalResponse(interaction.token, {
+      content: "✅ Complete factory reset done. Bot is now brand new. You'll need to run setup commands again.",
+    });
+  } catch (err) {
+    console.error("Failed to perform full reset", err);
+    await editOriginalResponse(interaction.token, { content: "An error occurred while performing factory reset." });
   }
 }
 

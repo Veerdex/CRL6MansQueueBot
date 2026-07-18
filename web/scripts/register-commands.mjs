@@ -459,12 +459,25 @@ const commands = [
       },
       {
         name: "reset",
-        description: "DANGER: Wipe all game data and reset to a clean slate (does not start a new season).",
+        description: "DANGER: Wipe all game data and reset to a clean slate (keeps configuration).",
         type: SUB_COMMAND,
         options: [
           {
             name: "confirmation",
             description: 'Type "SEASON RESET" to confirm this destructive action.',
+            type: STRING_OPTION,
+            required: true,
+          },
+        ],
+      },
+      {
+        name: "full-reset",
+        description: "DANGER: Complete factory reset — wipes ALL data including configuration (makes bot brand new).",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "confirmation",
+            description: 'Type "FACTORY RESET" to confirm this extremely destructive action.',
             type: STRING_OPTION,
             required: true,
           },
