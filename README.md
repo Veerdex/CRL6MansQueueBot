@@ -317,6 +317,9 @@ role is granted, only the server owner has admin access.
   wipes ALL data including game data, configuration, audit log, admin roles, and rank emoji.
   Bot becomes completely brand new and requires full setup again from scratch. Requires
   confirmation text "FACTORY RESET".
+- **`/admin setguildid guild_id:<snowflake>`** — set the Discord server ID for this bot
+  instance. Stored in the database and checked before auto-detection, making it easier to
+  move the bot between servers without changing environment variables.
 - **`/admin checklist`** — shows a setup status checklist indicating which configuration
   items are complete: queue channels (rank & universal), report channel, 6-mans call
   category, 6 custom rank emoji, 6 band roles, admin roles.
