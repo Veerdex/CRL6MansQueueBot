@@ -137,7 +137,7 @@ export default function StatsBoard({
               className="segmented-btn"
               onClick={() => selectSeasonScope("current")}
             >
-              Current{currentSeason ? ` (#${currentSeason.seasonNumber})` : ""}
+              Current Season
             </button>
             <button
               type="button"
@@ -146,7 +146,7 @@ export default function StatsBoard({
               onClick={() => selectSeasonScope("previous")}
               disabled={!previousSeason}
             >
-              Previous{previousSeason ? ` (#${previousSeason.seasonNumber})` : ""}
+              Previous Season
             </button>
           </div>
         )}
@@ -194,7 +194,22 @@ export default function StatsBoard({
                   </td>
                   <td className="py-2 pr-3">{row.longestWinStreak}</td>
                   <td className="py-2 pr-3">
-                    {row.currentStreak.type ? `${row.currentStreak.type}${row.currentStreak.count}` : "—"}
+                    {row.currentStreak.type ? (
+                      <span
+                        className={
+                          row.currentStreak.type === "W"
+                            ? "text-green-400"
+                            : row.currentStreak.type === "L"
+                              ? "text-red-400"
+                              : ""
+                        }
+                      >
+                        {row.currentStreak.type}
+                        {row.currentStreak.count}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                 </tr>
               ))}

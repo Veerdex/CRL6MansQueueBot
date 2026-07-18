@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
-import { SEASON_RANK_DISPLAY_MIN_GAMES } from "@/lib/leaderboard/constants";
 import { bandRank, computeStats, filterGames } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
@@ -59,11 +58,6 @@ export default function UnifiedLeaderboard({
       })
       .map(({ player, games }) => {
         const rankStats = computeStats(filterGames(games, { queueType: "rank" }));
-        const history = previousSeasonHistory.get(player.id);
-        const lastSeasonRank =
-          history && history.season_games_played >= SEASON_RANK_DISPLAY_MIN_GAMES
-            ? history.season_rank
-            : null;
         return {
           playerId: player.id,
           displayName: player.display_name,
@@ -72,11 +66,10 @@ export default function UnifiedLeaderboard({
           wins: rankStats.wins,
           losses: rankStats.losses,
           winRate: rankStats.winRate,
-          lastSeasonRank,
         };
       });
     return rows;
-  }, [eligiblePlayers, previousSeasonHistory]);
+  }, [eligiblePlayers]);
 
   // All-Time Stats view
   const statsPlayers = useMemo(() => {
@@ -130,7 +123,7 @@ export default function UnifiedLeaderboard({
               className="segmented-btn"
               onClick={() => selectSeasonScope("current")}
             >
-              Current{activeSeason ? ` (#${activeSeason.season_number})` : ""}
+              Current Season
             </button>
             <button
               type="button"
@@ -139,7 +132,7 @@ export default function UnifiedLeaderboard({
               onClick={() => selectSeasonScope("previous")}
               disabled={!previousSeason}
             >
-              Previous{previousSeason ? ` (#${previousSeason.season_number})` : ""}
+              Previous Season
             </button>
           </div>
         )}

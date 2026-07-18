@@ -12,17 +12,12 @@ export interface MainBoardRow {
   wins: number;
   losses: number;
   winRate: number | null;
-  lastSeasonRank: number | null;
 }
 
 const PAGE_SIZE = 20;
 
 function formatWinRate(winRate: number | null) {
   return winRate === null ? "—" : `${Math.round(winRate * 100)}%`;
-}
-
-function formatLastSeasonRank(rank: number | null) {
-  return rank === null ? "NA" : `#${rank}`;
 }
 
 export default function LeaderboardTable({
@@ -51,13 +46,12 @@ export default function LeaderboardTable({
               <th className="py-2.5 pr-3 font-semibold">W</th>
               <th className="py-2.5 pr-3 font-semibold">L</th>
               <th className="py-2.5 pr-3 font-semibold">Win rate</th>
-              <th className="py-2.5 pr-3 font-semibold">Last season</th>
             </tr>
           </thead>
           <tbody>
             {pageRows.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-10 text-center text-muted">
+                <td colSpan={7} className="py-10 text-center text-muted">
                   No games played yet.
                 </td>
               </tr>
@@ -86,7 +80,6 @@ export default function LeaderboardTable({
                     <td className="py-2 pr-3">{row.wins}</td>
                     <td className="py-2 pr-3">{row.losses}</td>
                     <td className="py-2 pr-3">{formatWinRate(row.winRate)}</td>
-                    <td className="py-2 pr-3">{formatLastSeasonRank(row.lastSeasonRank)}</td>
                   </tr>
                 );
               })
