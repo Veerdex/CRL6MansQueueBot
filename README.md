@@ -63,8 +63,7 @@ web/                    # the Next.js app — Vercel project root
 
 - Node.js (see `web/package.json` for the toolchain — Next.js 16)
 - A Supabase project
-- A Discord application (Developer Portal) with a bot user, invited to your server with
-  `applications.commands` + `bot` scopes and enough permissions to manage channels/roles
+- A Discord application (Developer Portal) with a bot user (you'll invite it to your server in step 4)
 - The [Vercel CLI](https://vercel.com/docs/cli) if you're deploying (`npm i -g vercel`)
 
 ### 1. Install dependencies
@@ -175,9 +174,9 @@ of these; the bot uses them purely as tags):
   has admin access even with none of these granted; add a role only if you want other
   people to be able to run admin commands.
 
-Confirm the bot's own role sits above the band/Unranked/Prism roles (step 4 above) — do
-this now, before anyone plays, since a missed promotion is invisible until someone
-notices their role never changed.
+Confirm the bot's own role sits above the band/Unranked/Prism roles (as mentioned in Setup
+step 4) — do this now, before anyone plays, since a missed promotion is invisible until
+someone notices their role never changed.
 
 ### 2. Create the queue channels
 
