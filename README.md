@@ -316,6 +316,10 @@ role is granted, only the server owner has admin access.
 - **`/admin checklist`** — shows a setup status checklist indicating which configuration
   items are complete: queue channels (rank & universal), report channel, 6-mans call
   category, 6 custom rank emoji, 6 band roles, admin roles.
+- **`/admin stop`** — pauses all bot activity: blocks queue joins, team formation, voting,
+  reports, subs, and abandon votes. Admin commands (like `/admin start`) remain available.
+  Useful for emergency maintenance or freezing the queue without shutting down the bot.
+- **`/admin start`** — resumes normal bot activity after a pause.
 
 ### Config values (tunable via `/admin config set`)
 
