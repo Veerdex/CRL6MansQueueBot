@@ -311,8 +311,11 @@ role is granted, only the server owner has admin access.
   bot to display custom rank emoji in report embeds instead of Unicode fallbacks.
 - **`/admin reset confirmation:SEASON RESET`** — **DANGER: wipes all game data** (series,
   queue members, votes, sub requests, abandonment votes) and resets all player stats to a
-  clean slate. Does not start a new season — run `/newseason` separately if needed. Requires
-  confirmation text "SEASON RESET".
+  clean slate. Configuration (channels, roles, emoji) is preserved. Does not start a new
+  season — run `/newseason` separately if needed. Requires confirmation text "SEASON RESET".
+- **`/admin full-reset confirmation:FACTORY RESET`** — **DANGER: complete factory reset** —
+  wipes ALL data including game data, configuration, audit log, and admin roles. Bot becomes
+  brand new; requires full setup again. Requires confirmation text "FACTORY RESET".
 - **`/admin checklist`** — shows a setup status checklist indicating which configuration
   items are complete: queue channels (rank & universal), report channel, 6-mans call
   category, 6 custom rank emoji, 6 band roles, admin roles.
