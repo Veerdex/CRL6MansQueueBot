@@ -6,6 +6,7 @@ import StatsBoard, { type StatsPlayer } from "./StatsBoard";
 import { SEASON_RANK_DISPLAY_MIN_GAMES } from "@/lib/leaderboard/constants";
 import { bandRank, computeStats, filterGames } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
+import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
 import type { SeasonHistoryRow } from "@/lib/supabase/types";
 
@@ -16,12 +17,6 @@ interface UnifiedLeaderboardProps {
   activeSeason: { id: string; season_number: number } | null;
   previousSeason: { id: string; season_number: number } | null;
   previousSeasonHistory: Map<string, SeasonHistoryRow>;
-}
-
-function viewButtonClass(active: boolean) {
-  return active
-    ? "bg-brand-blue text-white shadow-lg font-semibold"
-    : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600 hover:text-zinc-200 transition-all";
 }
 
 export default function UnifiedLeaderboard({
@@ -92,19 +87,32 @@ export default function UnifiedLeaderboard({
     }));
   }, [eligiblePlayers]);
 
+  function selectView(mode: ViewMode) {
+    playTap();
+    setViewMode(mode);
+  }
+
+  function selectSeasonScope(scope: "current" | "previous") {
+    if (scope === "previous" && !previousSeason) return;
+    playTap();
+    setSeasonScope(scope);
+  }
+
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-10">
+      <h1 className="animate-in mb-6 text-2xl font-bold text-foreground">Leaderboard</h1>
+
       {/* Settings Row */}
-      <div className="mb-6 flex flex-wrap items-center gap-4">
+      <div className="animate-in mb-6 flex flex-wrap items-center gap-4">
         {/* View Mode Selection */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-brand-blue/60">View:</span>
+        <div className="segmented">
           {(["top-players", "main", "all-time"] as const).map((mode) => (
             <button
               key={mode}
               type="button"
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(viewMode === mode)}`}
-              onClick={() => setViewMode(mode)}
+              data-active={viewMode === mode}
+              className="segmented-btn"
+              onClick={() => selectView(mode)}
             >
               {mode === "top-players" && "Top Players"}
               {mode === "main" && "Main"}
@@ -115,21 +123,20 @@ export default function UnifiedLeaderboard({
 
         {/* Season Toggle (for Main and All-Time views) */}
         {(viewMode === "main" || viewMode === "all-time") && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-brand-blue/60">Season:</span>
+          <div className="segmented">
             <button
               type="button"
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(seasonScope === "current")}`}
-              onClick={() => setSeasonScope("current")}
+              data-active={seasonScope === "current"}
+              className="segmented-btn"
+              onClick={() => selectSeasonScope("current")}
             >
               Current{activeSeason ? ` (#${activeSeason.season_number})` : ""}
             </button>
             <button
               type="button"
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${viewButtonClass(seasonScope === "previous")} ${
-                previousSeason ? "" : "cursor-not-allowed opacity-50"
-              }`}
-              onClick={() => previousSeason && setSeasonScope("previous")}
+              data-active={seasonScope === "previous"}
+              className={`segmented-btn ${previousSeason ? "" : "cursor-not-allowed opacity-40"}`}
+              onClick={() => selectSeasonScope("previous")}
               disabled={!previousSeason}
             >
               Previous{previousSeason ? ` (#${previousSeason.season_number})` : ""}
@@ -138,24 +145,24 @@ export default function UnifiedLeaderboard({
         )}
       </div>
 
-      {/* Title below settings */}
-      <h1 className="mb-6 text-2xl font-bold text-brand-blue dark:text-white">Leaderboard</h1>
-
-      <div className="rounded-2xl border border-zinc-800 bg-black p-4 shadow-sm sm:p-6">
+      <div className="panel animate-in-delay-1 p-4 sm:p-6">
         {viewMode === "top-players" && (
           <div>
-            <p className="mb-4 text-sm text-zinc-500">
+            <p className="mb-4 text-sm text-muted">
               Top players by MMR ranking. Rank Queue standing only.
             </p>
             {topPlayersRows.length === 0 ? (
-              <div className="py-10 text-center text-brand-orange">No players yet.</div>
+              <div className="py-10 text-center text-muted">No players yet.</div>
             ) : (
               <div className="space-y-2">
                 {topPlayersRows.map((row) => (
-                  <div key={row.position} className="flex items-center gap-4 rounded-lg bg-white/5 px-4 py-3 text-brand-orange">
-                    <div className="min-w-fit text-sm font-semibold text-brand-orange/60">#{row.position}</div>
+                  <div
+                    key={row.position}
+                    className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
+                  >
+                    <div className="min-w-fit text-sm font-semibold text-muted">#{row.position}</div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-lg font-bold text-white truncate">{row.displayName}</div>
+                      <div className="text-lg font-bold text-foreground truncate">{row.displayName}</div>
                     </div>
                     <div className="text-right">
                       <img
@@ -167,9 +174,9 @@ export default function UnifiedLeaderboard({
                     </div>
                     <div className="text-right min-w-fit">
                       {row.mmr !== null ? (
-                        <div className="text-sm font-semibold">{row.mmr.toFixed(0)} MMR</div>
+                        <div className="text-sm font-semibold text-foreground">{row.mmr.toFixed(0)} MMR</div>
                       ) : (
-                        <div className="text-sm text-brand-orange/50">NA</div>
+                        <div className="text-sm text-muted">NA</div>
                       )}
                     </div>
                   </div>
@@ -181,7 +188,7 @@ export default function UnifiedLeaderboard({
 
         {viewMode === "main" && (
           <div>
-            <p className="mb-4 text-sm text-zinc-500">
+            <p className="mb-4 text-sm text-muted">
               Rank Queue standing. Top 10 rows are the live projected Prism cut.
             </p>
             <LeaderboardTable rows={mainBoardRows} topCount={10} />
@@ -190,7 +197,7 @@ export default function UnifiedLeaderboard({
 
         {viewMode === "all-time" && (
           <div>
-            <p className="mb-4 text-sm text-zinc-500">
+            <p className="mb-4 text-sm text-muted">
               Click a column header to sort. All-time lifetime stats.
             </p>
             <StatsBoard

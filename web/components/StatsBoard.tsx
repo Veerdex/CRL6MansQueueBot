@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { CompletedGame } from "@/lib/leaderboard/queries";
 import { computeStats, filterGames } from "@/lib/leaderboard/stats";
+import { playTap } from "@/lib/sound";
 import type { QueueType } from "@/lib/supabase/types";
 
 export interface StatsPlayer {
@@ -29,12 +30,6 @@ const COLUMNS: { key: SortKey; label: string }[] = [
 ];
 
 const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
-
-function toggleClass(active: boolean) {
-  return active
-    ? "bg-brand-orange text-zinc-950 shadow-lg font-semibold"
-    : "bg-white/5 text-brand-orange/60 hover:bg-white/15 hover:text-brand-orange/90 transition-all";
-}
 
 export default function StatsBoard({
   players,
@@ -91,6 +86,7 @@ export default function StatsBoard({
   }, [rows, sortKey, sortDir]);
 
   function toggleSort(key: SortKey) {
+    playTap();
     if (key === sortKey) {
       setSortDir((d) => (d === "desc" ? "asc" : "desc"));
     } else {
@@ -99,39 +95,69 @@ export default function StatsBoard({
     }
   }
 
+  function selectSeasonScope(scope: "current" | "previous") {
+    if (scope === "previous" && !previousSeason) return;
+    playTap();
+    setSeasonScope(scope);
+  }
+
+  function selectQueueFilter(q: QueueFilter) {
+    playTap();
+    setQueueFilter(q);
+  }
+
+  const header = (
+    <tr className="bg-surface-2/60 text-left text-muted">
+      <th className="py-2.5 pr-3 pl-4 font-semibold">Player</th>
+      {COLUMNS.map((col) => (
+        <th
+          key={col.key}
+          className="cursor-pointer select-none py-2.5 pr-3 font-semibold transition-colors hover:text-foreground"
+          onClick={() => toggleSort(col.key)}
+        >
+          {col.label}
+          {sortKey === col.key ? (
+            <span className="text-accent">{sortDir === "desc" ? " ↓" : " ↑"}</span>
+          ) : (
+            ""
+          )}
+        </th>
+      ))}
+    </tr>
+  );
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-4 text-sm">
         {mode === "season" && (
-          <div className="flex items-center gap-2">
-            <span className="text-brand-orange/60">Season:</span>
+          <div className="segmented">
             <button
               type="button"
-              className={`rounded-full px-3 py-1 transition-colors ${toggleClass(seasonScope === "current")}`}
-              onClick={() => setSeasonScope("current")}
+              data-active={seasonScope === "current"}
+              className="segmented-btn"
+              onClick={() => selectSeasonScope("current")}
             >
               Current{currentSeason ? ` (#${currentSeason.seasonNumber})` : ""}
             </button>
             <button
               type="button"
-              className={`rounded-full px-3 py-1 transition-colors ${toggleClass(seasonScope === "previous")} ${
-                previousSeason ? "" : "cursor-not-allowed opacity-50"
-              }`}
-              onClick={() => previousSeason && setSeasonScope("previous")}
+              data-active={seasonScope === "previous"}
+              className={`segmented-btn ${previousSeason ? "" : "cursor-not-allowed opacity-40"}`}
+              onClick={() => selectSeasonScope("previous")}
               disabled={!previousSeason}
             >
               Previous{previousSeason ? ` (#${previousSeason.seasonNumber})` : ""}
             </button>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <span className="text-brand-orange/60">Queue:</span>
+        <div className="segmented">
           {QUEUE_OPTIONS.map((q) => (
             <button
               key={q}
               type="button"
-              className={`rounded-full px-3 py-1 capitalize transition-colors ${toggleClass(queueFilter === q)}`}
-              onClick={() => setQueueFilter(q)}
+              data-active={queueFilter === q}
+              className="segmented-btn capitalize"
+              onClick={() => selectQueueFilter(q)}
             >
               {q}
             </button>
@@ -140,26 +166,12 @@ export default function StatsBoard({
       </div>
 
       {sortedRows.length === 0 ? (
-        <div className="overflow-hidden rounded-xl border border-brand-blue">
+        <div className="overflow-hidden rounded-xl border border-border">
           <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-white/5 text-left text-brand-orange">
-                <th className="py-2.5 pr-3 pl-4 font-semibold">Player</th>
-                {COLUMNS.map((col) => (
-                  <th
-                    key={col.key}
-                    className="cursor-pointer select-none py-2.5 pr-3 font-semibold hover:text-white"
-                    onClick={() => toggleSort(col.key)}
-                  >
-                    {col.label}
-                    {sortKey === col.key ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+            <thead>{header}</thead>
             <tbody>
               <tr>
-                <td colSpan={COLUMNS.length + 1} className="py-10 text-center text-brand-orange">
+                <td colSpan={COLUMNS.length + 1} className="py-10 text-center text-muted">
                   No players yet.
                 </td>
               </tr>
@@ -167,26 +179,12 @@ export default function StatsBoard({
           </table>
         </div>
       ) : (
-        <div className="overflow-hidden overflow-x-auto rounded-xl border border-brand-blue">
+        <div className="overflow-hidden overflow-x-auto rounded-xl border border-border">
           <table className="w-full min-w-[640px] border-collapse text-sm">
-            <thead>
-              <tr className="bg-white/5 text-left text-brand-orange">
-                <th className="py-2.5 pr-3 pl-4 font-semibold">Player</th>
-                {COLUMNS.map((col) => (
-                  <th
-                    key={col.key}
-                    className="cursor-pointer select-none py-2.5 pr-3 font-semibold hover:text-white"
-                    onClick={() => toggleSort(col.key)}
-                  >
-                    {col.label}
-                    {sortKey === col.key ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+            <thead>{header}</thead>
             <tbody>
               {sortedRows.map((row) => (
-                <tr key={row.playerId} className="border-b border-brand-blue text-brand-orange last:border-b-0">
+                <tr key={row.playerId} className="row-hover border-b border-border text-foreground last:border-b-0">
                   <td className="py-2 pr-3 pl-4 font-medium">{row.displayName}</td>
                   <td className="py-2 pr-3">{row.gamesPlayed}</td>
                   <td className="py-2 pr-3">{row.wins}</td>

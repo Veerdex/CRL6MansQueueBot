@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { playError, playSuccess, playTap } from "@/lib/sound";
 
 export default function DevLoginForm() {
   const router = useRouter();
@@ -11,6 +12,7 @@ export default function DevLoginForm() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    playTap();
     setSubmitting(true);
     setError(null);
     const res = await fetch("/api/dev/auth", {
@@ -20,8 +22,10 @@ export default function DevLoginForm() {
     });
     setSubmitting(false);
     if (res.ok) {
+      playSuccess();
       router.refresh();
     } else {
+      playError();
       setError("Incorrect password.");
     }
   }
@@ -34,14 +38,10 @@ export default function DevLoginForm() {
         onChange={(e) => setPassword(e.target.value)}
         placeholder="Password"
         autoFocus
-        className="rounded-lg border border-zinc-700 bg-black px-3 py-2 text-sm text-brand-orange outline-none placeholder:text-brand-orange/40 focus:border-brand-orange"
+        className="field px-3 py-2 text-sm text-foreground placeholder:text-muted"
       />
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <button
-        type="submit"
-        disabled={submitting}
-        className="rounded-full bg-brand-orange px-3 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-brand-orange/90 disabled:opacity-50"
-      >
+      <button type="submit" disabled={submitting} className="btn-accent px-3 py-2 text-sm">
         {submitting ? "Checking…" : "Enter"}
       </button>
     </form>

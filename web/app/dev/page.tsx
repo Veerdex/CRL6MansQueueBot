@@ -11,8 +11,8 @@ export default async function DevPage() {
 
   return (
     <div className="mx-auto w-full max-w-md px-4 py-10">
-      <h1 className="mb-6 text-2xl font-bold text-brand-blue dark:text-white">Developer Panel</h1>
-      <div className="rounded-2xl border border-zinc-800 bg-black p-6 shadow-sm">
+      <h1 className="animate-in mb-6 text-2xl font-bold text-foreground">Developer Panel</h1>
+      <div className="panel animate-in-delay-1 p-6">
         {authed ? <DevPanelClient /> : <DevLoginForm />}
       </div>
     </div>

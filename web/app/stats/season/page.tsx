@@ -9,8 +9,8 @@ export default async function SeasonStatsPage() {
   if (!activeSeason) {
     return (
       <div className="mx-auto w-full max-w-4xl px-4 py-10">
-        <h1 className="mb-1 text-2xl font-bold text-brand-blue dark:text-white">Season Stats</h1>
-        <p className="text-zinc-500">No active season yet.</p>
+        <h1 className="animate-in mb-1 text-2xl font-bold text-foreground">Season Stats</h1>
+        <p className="animate-in text-muted">No active season yet.</p>
       </div>
     );
   }
@@ -27,11 +27,11 @@ export default async function SeasonStatsPage() {
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-10">
-      <h1 className="mb-1 text-2xl font-bold text-brand-blue dark:text-white">Season Stats</h1>
-      <p className="mb-6 text-sm text-zinc-500">
+      <h1 className="animate-in mb-1 text-2xl font-bold text-foreground">Season Stats</h1>
+      <p className="animate-in mb-6 text-sm text-muted">
         Stats for the selected season and queue scope. Click a column header to sort.
       </p>
-      <div className="rounded-2xl border border-zinc-800 bg-black p-4 shadow-sm sm:p-6">
+      <div className="panel animate-in-delay-1 p-4 sm:p-6">
         <StatsBoard
           players={eligiblePlayers}
           mode="season"

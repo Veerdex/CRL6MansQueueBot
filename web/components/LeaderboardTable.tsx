@@ -40,10 +40,10 @@ export default function LeaderboardTable({
 
   return (
     <div>
-      <div className="overflow-hidden overflow-x-auto rounded-xl border border-brand-blue">
+      <div className="overflow-hidden overflow-x-auto rounded-xl border border-border">
         <table className="w-full min-w-[640px] border-collapse text-sm">
           <thead>
-            <tr className="bg-white/5 text-left text-brand-orange">
+            <tr className="bg-surface-2/60 text-left text-muted">
               <th className="py-2.5 pr-3 pl-4 font-semibold">#</th>
               <th className="py-2.5 pr-3 font-semibold">Player</th>
               <th className="py-2.5 pr-3 font-semibold">Band</th>
@@ -57,7 +57,7 @@ export default function LeaderboardTable({
           <tbody>
             {pageRows.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-10 text-center text-brand-orange">
+                <td colSpan={8} className="py-10 text-center text-muted">
                   No games played yet.
                 </td>
               </tr>
@@ -68,8 +68,8 @@ export default function LeaderboardTable({
                 return (
                   <tr
                     key={row.playerId}
-                    className={`border-b border-brand-blue last:border-b-0 ${
-                      isTopCut ? "bg-gold text-zinc-950" : "text-brand-orange"
+                    className={`row-hover border-b border-border text-foreground last:border-b-0 ${
+                      isTopCut ? "top-cut" : ""
                     }`}
                   >
                     <td className="py-2 pr-3 pl-4">{position}</td>
@@ -96,7 +96,7 @@ export default function LeaderboardTable({
       </div>
 
       {rows.length > 0 && totalPages > 1 && (
-        <div className="mt-4 flex items-center gap-3 text-xs text-brand-orange">
+        <div className="mt-4 flex items-center gap-3 text-xs text-muted">
           <span className="whitespace-nowrap">
             Page {clampedPage + 1} / {totalPages}
           </span>
@@ -107,7 +107,7 @@ export default function LeaderboardTable({
             step={1}
             value={clampedPage}
             onChange={(e) => setPage(Number(e.target.value))}
-            className="h-1.5 flex-1 cursor-pointer accent-brand-orange"
+            className="h-1.5 flex-1 cursor-pointer accent-accent"
             aria-label="Leaderboard page"
           />
         </div>
