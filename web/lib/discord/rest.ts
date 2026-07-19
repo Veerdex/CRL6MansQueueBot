@@ -1,4 +1,5 @@
 import "server-only";
+import { InteractionResponseFlags } from "discord-interactions";
 import { getConfigValue } from "./config";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
@@ -116,6 +117,24 @@ export async function editOriginalResponse(interactionToken: string, body: Recor
   });
   if (!res.ok) {
     console.error("Failed to edit original interaction response", await res.text());
+  }
+}
+
+// Posts an additional ephemeral message via the interaction's webhook token — used when a
+// single response would exceed Discord's 2000-char message limit (e.g. /admin config get's
+// full listing) and the content needs to span multiple messages. Only valid within the same
+// 15-minute interaction-token window as editOriginalResponse.
+export async function sendFollowupMessage(interactionToken: string, body: Record<string, unknown>) {
+  const appId = process.env.DISCORD_APPLICATION_ID;
+  if (!appId) throw new Error("Missing DISCORD_APPLICATION_ID");
+
+  const res = await fetch(`https://discord.com/api/v10/webhooks/${appId}/${interactionToken}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ flags: InteractionResponseFlags.EPHEMERAL, ...body }),
+  });
+  if (!res.ok) {
+    console.error("Failed to send followup interaction response", await res.text());
   }
 }
 

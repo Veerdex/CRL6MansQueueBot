@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, discordFetch, getGuildId } from "./rest";
+import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, discordFetch, getGuildId } from "./rest";
 import { getConfigNumber, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
@@ -56,13 +56,31 @@ async function processAdminCommand(interaction: DiscordInteraction) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
     return;
   }
-  if (!(await hasAdminAccess(interaction))) {
-    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
-    return;
+
+  // Catch-all so any subcommand handler that throws (e.g. an unexpected Supabase error)
+  // still edits the deferred ACK instead of leaving it stuck on "thinking" forever — a
+  // handler-level try/catch is easy to forget to add to a new case, this one isn't.
+  try {
+    if (!(await hasAdminAccess(interaction))) {
+      await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+      return;
+    }
+
+    const { path, params } = resolveAdminSubcommandPath(interaction.data?.options);
+
+    await dispatchAdminSubcommand(interaction, actorId, path, params);
+  } catch (err) {
+    console.error("Unhandled error in /admin command", err);
+    await editOriginalResponse(interaction.token, { content: "Something went wrong running that command." });
   }
+}
 
-  const { path, params } = resolveAdminSubcommandPath(interaction.data?.options);
-
+async function dispatchAdminSubcommand(
+  interaction: DiscordInteraction,
+  actorId: string,
+  path: string[],
+  params: CommandOption[],
+) {
   switch (path[0]) {
     case "unreport": {
       const id = getParamValue(params, "id");
@@ -572,38 +590,75 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
 // ---------------------------------------------------------------------------
 
 async function processConfigGet(interaction: DiscordInteraction, key: string | null) {
-  if (key) {
-    if (!(key in KNOWN_CONFIG_DEFAULTS)) {
-      await editOriginalResponse(interaction.token, { content: `Unknown config key. Known keys: ${Object.keys(KNOWN_CONFIG_DEFAULTS).join(", ")}` });
+  try {
+    if (key) {
+      if (!(key in KNOWN_CONFIG_DEFAULTS)) {
+        await editOriginalResponse(interaction.token, {
+          content: `Unknown config key. Known keys: ${Object.keys(KNOWN_CONFIG_DEFAULTS).join(", ")}`,
+        });
+        return;
+      }
+      const value = await getConfigNumber(key, KNOWN_CONFIG_DEFAULTS[key]);
+      await editOriginalResponse(interaction.token, { content: `${key} = ${value}` });
       return;
     }
-    const value = await getConfigNumber(key, KNOWN_CONFIG_DEFAULTS[key]);
-    await editOriginalResponse(interaction.token, { content: `${key} = ${value}` });
-    return;
-  }
 
-  const supabase = createAdminClient();
-  const { data: rows } = await supabase.from("crl6mansqueuebot_config").select("*");
-  const overrides = new Map((rows ?? []).map((r) => [r.key, r.value]));
-  const lines = Object.entries(KNOWN_CONFIG_DEFAULTS).map(
-    ([k, def]) => `${k} = ${overrides.get(k) ?? def}${overrides.has(k) ? "" : " (default)"}`,
-  );
-  await editOriginalResponse(interaction.token, { content: lines.join("\n") });
+    const supabase = createAdminClient();
+    const { data: rows } = await supabase.from("crl6mansqueuebot_config").select("*");
+    const overrides = new Map((rows ?? []).map((r) => [r.key, r.value]));
+    const lines = Object.entries(KNOWN_CONFIG_DEFAULTS).map(
+      ([k, def]) => `${k} = ${overrides.get(k) ?? def}${overrides.has(k) ? "" : " (default)"}`,
+    );
+
+    // Split response into chunks if needed (Discord 2000 char limit)
+    const content = lines.join("\n");
+    if (content.length > 1900) {
+      // Send in chunks
+      const chunks = [];
+      let currentChunk = "";
+      for (const line of lines) {
+        if ((currentChunk + line + "\n").length > 1900) {
+          if (currentChunk) chunks.push(currentChunk);
+          currentChunk = line + "\n";
+        } else {
+          currentChunk += line + "\n";
+        }
+      }
+      if (currentChunk) chunks.push(currentChunk);
+
+      // First chunk fills the deferred ACK; any remaining chunks go out as separate
+      // ephemeral followup messages (editOriginalResponse only ever touches one message).
+      await editOriginalResponse(interaction.token, { content: chunks[0] });
+      for (const chunk of chunks.slice(1)) {
+        await sendFollowupMessage(interaction.token, { content: chunk });
+      }
+    } else {
+      await editOriginalResponse(interaction.token, { content });
+    }
+  } catch (err) {
+    console.error("Failed to get config", err);
+    await editOriginalResponse(interaction.token, { content: "Failed to fetch config values." });
+  }
 }
 
 async function processConfigSet(interaction: DiscordInteraction, actorId: string, key: string | null, value: number | undefined) {
-  if (!key || !(key in KNOWN_CONFIG_DEFAULTS)) {
-    await editOriginalResponse(interaction.token, { content: `Unknown config key. Known keys: ${Object.keys(KNOWN_CONFIG_DEFAULTS).join(", ")}` });
-    return;
-  }
-  if (value === undefined) {
-    await editOriginalResponse(interaction.token, { content: "value must be a number." });
-    return;
-  }
+  try {
+    if (!key || !(key in KNOWN_CONFIG_DEFAULTS)) {
+      await editOriginalResponse(interaction.token, { content: `Unknown config key. Known keys: ${Object.keys(KNOWN_CONFIG_DEFAULTS).join(", ")}` });
+      return;
+    }
+    if (value === undefined) {
+      await editOriginalResponse(interaction.token, { content: "value must be a number." });
+      return;
+    }
 
-  await setConfigValue(key, String(value));
-  await logAdminAction(actorId, "config_set", key, `value=${value}`);
-  await editOriginalResponse(interaction.token, { content: `${key} set to ${value}.` });
+    await setConfigValue(key, String(value));
+    await logAdminAction(actorId, "config_set", key, `value=${value}`);
+    await editOriginalResponse(interaction.token, { content: `${key} set to ${value}.` });
+  } catch (err) {
+    console.error("Failed to set config", err);
+    await editOriginalResponse(interaction.token, { content: "Failed to set config value." });
+  }
 }
 
 // ---------------------------------------------------------------------------
