@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage } from "@/lib/discord/rest";
 import { getConfigNumber } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
-import { postTrackedQueueMessage } from "@/lib/discord/queue";
+import { postTrackedQueueMessage, refreshQueueMessage } from "@/lib/discord/queue";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
@@ -124,7 +124,7 @@ export async function POST(request: Request) {
     const playerIds = staleMembers.map((m) => m.player_id);
     const { data: players } = await supabase
       .from("crl6mansqueuebot_players")
-      .select("id, discord_id")
+      .select("id, discord_id, display_name")
       .in("id", playerIds);
 
     const { data: deleted } = await supabase
@@ -134,9 +134,11 @@ export async function POST(request: Request) {
       .in("player_id", playerIds)
       .select("player_id");
 
-    if (deleted) {
+    if (deleted && deleted.length > 0) {
       queueMembersRemoved += deleted.length;
       const queueLabel = queueType === "rank" ? "Rank Queue" : "Universal Queue";
+
+      // Send DMs to all removed players
       await Promise.all(
         (players ?? []).map((p) =>
           sendDirectMessage(
@@ -145,6 +147,33 @@ export async function POST(request: Request) {
           ),
         ),
       );
+
+      // Update the queue display message
+      await refreshQueueMessage(supabase, queueType);
+
+      // Post an inactivity embed for each removed player to the queue channel
+      const { data: msgRow } = await supabase
+        .from("crl6mansqueuebot_queue_messages")
+        .select("channel_id")
+        .eq("queue_type", queueType)
+        .maybeSingle();
+
+      if (msgRow?.channel_id) {
+        await Promise.all(
+          (players ?? []).map((p) =>
+            postTrackedQueueMessage(
+              supabase,
+              msgRow.channel_id,
+              {
+                color: 0xFFA500, // Orange
+                description: `<@${p.discord_id}> has been removed from the queue because of inactivity.`,
+              },
+              "error",
+              true,
+            ),
+          ),
+        );
+      }
     }
   }
 
