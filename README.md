@@ -290,6 +290,12 @@ role is granted, only the server owner has admin access.
 - **`/setmentionrole queue_type:<rank|universal> role:<@role>`** — set the role to mention
   when the first player joins an empty queue (useful for pinging community members to start
   playing).
+- **`/setnotificationchannel`** — run inside the channel where you want to post the
+  notification preference message. Players can then click buttons to toggle whether they
+  receive notifications for Rank Queue or Universal Queue.
+- **`/setnotificationrole queue_type:<rank|universal> role:<@role>`** — set the role that
+  gets added/removed when players toggle notifications for a queue. Set this before
+  posting the notification message via `/setnotificationchannel`.
 - **`/newseason confirmation:NEW SEASON`** — closes the current season (soft-reset MMR via
   hyperbolic decay, snapshot final standings, sync the Prism Top 10 role) and opens the next
   one. Requires confirmation text "NEW SEASON". Manual trigger only — there's no scheduled
