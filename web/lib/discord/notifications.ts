@@ -232,9 +232,11 @@ async function sendEphemeralNotificationEmbed(
   });
 
   // Delete after 10 seconds
-  setTimeout(() => {
-    deleteOriginalResponse(token).catch((err) => {
+  setTimeout(async () => {
+    try {
+      await deleteOriginalResponse(token);
+    } catch (err) {
       console.error("Failed to delete ephemeral notification message", err);
-    });
+    }
   }, 10000);
 }
