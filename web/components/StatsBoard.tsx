@@ -155,6 +155,7 @@ export default function StatsBoard({
             <button
               type="button"
               data-active={seasonScope === "current"}
+              data-season="true"
               className="segmented-btn"
               onClick={() => selectSeasonScope("current")}
             >
@@ -163,6 +164,7 @@ export default function StatsBoard({
             <button
               type="button"
               data-active={seasonScope === "previous"}
+              data-season="true"
               className={`segmented-btn ${previousSeason ? "" : "cursor-not-allowed opacity-40"}`}
               onClick={() => selectSeasonScope("previous")}
               disabled={!previousSeason}

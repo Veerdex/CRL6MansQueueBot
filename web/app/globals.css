@@ -125,6 +125,14 @@ body::before {
     0 4px 16px -4px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
+.segmented-btn[data-active="true"][data-season="true"] {
+  background: var(--accent-secondary);
+  color: #f5f5f7;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-secondary) 50%, transparent),
+    0 4px 16px -4px color-mix(in srgb, var(--accent-secondary) 70%, transparent);
+}
+
 .btn-accent {
   background: var(--accent);
   color: #04170c;
