@@ -3,7 +3,7 @@ import { InteractionType, InteractionResponseType } from "discord-interactions";
 import { verifyDiscordRequest } from "@/lib/discord/verify";
 import { getConfigNumber } from "@/lib/discord/config";
 import type { DiscordInteraction } from "@/lib/discord/types";
-import { handleQueueJoinCommand, handleQueueLeaveCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand } from "@/lib/discord/queue";
+import { handleQueueJoinCommand, handleQueueLeaveCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand, handleSetQueueMentionRoleCommand } from "@/lib/discord/queue";
 import {
   handleAddAdminRoleCommand,
   handleRemoveAdminRoleCommand,
@@ -93,6 +93,10 @@ export async function POST(request: Request) {
 
     if (commandName === "setreportchannel") {
       return NextResponse.json(handleSetReportChannelCommand(interaction));
+    }
+
+    if (commandName === "setqueuementionrole") {
+      return NextResponse.json(handleSetQueueMentionRoleCommand(interaction));
     }
 
     if (commandName === "q" || commandName === "queue") {

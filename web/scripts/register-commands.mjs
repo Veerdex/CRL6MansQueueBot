@@ -95,6 +95,29 @@ const commands = [
     ],
   },
   {
+    name: "setqueuementionrole",
+    description: "Set the role to mention when first player joins a queue.",
+    type: 1,
+    options: [
+      {
+        name: "queue_type",
+        description: "Which queue this role is for.",
+        type: STRING_OPTION,
+        required: true,
+        choices: [
+          { name: "rank", value: "rank" },
+          { name: "universal", value: "universal" },
+        ],
+      },
+      {
+        name: "role",
+        description: "The role to mention on first join.",
+        type: ROLE_OPTION,
+        required: true,
+      },
+    ],
+  },
+  {
     name: "q",
     description: "Join the queue mapped to this channel.",
     type: 1,

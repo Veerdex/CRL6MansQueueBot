@@ -313,6 +313,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       return;
     }
     await refreshQueueMessage(supabase, queueType, `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`);
+    await deleteOriginalResponse(interaction.token);
     return;
   }
 
@@ -368,6 +369,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     }
 
     await refreshQueueMessage(supabase, queueType, headline);
+    await deleteOriginalResponse(interaction.token);
   }
 }
 
@@ -474,7 +476,7 @@ export async function createVoiceChannels(
   const adminRoleIds = await getAdminRoleIds();
   const botUserId = process.env.DISCORD_APPLICATION_ID;
   // Use match number if available, otherwise fall back to short series ID
-  const channelIdSuffix = matchNumber !== undefined ? `Match #${matchNumber}` : seriesId.slice(0, 8);
+  const channelIdSuffix = matchNumber != null ? `Match #${matchNumber}` : seriesId.slice(0, 7);
 
   // Fetch admin-specified call category from config
   const { data: categoryConfig } = await supabase
@@ -627,4 +629,49 @@ async function processSetReportChannel(interaction: DiscordInteraction, channelI
   const supabase = createAdminClient();
   await supabase.from("crl6mansqueuebot_config").upsert({ key: "report_channel_id", value: channelId });
   await editOriginalResponse(interaction.token, { content: `Report channel set to <#${channelId}>.` });
+}
+
+// ---------------------------------------------------------------------------
+// /setqueuementionrole — specify the Discord role to mention when the first
+// player joins a queue. Owner-or-admin-role gated.
+// ---------------------------------------------------------------------------
+
+export function handleSetQueueMentionRoleCommand(interaction: DiscordInteraction) {
+  const queueTypeOption = interaction.data?.options?.find((o) => o.name === "queue_type")?.value;
+  const roleIdOption = interaction.data?.options?.find((o) => o.name === "role")?.value;
+  after(() => processSetQueueMentionRole(interaction, queueTypeOption, roleIdOption));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processSetQueueMentionRole(
+  interaction: DiscordInteraction,
+  queueTypeRaw: string | number | boolean | undefined,
+  roleIdRaw: string | number | boolean | undefined,
+) {
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+    return;
+  }
+
+  if (queueTypeRaw !== "rank" && queueTypeRaw !== "universal") {
+    await editOriginalResponse(interaction.token, { content: "Invalid queue_type. Use 'rank' or 'universal'." });
+    return;
+  }
+
+  const roleId = roleIdRaw ? String(roleIdRaw) : undefined;
+  if (!roleId) {
+    await editOriginalResponse(interaction.token, { content: "You must specify a role." });
+    return;
+  }
+
+  const supabase = createAdminClient();
+  const queueType = queueTypeRaw as QueueType;
+  await supabase.from("crl6mansqueuebot_queue_mention_roles").upsert(
+    { queue_type: queueType, role_id: roleId } as any,
+    { onConflict: "queue_type" }
+  );
+  await editOriginalResponse(interaction.token, { content: `${QUEUE_LABELS[queueType]} mention role set to <@&${roleId}>.` });
 }
