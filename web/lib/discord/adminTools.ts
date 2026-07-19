@@ -73,6 +73,20 @@ async function processAdminCommand(interaction: DiscordInteraction) {
       await processUnreport(interaction, actorId, id);
       return;
     }
+    case "correct-report": {
+      const id = getParamValue(params, "id");
+      const winner = getParamValue(params, "winner");
+      if (typeof id !== "string" || !id) {
+        await editOriginalResponse(interaction.token, { content: "Missing id." });
+        return;
+      }
+      if (winner !== "team_a" && winner !== "team_b") {
+        await editOriginalResponse(interaction.token, { content: "Winner must be 'team_a' or 'team_b'." });
+        return;
+      }
+      await processCorrectReport(interaction, actorId, id, winner as "team_a" | "team_b");
+      return;
+    }
     case "cancel-series": {
       const id = getParamValue(params, "id");
       await processCancelSeries(interaction, actorId, typeof id === "string" && id ? id : null);
@@ -215,11 +229,144 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
     }),
   );
 
+  // Delete prediction record if it exists
+  const predictionTable =
+    series.queue_type === "rank" ? "crl6mansqueuebot_rank_game_predictions" : "crl6mansqueuebot_universal_game_predictions";
+  await supabase.from(predictionTable).delete().eq("series_id", series.id);
+
   await logAdminAction(actorId, "unreport", series.id, `queue_type=${series.queue_type} players=${players.length}`);
   const matchNumber = (series as any).match_number;
   const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
   await editOriginalResponse(interaction.token, {
     content: `Unreported ${matchLabel} — MMR and game counts reversed for ${players.length} players.`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// /admin correct-report id:<series_id> winner:<team_a|team_b> — corrects the reported
+// winner for a series. Reverses old MMR deltas and applies new ones based on the corrected
+// winner. Keeps the series in 'reported' status (unlike unreport which voids it).
+// ---------------------------------------------------------------------------
+
+async function processCorrectReport(
+  interaction: DiscordInteraction,
+  actorId: string,
+  seriesId: string,
+  newWinner: "team_a" | "team_b",
+) {
+  const supabase = createAdminClient();
+  const { computeEloDeltas } = await import("@/lib/mmr/elo");
+  const { getConfigNumber } = await import("./config");
+
+  // Fetch the series — must be reported
+  const { data: seriesData } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .eq("id", seriesId)
+    .eq("status", "reported")
+    .maybeSingle();
+  const series = seriesData as SeriesRow | undefined;
+  if (!series) {
+    await editOriginalResponse(interaction.token, {
+      content: "That series isn't in a reported state or doesn't exist.",
+    });
+    return;
+  }
+
+  const winnerTeam = newWinner === "team_a" ? "A" : "B";
+  const oldWinner = series.winner_team;
+  if (oldWinner === winnerTeam) {
+    await editOriginalResponse(interaction.token, {
+      content: "That's already the reported winner.",
+    });
+    return;
+  }
+
+  // Fetch series players and their current data
+  const { data: seriesPlayers } = await supabase
+    .from("crl6mansqueuebot_series_players")
+    .select("*")
+    .eq("series_id", series.id);
+  if (!seriesPlayers || seriesPlayers.length !== 6) {
+    await editOriginalResponse(interaction.token, {
+      content: "Something's wrong with this match's roster — ask an admin to check it.",
+    });
+    return;
+  }
+
+  const { data: playerRows } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("*")
+    .in("id", seriesPlayers.map((sp) => sp.player_id));
+  const playersById = new Map((playerRows ?? []).map((p) => [p.id, p]));
+
+  // Only recalculate MMR if this is a Rank Queue series
+  if (series.queue_type === "rank") {
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
+      getConfigNumber("k_factor", 32),
+      getConfigNumber("s_scale", 400),
+      getConfigNumber("provisional_games", 10),
+      getConfigNumber("provisional_k_multiplier", 1.75),
+    ]);
+
+    const eloInputs = seriesPlayers.map((sp) => {
+      const p = playersById.get(sp.player_id)!;
+      return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
+    });
+
+    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor, sScale, provisionalGames, provisionalKMultiplier });
+    const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
+
+    // Update each player: reverse old delta, apply new delta
+    await Promise.all(
+      seriesPlayers.map(async (sp) => {
+        const p = playersById.get(sp.player_id)!;
+        const oldDelta = sp.mmr_delta ?? 0;
+        const newResult = newResultsById.get(sp.player_id)!;
+        const correctedMmr = p.mmr - oldDelta + newResult.delta;
+
+        await supabase
+          .from("crl6mansqueuebot_players")
+          .update({
+            mmr: correctedMmr,
+          })
+          .eq("id", p.id);
+
+        await supabase
+          .from("crl6mansqueuebot_series_players")
+          .update({ mmr_delta: newResult.delta })
+          .eq("series_id", series.id)
+          .eq("player_id", p.id);
+      }),
+    );
+  }
+
+  // Update the series winner
+  await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ winner_team: winnerTeam })
+    .eq("id", series.id);
+
+  // Update prediction record if it exists
+  const predictionTable =
+    series.queue_type === "rank" ? "crl6mansqueuebot_rank_game_predictions" : "crl6mansqueuebot_universal_game_predictions";
+  const newActualWinner = winnerTeam === "A" ? "blue" : "orange";
+  await (supabase as any)
+    .from(predictionTable)
+    .update({ actual_winner: newActualWinner })
+    .eq("series_id", series.id);
+
+  await logAdminAction(
+    actorId,
+    "correct_report",
+    series.id,
+    `Changed winner from ${oldWinner} to ${winnerTeam} (queue_type=${series.queue_type})`,
+  );
+
+  const matchNumber = (series as any).match_number;
+  const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
+  await editOriginalResponse(interaction.token, {
+    content: `Corrected ${matchLabel} — winner changed from Team ${oldWinner} to Team ${winnerTeam}. MMR adjusted for ${seriesPlayers.length} players.`,
   });
 }
 
@@ -629,17 +776,25 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
 
   try {
     // Delete in order of foreign key dependencies to avoid constraint violations
-    await supabase.from("crl6mansqueuebot_abandon_votes").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_sub_requests").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series_votes").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series_players").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series_lobby").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series").delete().neq("id", "");
-    await supabase.from("crl6mansqueuebot_queue_members").delete().neq("player_id", "");
-    await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
+    // Use .is(col, null) pattern: for UUID/non-null columns, filter by is not null is the safest way to match all rows
+    const { error: err1 } = await supabase.from("crl6mansqueuebot_abandon_votes").delete().not("series_id", "is", null);
+    const { error: err2 } = await supabase.from("crl6mansqueuebot_sub_requests").delete().not("series_id", "is", null);
+    const { error: err3 } = await supabase.from("crl6mansqueuebot_series_votes").delete().not("series_id", "is", null);
+    const { error: err4 } = await supabase.from("crl6mansqueuebot_series_players").delete().not("series_id", "is", null);
+    const { error: err5 } = await supabase.from("crl6mansqueuebot_series_lobby").delete().not("series_id", "is", null);
+    const { error: err6 } = await supabase.from("crl6mansqueuebot_series").delete().not("id", "is", null);
+    const { error: err7 } = await supabase.from("crl6mansqueuebot_queue_members").delete().not("player_id", "is", null);
+    const { error: err8 } = await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
+    const { error: err9 } = await supabase.from("crl6mansqueuebot_season_history").delete().not("player_id", "is", null);
 
-    // Reset players but keep them (delete all game data only)
-    await supabase
+    // Delete test data players and their related season history
+    const { error: errTestData } = await supabase
+      .from("crl6mansqueuebot_players")
+      .delete()
+      .eq("is_test_data", true);
+
+    // Reset non-test players (reset game stats only, keep player records)
+    const { error: errUpdate } = await supabase
       .from("crl6mansqueuebot_players")
       .update({
         mmr: 0,
@@ -651,20 +806,26 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
         vote_default: null,
         is_prism: false,
       })
-      .neq("id", "");
+      .eq("is_test_data", false);
+
+    const errors = [err1, err2, err3, err4, err5, err6, err7, err8, err9, errTestData, errUpdate].filter(Boolean);
+    if (errors.length > 0) {
+      console.error("Reset errors:", errors);
+      throw new Error(`Reset failed with ${errors.length} error(s)`);
+    }
 
     // Keep seasons table untouched (they track historical data)
     // Keep rank emoji config untouched
     // Keep admin roles untouched
     // Keep config values untouched
 
-    await logAdminAction(actorId, "reset", "all_game_data", "Wiped all series, queue members, and reset player stats to 0");
+    await logAdminAction(actorId, "reset", "all_game_data", "Wiped all series, queue members, test data, and reset player stats to 0");
     await editOriginalResponse(interaction.token, {
-      content: "✅ All game data reset to clean slate. Players retained with stats reset to 0.",
+      content: "✅ All game data reset to clean slate. Test data removed. Players retained with stats reset to 0.",
     });
   } catch (err) {
     console.error("Failed to reset game data", err);
-    await editOriginalResponse(interaction.token, { content: "An error occurred while resetting data." });
+    await editOriginalResponse(interaction.token, { content: "An error occurred while resetting data. Check logs." });
   }
 }
 

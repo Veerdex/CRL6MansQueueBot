@@ -1,10 +1,16 @@
 import StatsBoard from "@/components/StatsBoard";
 import { getActiveSeason, getAllPlayersWithGames, getPreviousSeason } from "@/lib/leaderboard/queries";
+import { getConfigNumber } from "@/lib/discord/config";
 
 export const dynamic = "force-dynamic";
 
 export default async function SeasonStatsPage() {
-  const [activeSeason, players] = await Promise.all([getActiveSeason(), getAllPlayersWithGames()]);
+  const [activeSeason, players, mmrScale, mmrShift] = await Promise.all([
+    getActiveSeason(),
+    getAllPlayersWithGames(),
+    getConfigNumber("mmr_scale", 1),
+    getConfigNumber("mmr_shift", 0),
+  ]);
 
   if (!activeSeason) {
     return (
@@ -39,6 +45,8 @@ export default async function SeasonStatsPage() {
           previousSeason={
             previousSeason ? { id: previousSeason.id, seasonNumber: previousSeason.season_number } : null
           }
+          mmrScale={mmrScale}
+          mmrShift={mmrShift}
         />
       </div>
     </div>

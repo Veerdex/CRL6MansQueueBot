@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, getRankEmoji } from "./rest";
-import { getConfigNumber } from "./config";
+import { getConfigNumber, getDisplayMMR } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
@@ -183,9 +183,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
       const emoji = emojiByBand.get(p.band) || "❓";
+      const displayNewMmr = await getDisplayMMR(r.newMmr);
       pushLine(
         sp,
-        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${r.newMmr.toFixed(1)} ${emoji}`,
+        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
       );
     }
   } else {
@@ -204,6 +205,46 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     }
   }
 
+  // Record game prediction if all players are placed (>= 10 games played)
+  const allPlayersPlaced = allSeriesPlayers.every((sp) => {
+    const p = playersById.get(sp.player_id)!;
+    return p.total_games_played >= 10;
+  });
+
+  if (allPlayersPlaced && !series.is_test_data) {
+    const teamAPlayers = allSeriesPlayers.filter((sp) => sp.team === "A").map((sp) => playersById.get(sp.player_id)!);
+    const teamBPlayers = allSeriesPlayers.filter((sp) => sp.team === "B").map((sp) => playersById.get(sp.player_id)!);
+
+    const teamAAvgMmr = teamAPlayers.reduce((sum, p) => sum + p.mmr, 0) / 3;
+    const teamBAvgMmr = teamBPlayers.reduce((sum, p) => sum + p.mmr, 0) / 3;
+
+    // Calculate Team Blue win probability (Elo formula)
+    // Assume Team A is Blue, Team B is Orange
+    const sPrediction = 400;
+    const teamBlueWinProbability = (1 / (1 + Math.pow(10, (teamBAvgMmr - teamAAvgMmr) / sPrediction))) * 100;
+
+    const predictionTable =
+      series.queue_type === "rank"
+        ? "crl6mansqueuebot_rank_game_predictions"
+        : "crl6mansqueuebot_universal_game_predictions";
+
+    const actualWinner = winner === "A" ? "blue" : "orange";
+
+    await (supabase as any)
+      .from(predictionTable)
+      .insert({
+        series_id: series.id,
+        reported_at: new Date().toISOString(),
+        team_blue_mmr_1: teamAPlayers[0]!.mmr,
+        team_blue_mmr_2: teamAPlayers[1]!.mmr,
+        team_blue_mmr_3: teamAPlayers[2]!.mmr,
+        team_orange_mmr_1: teamBPlayers[0]!.mmr,
+        team_orange_mmr_2: teamBPlayers[1]!.mmr,
+        team_orange_mmr_3: teamBPlayers[2]!.mmr,
+        team_blue_win_probability: Math.round(teamBlueWinProbability * 100) / 100,
+        actual_winner: actualWinner,
+      });
+  }
 
   // Fetch admin-specified report channel
   const { data: reportChannelConfig } = await supabase

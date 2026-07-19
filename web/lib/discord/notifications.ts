@@ -231,12 +231,16 @@ async function sendEphemeralNotificationEmbed(
     embeds: [embed],
   });
 
-  // Delete after 10 seconds
-  setTimeout(async () => {
-    try {
-      await deleteOriginalResponse(token);
-    } catch (err) {
-      console.error("Failed to delete ephemeral notification message", err);
-    }
-  }, 10000);
+  // Delete after 10 seconds. This must be awaited: `after()` (which calls this
+  // function) only keeps the serverless function instance alive until the promise
+  // it was given resolves — a fire-and-forget setTimeout here would let the
+  // instance freeze/terminate before the timer ever fires, silently dropping the
+  // deletion (this was the actual bug: the message appeared but never deleted).
+  await new Promise((resolve) => setTimeout(resolve, 10000));
+
+  try {
+    await deleteOriginalResponse(token);
+  } catch (err) {
+    console.error("Failed to delete ephemeral notification message", err);
+  }
 }

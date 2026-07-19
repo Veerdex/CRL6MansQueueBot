@@ -266,7 +266,9 @@ the 6 players, `/help` responds, and an admin command like `/admin audit-log` wo
   anywhere (no channel restriction). Settles immediately, no confirmation needed from the
   other team. Rank Queue series update MMR; Universal Queue series are unranked but still
   count toward placement and season stats. The match result is posted to the report channel
-  with a match ID (base-71 encoded: 0-9, a-z, A-Z, then !-)).
+  with a match ID (base-71 encoded: 0-9, a-z, A-Z, then !-)). **Game predictions:** if all
+  6 players have played ≥10 games, the pre-game prediction (Team Blue win %) and actual
+  result are automatically recorded in the database for later analysis.
 - **`/sub nominee:<@user>`** — run inside your match channel if you need to leave
   mid-series; nominates a specific replacement, who must accept via a button before the
   swap happens. The sub inherits your team and plays out the rest of the series.
@@ -302,6 +304,11 @@ role is granted, only the server owner has admin access.
   monthly rollover.
 - **`/admin unreport id:<series_id>`** — reverses a reported series and unwinds the
   MMR/games-played changes it caused for all 6 players.
+- **`/admin correct-report id:<series_id> winner:<team_a|team_b>`** — corrects the reported
+  winner for a series. Reverses the old MMR deltas and applies new ones based on the
+  corrected winner (Rank Queue only; Universal Queue just updates the winner). Keeps the
+  series in 'reported' status (unlike `/admin unreport` which voids it). Useful if a player
+  reported incorrectly (e.g., said they won when they lost).
 - **`/admin cancel-series [id:<series_id>]`** — voids an in-progress (forming or active)
   series. Run inside the match channel with no `id:` to cancel whichever match you're
   sitting in, or pass `id:` from elsewhere to cancel any series by id.
@@ -348,7 +355,13 @@ role is granted, only the server owner has admin access.
 `provisional_k_multiplier`, `placement_games_required`, `decay_factor`, `top10_min_games`,
 `series_timeout_hours`, `vote_timeout_seconds`, `sub_request_timeout_minutes`,
 `band_cutoff_garnet_pctile`, `band_cutoff_emerald_pctile`, `band_cutoff_sapphire_pctile`,
-`season_rank_display_min_games`.
+`season_rank_display_min_games`, `mmr_scale`, `mmr_shift`.
+
+**Display-only transformation:**
+- `mmr_scale` (default: 1) — multiplier for displayed MMR values
+- `mmr_shift` (default: 0) — offset added after scaling
+
+Display formula: `displayed_mmr = (actual_mmr × mmr_scale) + mmr_shift`. These affect only how MMR is shown on the leaderboard and in reports — they don't change actual MMR calculations, Elo math, band cutoffs, or any backend logic.
 
 See `CLAUDE.md`'s "Config values" table for defaults and what each one controls.
 

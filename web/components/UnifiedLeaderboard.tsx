@@ -7,7 +7,27 @@ import { bandRank, computeStats, filterGames } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
-import type { SeasonHistoryRow } from "@/lib/supabase/types";
+import type { SeasonHistoryRow, Band } from "@/lib/supabase/types";
+
+function getBandColor(band: Band | null): string {
+  switch (band) {
+    case "Iron":
+      return "rgb(125, 125, 125)";
+    case "Garnet":
+      return "rgb(255, 0, 0)";
+    case "Emerald":
+      return "rgb(0, 128, 0)";
+    case "Sapphire":
+      return "rgb(0, 0, 255)";
+    default:
+      // Unranked/null: gray
+      return "rgb(70, 70, 70)";
+  }
+}
+
+function getPrismColor(): string {
+  return "rgb(255, 255, 255)";
+}
 
 type ViewMode = "top-players" | "main" | "all-time";
 
@@ -16,6 +36,12 @@ interface UnifiedLeaderboardProps {
   activeSeason: { id: string; season_number: number } | null;
   previousSeason: { id: string; season_number: number } | null;
   previousSeasonHistory: Map<string, SeasonHistoryRow>;
+  mmrScale: number;
+  mmrShift: number;
+}
+
+function applyMMRTransform(mmr: number, scale: number, shift: number): number {
+  return mmr * scale + shift;
 }
 
 export default function UnifiedLeaderboard({
@@ -23,6 +49,8 @@ export default function UnifiedLeaderboard({
   activeSeason,
   previousSeason,
   previousSeasonHistory,
+  mmrScale,
+  mmrShift,
 }: UnifiedLeaderboardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("main");
   const [seasonScope, setSeasonScope] = useState<"current" | "previous">("current");
@@ -43,7 +71,7 @@ export default function UnifiedLeaderboard({
         position: idx + 1,
         displayName: p.player.display_name,
         band: p.player.is_placed ? p.player.band : null,
-        mmr: p.player.is_placed ? p.player.mmr : null,
+        mmr: p.player.mmr,
       }));
   }, [eligiblePlayers]);
 
@@ -62,7 +90,7 @@ export default function UnifiedLeaderboard({
           playerId: player.id,
           displayName: player.display_name,
           band: player.is_placed ? player.band : null,
-          mmr: player.is_placed ? player.mmr : null,
+          mmr: player.mmr,
           wins: rankStats.wins,
           losses: rankStats.losses,
           winRate: rankStats.winRate,
@@ -150,32 +178,37 @@ export default function UnifiedLeaderboard({
               <div className="py-10 text-center text-muted">No players yet.</div>
             ) : (
               <div className="space-y-2">
-                {topPlayersRows.map((row) => (
-                  <div
-                    key={row.position}
-                    className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
-                  >
-                    <div className="min-w-fit text-sm font-semibold text-muted">#{row.position}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-lg font-bold text-foreground truncate">{row.displayName}</div>
+                {topPlayersRows.map((row) => {
+                  const bandColor = row.band === "Sapphire" && row.position <= 10
+                    ? getPrismColor()
+                    : getBandColor(row.band);
+                  const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
+                  return (
+                    <div
+                      key={row.position}
+                      className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
+                      style={{ backgroundImage: backgroundGradient }}
+                    >
+                      <div className="min-w-fit text-sm font-semibold text-muted">#{row.position}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-lg font-bold text-foreground truncate">{row.displayName}</div>
+                      </div>
+                      <div className="text-right">
+                        <img
+                          src={getRankIconPath(row.band)}
+                          alt={getRankLabel(row.band)}
+                          title={getRankLabel(row.band)}
+                          className="h-6 w-6"
+                        />
+                      </div>
+                      <div className="text-right min-w-fit">
+                        <div className="text-sm font-semibold text-foreground">
+                          {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))} MMR
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <img
-                        src={getRankIconPath(row.band)}
-                        alt={getRankLabel(row.band)}
-                        title={getRankLabel(row.band)}
-                        className="h-6 w-6"
-                      />
-                    </div>
-                    <div className="text-right min-w-fit">
-                      {row.mmr !== null ? (
-                        <div className="text-sm font-semibold text-foreground">{row.mmr.toFixed(0)} MMR</div>
-                      ) : (
-                        <div className="text-sm text-muted">NA</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -186,7 +219,7 @@ export default function UnifiedLeaderboard({
             <p className="mb-4 text-sm text-muted">
               Rank Queue standing. Top 10 rows are the live projected Prism cut.
             </p>
-            <LeaderboardTable rows={mainBoardRows} topCount={10} />
+            <LeaderboardTable rows={mainBoardRows} topCount={10} mmrScale={mmrScale} mmrShift={mmrShift} />
           </div>
         )}
 
@@ -200,6 +233,8 @@ export default function UnifiedLeaderboard({
               mode="all-time"
               currentSeason={null}
               previousSeason={null}
+              mmrScale={mmrScale}
+              mmrShift={mmrShift}
             />
           </div>
         )}

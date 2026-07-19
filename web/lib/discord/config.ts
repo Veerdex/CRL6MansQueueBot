@@ -39,9 +39,18 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   band_cutoff_sapphire_pctile: 90,
   season_rank_display_min_games: 10,
   bot_paused: 0,
+  mmr_scale: 1,
+  mmr_shift: 0,
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {
   const supabase = createAdminClient();
   await supabase.from("crl6mansqueuebot_config").upsert({ key, value });
+}
+
+// Apply MMR display transformation: displayed_mmr = (actual_mmr * scale) + shift
+export async function getDisplayMMR(actualMMR: number): Promise<number> {
+  const scale = await getConfigNumber("mmr_scale", 1);
+  const shift = await getConfigNumber("mmr_shift", 0);
+  return actualMMR * scale + shift;
 }

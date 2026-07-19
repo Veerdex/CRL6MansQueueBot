@@ -9,7 +9,7 @@ export interface MainBoardRow {
   playerId: string;
   displayName: string;
   band: Band | null;
-  mmr: number | null;
+  mmr: number;
   wins: number;
   losses: number;
   winRate: number | null;
@@ -21,12 +21,40 @@ function formatWinRate(winRate: number | null) {
   return winRate === null ? "—" : `${Math.round(winRate * 100)}%`;
 }
 
+function getBandColor(band: Band | null): string {
+  switch (band) {
+    case "Iron":
+      return "rgb(125, 125, 125)";
+    case "Garnet":
+      return "rgb(255, 0, 0)";
+    case "Emerald":
+      return "rgb(0, 128, 0)";
+    case "Sapphire":
+      return "rgb(0, 0, 255)";
+    default:
+      // Unranked/null: gray
+      return "rgb(70, 70, 70)";
+  }
+}
+
+function getPrismColor(): string {
+  return "rgb(255, 255, 255)";
+}
+
+function applyMMRTransform(mmr: number, scale: number, shift: number): number {
+  return mmr * scale + shift;
+}
+
 export default function LeaderboardTable({
   rows,
   topCount,
+  mmrScale,
+  mmrShift,
 }: {
   rows: MainBoardRow[];
   topCount: number;
+  mmrScale: number;
+  mmrShift: number;
 }) {
   const [page, setPage] = useState(0);
   const [highlightedPlayerId, setHighlightedPlayerId] = useState<string | null>(null);
@@ -95,6 +123,10 @@ export default function LeaderboardTable({
                 const position = start + i + 1;
                 const isTopCut = position <= topCount;
                 const isHighlighted = row.playerId === highlightedPlayerId;
+                const bandColor = row.band === "Sapphire" && position <= 10
+                  ? getPrismColor()
+                  : getBandColor(row.band);
+                const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
                 return (
                   <tr
                     key={row.playerId}
@@ -102,6 +134,7 @@ export default function LeaderboardTable({
                     className={`row-hover border-b border-border text-foreground last:border-b-0 ${
                       isTopCut ? "top-cut" : ""
                     } ${isHighlighted ? "highlight-pulse" : ""}`}
+                    style={{ backgroundImage: backgroundGradient }}
                   >
                     <td className="py-2 pr-3 pl-4">{position}</td>
                     <td className="py-2 pr-3 font-medium">{row.displayName}</td>
@@ -113,7 +146,7 @@ export default function LeaderboardTable({
                         className="h-6 w-6"
                       />
                     </td>
-                    <td className="py-2 pr-3">{row.mmr === null ? "NA" : Math.round(row.mmr)}</td>
+                    <td className="py-2 pr-3">{Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))}</td>
                     <td className="py-2 pr-3">{row.wins}</td>
                     <td className="py-2 pr-3">{row.losses}</td>
                     <td className="py-2 pr-3">{formatWinRate(row.winRate)}</td>

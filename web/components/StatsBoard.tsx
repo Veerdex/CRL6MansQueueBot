@@ -32,16 +32,24 @@ const COLUMNS: { key: SortKey; label: string }[] = [
 
 const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
 
+function applyMMRTransform(mmr: number, scale: number, shift: number): number {
+  return mmr * scale + shift;
+}
+
 export default function StatsBoard({
   players,
   mode,
   currentSeason,
   previousSeason,
+  mmrScale = 1,
+  mmrShift = 0,
 }: {
   players: StatsPlayer[];
   mode: "season" | "all-time";
   currentSeason: SeasonRef | null;
   previousSeason: SeasonRef | null;
+  mmrScale?: number;
+  mmrShift?: number;
 }) {
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [seasonScope, setSeasonScope] = useState<"current" | "previous">("current");

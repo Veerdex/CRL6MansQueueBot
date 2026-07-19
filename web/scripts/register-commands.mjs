@@ -42,6 +42,8 @@ const CONFIG_KEYS = [
   "band_cutoff_emerald_pctile",
   "band_cutoff_sapphire_pctile",
   "season_rank_display_min_games",
+  "mmr_scale",
+  "mmr_shift",
 ];
 const CONFIG_KEY_CHOICES = CONFIG_KEYS.map((k) => ({ name: k, value: k }));
 
@@ -345,6 +347,29 @@ const commands = [
             description: "The series id to unreport.",
             type: STRING_OPTION,
             required: true,
+          },
+        ],
+      },
+      {
+        name: "correct-report",
+        description: "Correct the reported winner for a series (reverses old MMR deltas and applies new ones).",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "id",
+            description: "The series id to correct.",
+            type: STRING_OPTION,
+            required: true,
+          },
+          {
+            name: "winner",
+            description: "The correct winning team.",
+            type: STRING_OPTION,
+            required: true,
+            choices: [
+              { name: "Team A", value: "team_a" },
+              { name: "Team B", value: "team_b" },
+            ],
           },
         ],
       },
