@@ -4,6 +4,7 @@ import { verifyDiscordRequest } from "@/lib/discord/verify";
 import { getConfigNumber } from "@/lib/discord/config";
 import type { DiscordInteraction } from "@/lib/discord/types";
 import { handleQueueJoinCommand, handleQueueLeaveCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand, handleSetQueueMentionRoleCommand } from "@/lib/discord/queue";
+import { handleSetNotificationChannelCommand, handleSetNotificationRoleCommand, handleNotificationButton } from "@/lib/discord/notifications";
 import {
   handleAddAdminRoleCommand,
   handleRemoveAdminRoleCommand,
@@ -74,6 +75,10 @@ export async function POST(request: Request) {
       return NextResponse.json(handleDraftPickButton(interaction, arg1, arg2));
     }
 
+    if (action === "notification" && (arg1 === "rank" || arg1 === "universal")) {
+      return NextResponse.json(handleNotificationButton(interaction, arg1));
+    }
+
     return NextResponse.json({
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: { content: "Unrecognized action.", flags: 64 },
@@ -97,6 +102,14 @@ export async function POST(request: Request) {
 
     if (commandName === "setqueuementionrole") {
       return NextResponse.json(handleSetQueueMentionRoleCommand(interaction));
+    }
+
+    if (commandName === "setnotificationchannel") {
+      return NextResponse.json(handleSetNotificationChannelCommand(interaction));
+    }
+
+    if (commandName === "setnotificationrole") {
+      return NextResponse.json(handleSetNotificationRoleCommand(interaction));
     }
 
     if (commandName === "q" || commandName === "queue") {
