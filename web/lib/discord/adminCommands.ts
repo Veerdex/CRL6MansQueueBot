@@ -177,3 +177,17 @@ async function processSetMentionRole(interaction: DiscordInteraction, queueType:
     content: `<@&${roleId}> will be mentioned when the first player joins the ${queueType === "rank" ? "Rank" : "Universal"} Queue.`,
   });
 }
+
+// ---------------------------------------------------------------------------
+// /site — public command, shows the leaderboard website URL
+// ---------------------------------------------------------------------------
+
+export function handleSiteCommand(interaction: DiscordInteraction) {
+  return deferredEphemeral(() => processSite(interaction));
+}
+
+async function processSite(interaction: DiscordInteraction) {
+  await editOriginalResponse(interaction.token, {
+    content: "https://crl6mans-queue-bot.vercel.app",
+  });
+}

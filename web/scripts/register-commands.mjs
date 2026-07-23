@@ -54,6 +54,11 @@ const commands = [
     type: 1,
   },
   {
+    name: "site",
+    description: "Get the link to the leaderboard website.",
+    type: 1,
+  },
+  {
     name: "setqueuechannel",
     description: "Post the persistent queue message in this channel.",
     type: 1,

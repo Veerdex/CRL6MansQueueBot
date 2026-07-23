@@ -11,6 +11,7 @@ import {
   handleListAdminRolesCommand,
   handleHelpCommand,
   handleSetMentionRoleCommand,
+  handleSiteCommand,
 } from "@/lib/discord/adminCommands";
 import { handleNewSeasonCommand } from "@/lib/discord/seasons";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
@@ -134,6 +135,10 @@ export async function POST(request: Request) {
 
     if (commandName === "help") {
       return NextResponse.json(handleHelpCommand(interaction));
+    }
+
+    if (commandName === "site") {
+      return NextResponse.json(handleSiteCommand(interaction));
     }
 
     if (commandName === "newseason") {
