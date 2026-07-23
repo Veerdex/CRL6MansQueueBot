@@ -53,7 +53,6 @@ export default function UnifiedLeaderboard({
   mmrShift,
 }: UnifiedLeaderboardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("main");
-  const [seasonScope, setSeasonScope] = useState<"current" | "previous">("current");
 
   const eligiblePlayers = players.filter(({ player }) => player.total_games_played >= 1);
 
@@ -123,12 +122,6 @@ export default function UnifiedLeaderboard({
     setViewMode(mode);
   }
 
-  function selectSeasonScope(scope: "current" | "previous") {
-    if (scope === "previous" && !previousSeason) return;
-    playTap();
-    setSeasonScope(scope);
-  }
-
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-10">
       <h1 className="animate-in mb-6 text-2xl font-bold text-foreground">Leaderboard</h1>
@@ -151,31 +144,6 @@ export default function UnifiedLeaderboard({
             </button>
           ))}
         </div>
-
-        {/* Season Toggle (for Main and All-Time views) */}
-        {(viewMode === "main" || viewMode === "all-time") && (
-          <div className="segmented">
-            <button
-              type="button"
-              data-active={seasonScope === "current"}
-              data-season="true"
-              className="segmented-btn"
-              onClick={() => selectSeasonScope("current")}
-            >
-              Current Season
-            </button>
-            <button
-              type="button"
-              data-active={seasonScope === "previous"}
-              data-season="true"
-              className={`segmented-btn ${previousSeason ? "" : "cursor-not-allowed opacity-40"}`}
-              onClick={() => selectSeasonScope("previous")}
-              disabled={!previousSeason}
-            >
-              Previous Season
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="panel animate-in-delay-1 p-4 sm:p-6">
