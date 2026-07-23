@@ -147,11 +147,12 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
       getConfigNumber("provisional_k_multiplier", 1.75),
+      getConfigNumber("mmr_scale", 1),
     ]);
 
     const eloInputs = allSeriesPlayers.map((sp) => {
@@ -184,9 +185,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const sign = r.delta >= 0 ? "+" : "";
       const emoji = emojiByBand.get(p.band) || "❓";
       const displayNewMmr = await getDisplayMMR(r.newMmr);
+      const displayDelta = r.delta * mmrScale;
       pushLine(
         sp,
-        `<@${p.discord_id}> — ${sign}${r.delta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
+        `<@${p.discord_id}> — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
       );
     }
   } else {

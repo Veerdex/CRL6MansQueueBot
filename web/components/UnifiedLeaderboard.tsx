@@ -61,10 +61,10 @@ export default function UnifiedLeaderboard({
   const topPlayersRows = useMemo(() => {
     return eligiblePlayers
       .sort((a, b) => {
-        const bandDiff = bandRank(b.player.band) - bandRank(a.player.band);
+        const bandDiff = bandRank(a.player.band) - bandRank(b.player.band);
         if (bandDiff !== 0) return bandDiff;
-        if (!a.player.is_placed) return b.player.total_games_played - a.player.total_games_played;
-        return b.player.mmr - a.player.mmr;
+        if (!b.player.is_placed) return a.player.total_games_played - b.player.total_games_played;
+        return a.player.mmr - b.player.mmr;
       })
       .slice(0, 20)
       .map((p, idx) => ({
@@ -79,10 +79,10 @@ export default function UnifiedLeaderboard({
   const mainBoardRows = useMemo(() => {
     const rows: MainBoardRow[] = eligiblePlayers
       .sort((a, b) => {
-        const bandDiff = bandRank(b.player.band) - bandRank(a.player.band);
+        const bandDiff = bandRank(a.player.band) - bandRank(b.player.band);
         if (bandDiff !== 0) return bandDiff;
-        if (!a.player.is_placed) return b.player.total_games_played - a.player.total_games_played;
-        return b.player.mmr - a.player.mmr;
+        if (!b.player.is_placed) return a.player.total_games_played - b.player.total_games_played;
+        return a.player.mmr - b.player.mmr;
       })
       .map(({ player, games }) => {
         const rankStats = computeStats(filterGames(games, { queueType: "rank" }));
