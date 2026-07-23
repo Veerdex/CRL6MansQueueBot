@@ -63,8 +63,13 @@ export default function UnifiedLeaderboard({
       .sort((a, b) => {
         const bandDiff = bandRank(b.player.band) - bandRank(a.player.band);
         if (bandDiff !== 0) return bandDiff;
-        if (!a.player.is_placed) return b.player.total_games_played - a.player.total_games_played;
-        return b.player.mmr - a.player.mmr;
+        if (!a.player.is_placed) {
+          const gamesDiff = b.player.total_games_played - a.player.total_games_played;
+          if (gamesDiff !== 0) return gamesDiff;
+        }
+        const mmrDiff = b.player.mmr - a.player.mmr;
+        if (mmrDiff !== 0) return mmrDiff;
+        return a.player.id.localeCompare(b.player.id);
       })
       .slice(0, 20)
       .map((p, idx) => ({
@@ -81,8 +86,13 @@ export default function UnifiedLeaderboard({
       .sort((a, b) => {
         const bandDiff = bandRank(b.player.band) - bandRank(a.player.band);
         if (bandDiff !== 0) return bandDiff;
-        if (!a.player.is_placed) return b.player.total_games_played - a.player.total_games_played;
-        return b.player.mmr - a.player.mmr;
+        if (!a.player.is_placed) {
+          const gamesDiff = b.player.total_games_played - a.player.total_games_played;
+          if (gamesDiff !== 0) return gamesDiff;
+        }
+        const mmrDiff = b.player.mmr - a.player.mmr;
+        if (mmrDiff !== 0) return mmrDiff;
+        return a.player.id.localeCompare(b.player.id);
       })
       .map(({ player, games }) => {
         const rankStats = computeStats(filterGames(games, { queueType: "rank" }));
