@@ -58,9 +58,56 @@ async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): P
   return playerIds.map((id) => byId.get(id)).filter((p): p is PlayerRow => Boolean(p));
 }
 
-// Deletes the previously tracked message for `channelId` (if any — pass null to skip, e.g.
-// initial setup) and posts a fresh one, then upserts the new channel/message id mapping. The
-// single shared primitive behind refreshQueueMessage and initQueueMessage below.
+// Posts a fresh message, then atomically claims it as the tracked one for `queueType` before
+// deleting the old message — guards against two concurrent refreshes (e.g. two /q joins
+// landing at once) both reading the same oldMessageId and each posting their own message,
+// which used to leave a duplicate live message in the channel with only the latter tracked in
+// the DB (the former orphaned forever). The claim is a CAS keyed on oldMessageId, the same
+// atomic UPDATE...WHERE pattern used elsewhere in this codebase (report.ts, teamFormation.ts)
+// for settling races — whichever refresh's UPDATE lands second finds message_id has already
+// moved and loses the claim, so it deletes its own now-redundant message instead of leaving it
+// behind. Returns whether this call won the claim, so callers racing on the same row (see
+// refreshQueueMessage) know to retry with a fresh member snapshot rather than silently dropping
+// whatever change motivated their refresh.
+async function tryPostAndClaimQueueMessage(
+  supabase: AdminClient,
+  queueType: QueueType,
+  channelId: string,
+  oldMessageId: string,
+  members: PlayerRow[],
+  headline?: string,
+): Promise<boolean> {
+  const message = (await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ embeds: [queueStatusEmbed(queueType, members, headline)] }),
+  })) as { id: string };
+
+  const { data: claimed, error } = await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .update({ channel_id: channelId, message_id: message.id })
+    .eq("queue_type", queueType)
+    .eq("message_id", oldMessageId)
+    .select("queue_type");
+  if (error) console.error(`Queue message claim failed for ${queueType}`, error);
+
+  if (!error && claimed && claimed.length > 0) {
+    await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
+      console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
+    );
+    return true;
+  }
+
+  // Lost the claim race — another refresh already updated the row. Clean up this now-redundant
+  // message rather than leaving an orphaned duplicate live in the channel.
+  await discordFetch(`/channels/${channelId}/messages/${message.id}`, { method: "DELETE" }).catch((err) =>
+    console.error(`Failed to delete losing-race queue message ${message.id}`, err),
+  );
+  return false;
+}
+
+// Single-shot version for callers with no concurrent-refresh risk (initQueueMessage's
+// first-ever /setqueuechannel setup). `oldMessageId === null` means no row exists yet for this
+// queue_type at all, so that case just upserts directly instead of racing a CAS against nothing.
 async function postFreshQueueMessage(
   supabase: AdminClient,
   queueType: QueueType,
@@ -69,21 +116,20 @@ async function postFreshQueueMessage(
   members: PlayerRow[],
   headline?: string,
 ): Promise<void> {
-  if (oldMessageId) {
-    await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
-      console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
-    );
+  if (oldMessageId === null) {
+    const message = (await discordFetch(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ embeds: [queueStatusEmbed(queueType, members, headline)] }),
+    })) as { id: string };
+    await supabase.from("crl6mansqueuebot_queue_messages").upsert({
+      queue_type: queueType,
+      channel_id: channelId,
+      message_id: message.id,
+    });
+    return;
   }
-  const message = (await discordFetch(`/channels/${channelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ embeds: [queueStatusEmbed(queueType, members, headline)] }),
-  })) as { id: string };
 
-  await supabase.from("crl6mansqueuebot_queue_messages").upsert({
-    queue_type: queueType,
-    channel_id: channelId,
-    message_id: message.id,
-  });
+  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, headline);
 }
 
 // Posts a message to a queue channel and tracks it, deleting all other non-permanent messages first.
@@ -143,16 +189,36 @@ export async function postTrackedQueueMessage(
 // Refreshes whichever channel is currently mapped to `queueType`. No-ops if the queue channel
 // was never set up. `headline` is the "<@user> has joined/left..." line for command-driven
 // refreshes; omitted for headline-less refreshes (admin force-leave, cross-queue-pop removal).
-export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string) {
-  const { data: msgRow } = await supabase
-    .from("crl6mansqueuebot_queue_messages")
-    .select("*")
-    .eq("queue_type", queueType)
-    .maybeSingle();
-  if (!msgRow) return;
+//
+// Retries on a lost claim race rather than giving up after one attempt: since join/leave writes
+// (join_queue/leave_queue RPCs) always commit before this runs, re-fetching msgRow/members on
+// retry picks up every membership change committed so far — including the one that motivated a
+// losing refresh's own call — so a burst of concurrent /q joins can't leave the surviving message
+// stale by more than whatever lands mid-retry. Capped so a pathological, sustained hammer on one
+// queue channel can't loop forever.
+const MAX_REFRESH_ATTEMPTS = 5;
 
-  const members = await fetchQueueMembers(supabase, queueType);
-  await postFreshQueueMessage(supabase, queueType, msgRow.channel_id, msgRow.message_id, members, headline);
+export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string) {
+  for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt++) {
+    const { data: msgRow } = await supabase
+      .from("crl6mansqueuebot_queue_messages")
+      .select("*")
+      .eq("queue_type", queueType)
+      .maybeSingle();
+    if (!msgRow) return;
+
+    const members = await fetchQueueMembers(supabase, queueType);
+    const won = await tryPostAndClaimQueueMessage(
+      supabase,
+      queueType,
+      msgRow.channel_id,
+      msgRow.message_id,
+      members,
+      headline,
+    );
+    if (won) return;
+  }
+  console.error(`Queue message refresh for ${queueType} gave up after ${MAX_REFRESH_ATTEMPTS} attempts`);
 }
 
 export async function initQueueMessage(queueType: QueueType, channelId: string) {
@@ -170,8 +236,7 @@ export async function initQueueMessage(queueType: QueueType, channelId: string) 
   }
 
   const members = await fetchQueueMembers(supabase, queueType);
-  const oldMessageId = existing && existing.channel_id === channelId ? existing.message_id : null;
-  await postFreshQueueMessage(supabase, queueType, channelId, oldMessageId, members);
+  await postFreshQueueMessage(supabase, queueType, channelId, existing?.message_id ?? null, members);
 }
 
 // ---------------------------------------------------------------------------
