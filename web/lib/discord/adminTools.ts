@@ -835,11 +835,22 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
     const { error: err1 } = await supabase.from("crl6mansqueuebot_abandon_votes").delete().not("series_id", "is", null);
     const { error: err2 } = await supabase.from("crl6mansqueuebot_sub_requests").delete().not("series_id", "is", null);
     const { error: err3 } = await supabase.from("crl6mansqueuebot_series_votes").delete().not("series_id", "is", null);
+    const { error: err3b } = await supabase
+      .from("crl6mansqueuebot_cancel_votes")
+      .delete()
+      .not("series_id", "is", null);
+    const { error: err3c } = await (supabase.from("crl6mansqueuebot_rank_game_predictions") as any)
+      .delete()
+      .not("series_id", "is", null);
+    const { error: err3d } = await (supabase.from("crl6mansqueuebot_universal_game_predictions") as any)
+      .delete()
+      .not("series_id", "is", null);
     const { error: err4 } = await supabase.from("crl6mansqueuebot_series_players").delete().not("series_id", "is", null);
     const { error: err5 } = await supabase.from("crl6mansqueuebot_series_lobby").delete().not("series_id", "is", null);
     const { error: err6 } = await supabase.from("crl6mansqueuebot_series").delete().not("id", "is", null);
     const { error: err7 } = await supabase.from("crl6mansqueuebot_queue_members").delete().not("player_id", "is", null);
     const { error: err8 } = await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
+    const { error: err8b } = await supabase.from("crl6mansqueuebot_queue_channel_messages").delete().neq("channel_id", "");
     const { error: err9 } = await supabase.from("crl6mansqueuebot_season_history").delete().not("player_id", "is", null);
 
     // Delete test data players and their related season history
@@ -863,7 +874,23 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
       })
       .eq("is_test_data", false);
 
-    const errors = [err1, err2, err3, err4, err5, err6, err7, err8, err9, errTestData, errUpdate].filter(Boolean);
+    const errors = [
+      err1,
+      err2,
+      err3,
+      err3b,
+      err3c,
+      err3d,
+      err4,
+      err5,
+      err6,
+      err7,
+      err8,
+      err8b,
+      err9,
+      errTestData,
+      errUpdate,
+    ].filter(Boolean);
     if (errors.length > 0) {
       console.error("Reset errors:", errors);
       throw new Error(`Reset failed with ${errors.length} error(s)`);
@@ -898,31 +925,79 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
   const supabase = createAdminClient();
 
   try {
-    // Delete in order of foreign key dependencies
-    await supabase.from("crl6mansqueuebot_abandon_votes").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_sub_requests").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series_votes").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series_players").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series_lobby").delete().neq("series_id", "");
-    await supabase.from("crl6mansqueuebot_series").delete().neq("id", "");
-    await supabase.from("crl6mansqueuebot_queue_members").delete().neq("player_id", "");
-    await supabase.from("crl6mansqueuebot_season_history").delete().neq("season_id", "");
-    await supabase.from("crl6mansqueuebot_seasons").delete().neq("id", "");
-    await supabase.from("crl6mansqueuebot_players").delete().neq("id", "");
-    await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
-    await supabase.from("crl6mansqueuebot_queue_channel_messages").delete().neq("channel_id", "");
+    // Delete in order of foreign key dependencies. UUID/non-null columns must use
+    // .not(col, "is", null) rather than .neq(col, "") — comparing a uuid column to the empty
+    // string literal fails Postgres's cast ("invalid input syntax for type uuid") and, since
+    // every one of these calls captures and checks its error below, used to silently no-op
+    // instead of throwing (see /admin reset's fix, same underlying bug — this command had it too).
+    const { error: err1 } = await supabase.from("crl6mansqueuebot_abandon_votes").delete().not("series_id", "is", null);
+    const { error: err2 } = await supabase.from("crl6mansqueuebot_sub_requests").delete().not("series_id", "is", null);
+    const { error: err3 } = await supabase.from("crl6mansqueuebot_series_votes").delete().not("series_id", "is", null);
+    const { error: err3b } = await supabase
+      .from("crl6mansqueuebot_cancel_votes")
+      .delete()
+      .not("series_id", "is", null);
+    const { error: err3c } = await (supabase.from("crl6mansqueuebot_rank_game_predictions") as any)
+      .delete()
+      .not("series_id", "is", null);
+    const { error: err3d } = await (supabase.from("crl6mansqueuebot_universal_game_predictions") as any)
+      .delete()
+      .not("series_id", "is", null);
+    const { error: err4 } = await supabase.from("crl6mansqueuebot_series_players").delete().not("series_id", "is", null);
+    const { error: err5 } = await supabase.from("crl6mansqueuebot_series_lobby").delete().not("series_id", "is", null);
+    const { error: err6 } = await supabase.from("crl6mansqueuebot_series").delete().not("id", "is", null);
+    const { error: err7 } = await supabase.from("crl6mansqueuebot_queue_members").delete().not("player_id", "is", null);
+    const { error: err9 } = await supabase.from("crl6mansqueuebot_season_history").delete().not("player_id", "is", null);
+    const { error: err10 } = await supabase.from("crl6mansqueuebot_seasons").delete().not("id", "is", null);
+    const { error: err11 } = await supabase.from("crl6mansqueuebot_players").delete().not("id", "is", null);
+    const { error: err8 } = await supabase.from("crl6mansqueuebot_queue_messages").delete().neq("channel_id", "");
+    const { error: err8b } = await supabase.from("crl6mansqueuebot_queue_channel_messages").delete().neq("channel_id", "");
 
-    // Clear all configuration (delete all rows)
-    await (supabase.from("crl6mansqueuebot_config") as any).delete();
-    await (supabase.from("crl6mansqueuebot_band_roles") as any).delete();
-    await (supabase.from("crl6mansqueuebot_queue_mention_roles") as any).delete();
-    await (supabase.from("crl6mansqueuebot_rank_emoji") as any).delete();
+    // Clear all configuration (text primary keys — .neq(col, "") is safe for these)
+    const { error: errConfig } = await (supabase.from("crl6mansqueuebot_config") as any).delete().neq("key", "");
+    const { error: errBandRoles } = await (supabase.from("crl6mansqueuebot_band_roles") as any).delete().neq("band", "");
+    const { error: errMentionRoles } = await (supabase.from("crl6mansqueuebot_queue_mention_roles") as any)
+      .delete()
+      .neq("queue_type", "");
+    const { error: errNotificationRoles } = await (supabase.from("crl6mansqueuebot_notification_roles") as any)
+      .delete()
+      .neq("queue_type", "");
+    const { error: errRankEmoji } = await (supabase.from("crl6mansqueuebot_rank_emoji") as any).delete().neq("band", "");
 
-    // Clear audit log
-    await supabase.from("crl6mansqueuebot_audit_log").delete().neq("id", "");
+    // Clear audit log (uuid id — needs the same safe filter as the other uuid-keyed tables)
+    const { error: errAuditLog } = await supabase.from("crl6mansqueuebot_audit_log").delete().not("id", "is", null);
 
     // Clear admin roles (but NOT the admin_roles table structure itself — that stays)
-    await supabase.from("crl6mansqueuebot_admin_roles").delete().neq("role_id", "");
+    const { error: errAdminRoles } = await supabase.from("crl6mansqueuebot_admin_roles").delete().neq("role_id", "");
+
+    const errors = [
+      err1,
+      err2,
+      err3,
+      err3b,
+      err3c,
+      err3d,
+      err4,
+      err5,
+      err6,
+      err7,
+      err9,
+      err10,
+      err11,
+      err8,
+      err8b,
+      errConfig,
+      errBandRoles,
+      errMentionRoles,
+      errNotificationRoles,
+      errRankEmoji,
+      errAuditLog,
+      errAdminRoles,
+    ].filter(Boolean);
+    if (errors.length > 0) {
+      console.error("Full reset errors:", errors);
+      throw new Error(`Full reset failed with ${errors.length} error(s)`);
+    }
 
     await logAdminAction(actorId, "full_reset", "all_data", "Complete factory reset — all data and configuration deleted");
     await editOriginalResponse(interaction.token, {
@@ -930,7 +1005,7 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
     });
   } catch (err) {
     console.error("Failed to perform full reset", err);
-    await editOriginalResponse(interaction.token, { content: "An error occurred while performing factory reset." });
+    await editOriginalResponse(interaction.token, { content: "An error occurred while performing factory reset. Check logs." });
   }
 }
 
