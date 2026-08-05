@@ -10,6 +10,7 @@ import { interactionUserId, interactionDisplayName, type DiscordInteraction } fr
 import { startTeamFormation } from "./teamFormation";
 import { computeBonusDayMultiplier } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
+import { getConfigNumber } from "./config";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -71,6 +72,15 @@ async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): P
   return playerIds.map((id) => byId.get(id)).filter((p): p is PlayerRow => Boolean(p));
 }
 
+// /admin simplify-queue-messages enabled:<bool> — see CLAUDE.md-style precedent of bot_paused's
+// stop/start and bonus_day_enabled's dedicated toggle in adminTools.ts. Default (1/true) matches
+// this feature's original always-on behavior: exactly one live queue-status message per channel,
+// with every join/leave deleting the previous one. Toggled off, join/leave messages stack in the
+// channel like ordinary chat instead of being pruned.
+async function isQueueMessagesSimplified(): Promise<boolean> {
+  return (await getConfigNumber("queue_simplified_messages", 1)) !== 0;
+}
+
 // Posts a fresh message, then atomically claims it as the tracked one for `queueType` before
 // deleting the old message — guards against two concurrent refreshes (e.g. two /q joins
 // landing at once) both reading the same oldMessageId and each posting their own message,
@@ -82,13 +92,19 @@ async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): P
 // behind. Returns whether this call won the claim, so callers racing on the same row (see
 // refreshQueueMessage) know to retry with a fresh member snapshot rather than silently dropping
 // whatever change motivated their refresh.
+//
+// `simplified` gates only the *old, previously-tracked* message's deletion below — the
+// losing-race cleanup a few lines down always runs regardless, since that's a duplicate this
+// exact call itself created (never shown to anyone as "history"), not the old message the
+// toggle is about preserving.
 async function tryPostAndClaimQueueMessage(
   supabase: AdminClient,
   queueType: QueueType,
   channelId: string,
   oldMessageId: string,
   members: PlayerRow[],
-  headline?: string,
+  headline: string | undefined,
+  simplified: boolean,
 ): Promise<boolean> {
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
@@ -104,9 +120,11 @@ async function tryPostAndClaimQueueMessage(
   if (error) console.error(`Queue message claim failed for ${queueType}`, error);
 
   if (!error && claimed && claimed.length > 0) {
-    await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
-      console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
-    );
+    if (simplified) {
+      await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
+        console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
+      );
+    }
     return true;
   }
 
@@ -142,7 +160,8 @@ async function postFreshQueueMessage(
     return;
   }
 
-  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, headline);
+  const simplified = await isQueueMessagesSimplified();
+  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, headline, simplified);
 }
 
 // Posts a message to a queue channel and tracks it, deleting all other non-permanent messages first.
@@ -212,6 +231,7 @@ export async function postTrackedQueueMessage(
 const MAX_REFRESH_ATTEMPTS = 5;
 
 export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string) {
+  const simplified = await isQueueMessagesSimplified();
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt++) {
     const { data: msgRow } = await supabase
       .from("crl6mansqueuebot_queue_messages")
@@ -228,6 +248,7 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
       msgRow.message_id,
       members,
       headline,
+      simplified,
     );
     if (won) return;
   }

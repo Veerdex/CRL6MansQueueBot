@@ -50,6 +50,11 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   bonus_day_enabled: 1,
   bonus_day_bonus_pct: 50,
   bonus_day_of_week: 6, // Saturday (Sun=0..Sat=6)
+  // Queue-status message auto-deletion — see queue.ts's isQueueMessagesSimplified(). Same
+  // precedent as bot_paused/bonus_day_enabled: listed here for /admin config get's display, but
+  // deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set through its own
+  // dedicated, boolean-validated /admin simplify-queue-messages command instead.
+  queue_simplified_messages: 1,
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {

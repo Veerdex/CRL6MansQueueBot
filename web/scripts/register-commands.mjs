@@ -646,6 +646,19 @@ const commands = [
         type: SUB_COMMAND,
       },
       {
+        name: "simplify-queue-messages",
+        description: "Toggle whether old queue-status messages are auto-deleted so only one shows at a time.",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "enabled",
+            description: "If true (default), auto-delete old queue-status messages. If false, let them stack.",
+            type: BOOLEAN_OPTION,
+            required: true,
+          },
+        ],
+      },
+      {
         name: "checklist",
         description: "Show which settings are configured and which still need setup.",
         type: SUB_COMMAND,

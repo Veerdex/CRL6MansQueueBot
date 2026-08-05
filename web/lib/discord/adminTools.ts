@@ -204,6 +204,11 @@ async function dispatchAdminSubcommand(
       await processStart(interaction, actorId);
       return;
     }
+    case "simplify-queue-messages": {
+      const enabled = getParamValue(params, "enabled");
+      await processSimplifyQueueMessagesToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+      return;
+    }
     case "setguildid": {
       const guildId = getParamValue(params, "guild_id");
       await processSetGuildId(interaction, actorId, typeof guildId === "string" ? guildId : null);
@@ -1224,6 +1229,28 @@ async function processStart(interaction: DiscordInteraction, actorId: string) {
   await setConfigValue("bot_paused", "0");
   await logAdminAction(actorId, "start_bot", "", "bot resumed");
   await editOriginalResponse(interaction.token, { content: "Bot resumed." });
+}
+
+// ---------------------------------------------------------------------------
+// /admin simplify-queue-messages enabled:<bool> — toggles whether the queue-status message
+// (join/leave in #rank-queue / #universal-queue) auto-deletes the previous one so only one shows
+// at a time (the default, "simplified" behavior — see queue.ts's isQueueMessagesSimplified()).
+// Turned off, every join/leave posts a new status message without deleting the last one, so the
+// channel keeps a running history instead of pruning down to a single live message.
+// ---------------------------------------------------------------------------
+
+async function processSimplifyQueueMessagesToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
+  if (enabled === undefined) {
+    await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
+    return;
+  }
+  await setConfigValue("queue_simplified_messages", enabled ? "1" : "0");
+  await logAdminAction(actorId, "simplify_queue_messages_toggle", "", `enabled=${enabled}`);
+  await editOriginalResponse(interaction.token, {
+    content: enabled
+      ? "Queue messages simplified — only the latest queue-status message will be shown; older ones are auto-deleted."
+      : "Queue messages no longer simplified — every join/leave will post a new status message without deleting the last one.",
+  });
 }
 
 // ---------------------------------------------------------------------------
