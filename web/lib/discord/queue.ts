@@ -8,6 +8,7 @@ import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { startTeamFormation } from "./teamFormation";
+import { computeBonusDayMultiplier } from "./bonusDay";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -460,9 +461,20 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     return;
   }
 
+  // Locked in now, at pop (= "the queue completes") — see CLAUDE.md, "Weekly bonus day": a
+  // series that pops inside the bonus window keeps its bonus even if reported after the window
+  // has since closed, so this can't be recomputed later at report time.
+  const bonusDayMultiplier = await computeBonusDayMultiplier();
+
   const { data: series, error: seriesError } = await supabase
     .from("crl6mansqueuebot_series")
-    .insert({ season_id: season.id, queue_type: queueType, status: "forming", queue_channel_id: queueChannelId })
+    .insert({
+      season_id: season.id,
+      queue_type: queueType,
+      status: "forming",
+      queue_channel_id: queueChannelId,
+      bonus_day_multiplier: bonusDayMultiplier,
+    })
     .select("id")
     .single();
   if (seriesError || !series) {

@@ -46,6 +46,7 @@ export type SeriesRow = {
   voice_channel_b_id: string | null;
   vote_result: VoteChoice | null;
   formation_message_id: string | null;
+  bonus_day_multiplier: number;
 };
 
 export type SeriesPlayerRow = {

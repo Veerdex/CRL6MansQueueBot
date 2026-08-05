@@ -1,2 +1,5 @@
 .idea/
 supabase/.temp/
+
+.vercel
+.env*

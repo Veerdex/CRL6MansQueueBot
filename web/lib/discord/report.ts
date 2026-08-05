@@ -156,12 +156,15 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       getConfigNumber("mmr_skew_factor", 0.5),
       getConfigNumber("mmr_min_delta", 2),
     ]);
+    // Locked in at pop time (see bonusDay.ts) — not re-evaluated against "now", which could
+    // have drifted outside the bonus window by the time a match actually gets reported.
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
     const eloInputs = allSeriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
-    const results = computeEloDeltas(eloInputs, winner, { kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
+    const results = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
     const resultsById = new Map<string, EloResult>(results.map((r) => [r.playerId, r]));
 
     await Promise.all(
@@ -260,7 +263,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   const reportChannelId = reportChannelConfig?.value;
   if (reportChannelId) {
     const matchId = encodeMatchId(matchNumber);
-    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines);
+    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1);
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
       body: JSON.stringify({ embeds: [embed] }),
@@ -279,12 +282,12 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   await deleteOriginalResponse(interaction.token);
 }
 
-function reportResultEmbed(winner: Team, matchId: string, winnerLines: string[], loserLines: string[]) {
+function reportResultEmbed(winner: Team, matchId: string, winnerLines: string[], loserLines: string[], bonusDayActive: boolean) {
   return {
     color: BRAND_COLOR,
     title: `Match Reported — Team ${winner} Wins!`,
     description:
-      `**Match #${matchId}**\n\n` +
+      `**Match #${matchId}**${bonusDayActive ? " 🔥 Bonus Day" : ""}\n\n` +
       `**Winners**\n${winnerLines.join("\n")}\n\n` +
       `**Losers**\n${loserLines.join("\n")}`,
   };

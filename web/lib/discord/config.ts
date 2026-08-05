@@ -43,6 +43,13 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   mmr_shift: 0,
   mmr_skew_factor: 0.5,
   mmr_min_delta: 2,
+  // Weekly bonus day — see CLAUDE.md, "Weekly bonus day". Listed here so /admin config get can
+  // display current values, but deliberately left out of register-commands.mjs's CONFIG_KEYS
+  // (same precedent as bot_paused) — these three are set through their own dedicated,
+  // validated /admin bonus-day subcommands instead of the generic /admin config set.
+  bonus_day_enabled: 1,
+  bonus_day_bonus_pct: 50,
+  bonus_day_of_week: 6, // Saturday (Sun=0..Sat=6)
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {

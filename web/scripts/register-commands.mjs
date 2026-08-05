@@ -14,6 +14,7 @@
 
 const STRING_OPTION = 3;
 const INTEGER_OPTION = 4;
+const BOOLEAN_OPTION = 5;
 const USER_OPTION = 6;
 const ROLE_OPTION = 8;
 const NUMBER_OPTION = 10;
@@ -478,6 +479,61 @@ const commands = [
                 description: "The new numeric value.",
                 type: NUMBER_OPTION,
                 required: true,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "bonus-day",
+        description: "Configure the weekly bonus-MMR day.",
+        type: SUB_COMMAND_GROUP,
+        options: [
+          {
+            name: "toggle",
+            description: "Turn the weekly bonus day on or off.",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "enabled",
+                description: "Whether the bonus day is active.",
+                type: BOOLEAN_OPTION,
+                required: true,
+              },
+            ],
+          },
+          {
+            name: "set-bonus",
+            description: "Set the K-factor bonus percentage applied during the bonus day.",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "percent",
+                description: "Bonus percentage, e.g. 50 for +50% (K x1.5).",
+                type: NUMBER_OPTION,
+                required: true,
+              },
+            ],
+          },
+          {
+            name: "set-day",
+            description: "Set which day of the week the bonus applies to (12am-12am Pacific).",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "day",
+                description: "The bonus day.",
+                type: STRING_OPTION,
+                required: true,
+                choices: [
+                  { name: "Sunday", value: "0" },
+                  { name: "Monday", value: "1" },
+                  { name: "Tuesday", value: "2" },
+                  { name: "Wednesday", value: "3" },
+                  { name: "Thursday", value: "4" },
+                  { name: "Friday", value: "5" },
+                  { name: "Saturday", value: "6" },
+                ],
               },
             ],
           },

@@ -4,6 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, discordFetch, getGuildId } from "./rest";
 import { getConfigNumber, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
+import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
 import { refreshQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
@@ -148,6 +149,25 @@ async function dispatchAdminSubcommand(
         return;
       }
       await editOriginalResponse(interaction.token, { content: "Unrecognized config subcommand." });
+      return;
+    }
+    case "bonus-day": {
+      if (path[1] === "toggle") {
+        const enabled = getParamValue(params, "enabled");
+        await processBonusDayToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+        return;
+      }
+      if (path[1] === "set-bonus") {
+        const percent = getParamValue(params, "percent");
+        await processBonusDaySetBonus(interaction, actorId, typeof percent === "number" ? percent : undefined);
+        return;
+      }
+      if (path[1] === "set-day") {
+        const day = getParamValue(params, "day");
+        await processBonusDaySetDay(interaction, actorId, typeof day === "string" ? day : null);
+        return;
+      }
+      await editOriginalResponse(interaction.token, { content: "Unrecognized bonus-day subcommand." });
       return;
     }
     case "audit-log": {
@@ -328,13 +348,16 @@ async function processCorrectReport(
       getConfigNumber("mmr_skew_factor", 0.5),
       getConfigNumber("mmr_min_delta", 2),
     ]);
+    // Same locked-in-at-pop multiplier the original report used — a correction reuses it rather
+    // than re-evaluating "now" so it stays consistent with whatever the original settle applied.
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
     const eloInputs = seriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
 
-    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
+    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
     const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
     // Update each player: reverse old delta, apply new delta
@@ -1201,6 +1224,46 @@ async function processStart(interaction: DiscordInteraction, actorId: string) {
   await setConfigValue("bot_paused", "0");
   await logAdminAction(actorId, "start_bot", "", "bot resumed");
   await editOriginalResponse(interaction.token, { content: "Bot resumed." });
+}
+
+// ---------------------------------------------------------------------------
+// /admin bonus-day toggle|set-bonus|set-day — see CLAUDE.md, "Weekly bonus day". Three
+// dedicated commands rather than the generic /admin config set (same precedent as
+// stop/start managing bot_paused) so set-day gets Discord-native choice validation and
+// set-bonus can be bounds-checked, instead of accepting an arbitrary config set value.
+// ---------------------------------------------------------------------------
+
+async function processBonusDayToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
+  if (enabled === undefined) {
+    await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
+    return;
+  }
+  await setConfigValue("bonus_day_enabled", enabled ? "1" : "0");
+  await logAdminAction(actorId, "bonus_day_toggle", "", `enabled=${enabled}`);
+  await editOriginalResponse(interaction.token, { content: `Weekly bonus day ${enabled ? "enabled" : "disabled"}.` });
+}
+
+async function processBonusDaySetBonus(interaction: DiscordInteraction, actorId: string, percent: number | undefined) {
+  if (percent === undefined || !Number.isFinite(percent) || percent < 0) {
+    await editOriginalResponse(interaction.token, { content: "percent must be a number >= 0 (e.g. 50 for +50%)." });
+    return;
+  }
+  await setConfigValue("bonus_day_bonus_pct", String(percent));
+  await logAdminAction(actorId, "bonus_day_set_bonus", "", `percent=${percent}`);
+  await editOriginalResponse(interaction.token, {
+    content: `Bonus day K-factor bonus set to +${percent}% (K is multiplied by ${(1 + percent / 100).toFixed(2)} during the bonus window).`,
+  });
+}
+
+async function processBonusDaySetDay(interaction: DiscordInteraction, actorId: string, day: string | null) {
+  const dayIndex = day !== null ? Number(day) : NaN;
+  if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6) {
+    await editOriginalResponse(interaction.token, { content: "Invalid day." });
+    return;
+  }
+  await setConfigValue("bonus_day_of_week", String(dayIndex));
+  await logAdminAction(actorId, "bonus_day_set_day", "", `day=${BONUS_DAY_NAMES[dayIndex]}`);
+  await editOriginalResponse(interaction.token, { content: `Bonus day set to ${BONUS_DAY_NAMES[dayIndex]} (12am–12am Pacific).` });
 }
 
 // ---------------------------------------------------------------------------
