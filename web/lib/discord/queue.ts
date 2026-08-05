@@ -28,14 +28,25 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 // place (the old button-driven behavior) or letting messages pile up.
 // ---------------------------------------------------------------------------
 
-function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], headline?: string) {
+// `headline` (the "<@user> has joined/left..." line, sometimes prefixed with a role mention for
+// the first-join ping) is intentionally NOT embedded here — Discord does not deliver
+// notifications for mentions that appear inside an embed, only ones in the top-level message
+// `content`. Callers send it separately as `content` alongside this embed so the ping actually
+// fires. See queueMessageBody below.
+function queueStatusEmbed(queueType: QueueType, members: PlayerRow[]) {
   const label = QUEUE_LABELS[queueType];
   const mentionLine = members.length ? members.map((m) => `<@${m.discord_id}>`).join(" ") : "_Empty_";
-  const headlineBlock = headline ? `**${headline}**\n\n` : "";
   return {
     color: BRAND_COLOR,
-    description: `${headlineBlock}**Current Queue Members: ${members.length}**\n${mentionLine}`,
+    description: `**Current Queue Members: ${members.length}**\n${mentionLine}`,
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
+  };
+}
+
+function queueMessageBody(queueType: QueueType, members: PlayerRow[], headline?: string) {
+  return {
+    content: headline ?? "",
+    embeds: [queueStatusEmbed(queueType, members)],
   };
 }
 
@@ -81,7 +92,7 @@ async function tryPostAndClaimQueueMessage(
 ): Promise<boolean> {
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ embeds: [queueStatusEmbed(queueType, members, headline)] }),
+    body: JSON.stringify(queueMessageBody(queueType, members, headline)),
   })) as { id: string };
 
   const { data: claimed, error } = await supabase
@@ -121,7 +132,7 @@ async function postFreshQueueMessage(
   if (oldMessageId === null) {
     const message = (await discordFetch(`/channels/${channelId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ embeds: [queueStatusEmbed(queueType, members, headline)] }),
+      body: JSON.stringify(queueMessageBody(queueType, members, headline)),
     })) as { id: string };
     await supabase.from("crl6mansqueuebot_queue_messages").upsert({
       queue_type: queueType,
