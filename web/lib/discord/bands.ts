@@ -150,12 +150,15 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
           const oldRoleId = roleIdByBand.get(oldBand);
           if (oldRoleId) await removeMemberRole(guildId, player.discord_id, oldRoleId);
         }
+        if (action === "placed") {
+          // "Unranked" was granted the moment this player first ever queued (see
+          // grantUnrankedRoleToNewPlayer below, called from queue.ts) — swap it out for their
+          // real computed band now that they've actually placed, same as any other band change.
+          const unrankedRoleId = roleIdByBand.get("Unranked");
+          if (unrankedRoleId) await removeMemberRole(guildId, player.discord_id, unrankedRoleId);
+        }
         const newRoleId = roleIdByBand.get(targetBand);
         if (newRoleId) await addMemberRole(guildId, player.discord_id, newRoleId);
-        if (action === "placed") {
-          const unrankedRoleId = roleIdByBand.get("Unranked");
-          if (unrankedRoleId) await addMemberRole(guildId, player.discord_id, unrankedRoleId);
-        }
       } catch (err) {
         console.error(`Band recompute: failed to sync Discord role for ${player.discord_id}`, err);
       }
@@ -169,11 +172,39 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
 }
 
 // ---------------------------------------------------------------------------
+// Grants the informational "Unranked" role the instant a player first ever queues (called from
+// queue.ts's getOrCreatePlayer, only on the player row's initial insert — not on every /q). This
+// runs well before placement_games_required is met; recomputeBands() above removes this same role
+// and swaps in the player's real band the moment they actually place, so "Unranked" behaves as a
+// genuine transitional state (queued-but-unbanded) rather than a permanent badge. Best-effort and
+// silent no-op if the "Unranked" key isn't mapped to a role yet (/setbandrole) or the guild id
+// can't be resolved — a missing role sync here shouldn't block a player from joining a queue.
+// ---------------------------------------------------------------------------
+
+export async function grantUnrankedRoleToNewPlayer(discordId: string): Promise<void> {
+  const supabase = createAdminClient();
+  const { data: roleRow } = await supabase
+    .from("crl6mansqueuebot_band_roles")
+    .select("role_id")
+    .eq("band", "Unranked")
+    .maybeSingle();
+  if (!roleRow) return;
+
+  try {
+    const guildId = await getGuildId();
+    await addMemberRole(guildId, discordId, roleRow.role_id);
+  } catch (err) {
+    console.error(`Failed to grant Unranked role to new player ${discordId}`, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // /setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role> — admin-gated, maps
-// a band (or the 'Unranked' informational role for newly placed players, or the season-end-only
-// 'Prism' Top 10 tier) to a Discord role. recomputeBands() below only ever grants/revokes
-// Iron/Garnet/Emerald/Sapphire/Unranked — it never touches 'Prism', which is exclusively synced
-// by season close (see seasonClose.ts). Mirrors /setqueuechannel's channel-mapping pattern.
+// a band (or the 'Unranked' informational role for newly queued/not-yet-placed players, or the
+// season-end-only 'Prism' Top 10 tier) to a Discord role. recomputeBands() above only ever
+// grants/revokes Iron/Garnet/Emerald/Sapphire/Unranked — it never touches 'Prism', which is
+// exclusively synced by season close (see seasonClose.ts). Mirrors /setqueuechannel's
+// channel-mapping pattern.
 // ---------------------------------------------------------------------------
 
 export function handleSetBandRoleCommand(interaction: DiscordInteraction) {

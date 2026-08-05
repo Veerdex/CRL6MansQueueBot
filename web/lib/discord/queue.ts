@@ -9,6 +9,7 @@ import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type Perm
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { startTeamFormation } from "./teamFormation";
 import { computeBonusDayMultiplier } from "./bonusDay";
+import { grantUnrankedRoleToNewPlayer } from "./bands";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -244,7 +245,15 @@ export async function initQueueMessage(queueType: QueueType, channelId: string) 
 // Player + lock lookups
 // ---------------------------------------------------------------------------
 
-export async function getOrCreatePlayer(supabase: AdminClient, discordId: string, displayName: string): Promise<PlayerRow> {
+// `onCreated` fires only when this call actually inserts a new player row (not on lookups of an
+// existing one) — used by the queue join path to grant the "Unranked" role on a player's first
+// ever queue, without every other caller (report, sub, abandon, etc.) needing to know about it.
+export async function getOrCreatePlayer(
+  supabase: AdminClient,
+  discordId: string,
+  displayName: string,
+  onCreated?: (player: PlayerRow) => void | Promise<void>,
+): Promise<PlayerRow> {
   const { data: existing } = await supabase
     .from("crl6mansqueuebot_players")
     .select("*")
@@ -265,6 +274,7 @@ export async function getOrCreatePlayer(supabase: AdminClient, discordId: string
     .select("*")
     .single();
   if (error || !created) throw new Error(`Failed to create player: ${error?.message}`);
+  if (onCreated) await onCreated(created);
   return created;
 }
 
@@ -361,7 +371,12 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
   }
   const queueType = msgRow.queue_type as QueueType;
 
-  const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+  const player = await getOrCreatePlayer(
+    supabase,
+    discordId,
+    interactionDisplayName(interaction),
+    action === "join" ? (p) => grantUnrankedRoleToNewPlayer(p.discord_id) : undefined,
+  );
 
   if (action === "leave") {
     const { data, error } = await supabase.rpc("crl6mansqueuebot_leave_queue", {
