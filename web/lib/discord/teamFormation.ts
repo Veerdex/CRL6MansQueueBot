@@ -543,7 +543,7 @@ async function sendDraftPickPrompt(
   const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows, [embed]);
 
   if (dmSent) {
-    const statusText = `<@${turnPlayer.discord_id}> is picking — check your DMs!`;
+    const statusText = `<@${turnPlayer.discord_id}> your picking - check your DMs!`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
@@ -553,7 +553,7 @@ async function sendDraftPickPrompt(
       }),
     });
   } else {
-    const statusText = `<@${turnPlayer.discord_id}> — I couldn't DM you (your DMs are closed). Pick from the buttons below:`;
+    const statusText = `<@${turnPlayer.discord_id}> - Your DMs are closed. Pick from the buttons below:`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
