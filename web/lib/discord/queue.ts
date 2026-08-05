@@ -29,25 +29,26 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 // place (the old button-driven behavior) or letting messages pile up.
 // ---------------------------------------------------------------------------
 
-// `headline` (the "<@user> has joined/left..." line, sometimes prefixed with a role mention for
-// the first-join ping) is intentionally NOT embedded here — Discord does not deliver
-// notifications for mentions that appear inside an embed, only ones in the top-level message
-// `content`. Callers send it separately as `content` alongside this embed so the ping actually
-// fires. See queueMessageBody below.
-function queueStatusEmbed(queueType: QueueType, members: PlayerRow[]) {
+function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], headline?: string) {
   const label = QUEUE_LABELS[queueType];
   const mentionLine = members.length ? members.map((m) => `<@${m.discord_id}>`).join(" ") : "_Empty_";
+  const headlineBlock = headline ? `**${headline}**\n\n` : "";
   return {
     color: BRAND_COLOR,
-    description: `**Current Queue Members: ${members.length}**\n${mentionLine}`,
+    description: `${headlineBlock}**Current Queue Members: ${members.length}**\n${mentionLine}`,
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
   };
 }
 
-function queueMessageBody(queueType: QueueType, members: PlayerRow[], headline?: string) {
+// `headline` (the "<@user> has joined/left..." line) stays in the embed as display text. `ping`
+// is the separate first-join role-mention line (e.g. `<@&roleId>`) and is sent as the top-level
+// message `content` instead — Discord does not deliver notifications for mentions that appear
+// inside an embed, only ones in `content`, so the ping has to live outside the embed to actually
+// fire.
+function queueMessageBody(queueType: QueueType, members: PlayerRow[], headline?: string, ping?: string) {
   return {
-    content: headline ?? "",
-    embeds: [queueStatusEmbed(queueType, members)],
+    content: ping ?? "",
+    embeds: [queueStatusEmbed(queueType, members, headline)],
   };
 }
 
@@ -105,10 +106,11 @@ async function tryPostAndClaimQueueMessage(
   members: PlayerRow[],
   headline: string | undefined,
   simplified: boolean,
+  ping?: string,
 ): Promise<boolean> {
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify(queueMessageBody(queueType, members, headline)),
+    body: JSON.stringify(queueMessageBody(queueType, members, headline, ping)),
   })) as { id: string };
 
   const { data: claimed, error } = await supabase
@@ -220,7 +222,9 @@ export async function postTrackedQueueMessage(
 
 // Refreshes whichever channel is currently mapped to `queueType`. No-ops if the queue channel
 // was never set up. `headline` is the "<@user> has joined/left..." line for command-driven
-// refreshes; omitted for headline-less refreshes (admin force-leave, cross-queue-pop removal).
+// refreshes (embedded, does not itself notify); omitted for headline-less refreshes (admin
+// force-leave, cross-queue-pop removal). `ping` is the separate first-join role mention, sent
+// as the message's top-level content so it actually notifies — see queueMessageBody.
 //
 // Retries on a lost claim race rather than giving up after one attempt: since join/leave writes
 // (join_queue/leave_queue RPCs) always commit before this runs, re-fetching msgRow/members on
@@ -230,7 +234,7 @@ export async function postTrackedQueueMessage(
 // queue channel can't loop forever.
 const MAX_REFRESH_ATTEMPTS = 5;
 
-export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string) {
+export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string, ping?: string) {
   const simplified = await isQueueMessagesSimplified();
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt++) {
     const { data: msgRow } = await supabase
@@ -249,6 +253,7 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
       members,
       headline,
       simplified,
+      ping,
     );
     if (won) return;
   }
@@ -466,9 +471,11 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     // Pop succeeded — delete the deferred response so it auto-dismisses
     await deleteOriginalResponse(interaction.token);
   } else if (result?.status === "joined") {
-    let headline = `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`;
+    const headline = `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`;
+    let ping: string | undefined;
 
-    // If this is the first join (queue size was 0, now 1), mention the configured role
+    // If this is the first join (queue size was 0, now 1), ping the configured role — sent
+    // separately as message content (not embedded) so the notification actually fires.
     if (result.queue_size === 1) {
       const { data: mentionRoleRow } = await supabase
         .from("crl6mansqueuebot_queue_mention_roles")
@@ -477,11 +484,11 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
         .maybeSingle() as any;
 
       if (mentionRoleRow?.role_id) {
-        headline = `<@&${mentionRoleRow.role_id}> — ${headline}`;
+        ping = `<@&${mentionRoleRow.role_id}>`;
       }
     }
 
-    await refreshQueueMessage(supabase, queueType, headline);
+    await refreshQueueMessage(supabase, queueType, headline, ping);
     await deleteOriginalResponse(interaction.token);
   }
 }
