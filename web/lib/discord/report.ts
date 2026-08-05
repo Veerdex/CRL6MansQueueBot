@@ -147,19 +147,21 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
       getConfigNumber("provisional_k_multiplier", 1.75),
       getConfigNumber("mmr_scale", 1),
+      getConfigNumber("mmr_skew_factor", 0.5),
+      getConfigNumber("mmr_min_delta", 2),
     ]);
 
     const eloInputs = allSeriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
-    const results = computeEloDeltas(eloInputs, winner, { kFactor, sScale, provisionalGames, provisionalKMultiplier });
+    const results = computeEloDeltas(eloInputs, winner, { kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
     const resultsById = new Map<string, EloResult>(results.map((r) => [r.playerId, r]));
 
     await Promise.all(

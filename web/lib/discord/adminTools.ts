@@ -320,11 +320,13 @@ async function processCorrectReport(
 
   // Only recalculate MMR if this is a Rank Queue series
   if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
       getConfigNumber("provisional_k_multiplier", 1.75),
+      getConfigNumber("mmr_skew_factor", 0.5),
+      getConfigNumber("mmr_min_delta", 2),
     ]);
 
     const eloInputs = seriesPlayers.map((sp) => {
@@ -332,7 +334,7 @@ async function processCorrectReport(
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
 
-    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor, sScale, provisionalGames, provisionalKMultiplier });
+    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
     const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
     // Update each player: reverse old delta, apply new delta

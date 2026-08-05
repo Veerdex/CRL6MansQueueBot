@@ -19,6 +19,12 @@ export type EloConfig = {
   sScale: number;
   provisionalGames: number;
   provisionalKMultiplier: number;
+  // Both optional, defaulting to a no-op (0) when omitted — deltas are computed as plain
+  // baseline Elo unless a caller opts in. Non-zero defaults (skewFactor=0.5, minDeltaFloor=2)
+  // live in config.ts's KNOWN_CONFIG_DEFAULTS, not here, matching how kFactor/sScale's defaults
+  // are supplied by call sites rather than baked into this type.
+  skewFactor?: number;
+  minDeltaFloor?: number;
 };
 
 export type EloResult = {
@@ -33,18 +39,49 @@ function teamAverage(players: EloPlayerInput[], team: Team): number {
   return members.reduce((sum, p) => sum + p.mmr, 0) / members.length;
 }
 
+// Reference spread scale for the skew dampening curve below — not admin-configurable, mirrors
+// the constant used throughout the scratch simulations in web/scripts/simulate-mmr-*.mjs.
+const SKEW_BASE_SIGMA = 50;
+
 export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config: EloConfig): EloResult[] {
   const avgA = teamAverage(players, "A");
   const avgB = teamAverage(players, "B");
   const expectedA = 1 / (1 + 10 ** ((avgB - avgA) / config.sScale));
   const expectedByTeam: Record<Team, number> = { A: expectedA, B: 1 - expectedA };
 
+  const skewFactor = config.skewFactor ?? 0;
+  const minDeltaFloor = config.minDeltaFloor ?? 0;
+  // Which side of 0 gets its outward-pushing deltas dampened: positive skewFactor dampens the
+  // negative side (helps players climb out of the hole), negative skewFactor mirrors it onto
+  // the positive side. See CLAUDE.md-adjacent design notes: the dampening only ever shrinks the
+  // delta direction that would push a player further into their already-dampened side — a win
+  // that pulls them back toward 0 is never touched, so this can't trap a player at a low rank.
+  const dampenedSide = skewFactor > 0 ? -1 : skewFactor < 0 ? 1 : 0;
+  const sigmaDampened = SKEW_BASE_SIGMA * (1 - Math.min(Math.abs(skewFactor), 0.9));
+
   return players.map((p) => {
     const score = p.team === winner ? 1 : 0;
     const expected = expectedByTeam[p.team];
     const wasProvisional = p.priorRankGamesPlayed < config.provisionalGames;
     const k = wasProvisional ? config.kFactor * config.provisionalKMultiplier : config.kFactor;
-    const delta = (k * (score - expected)) / 3;
+    let delta = (k * (score - expected)) / 3;
+
+    if (dampenedSide !== 0) {
+      const onDampenedSide = Math.sign(p.mmr) === dampenedSide;
+      const pushesFurtherOut = Math.sign(delta) === dampenedSide;
+      if (onDampenedSide && pushesFurtherOut) {
+        const multiplier = Math.exp(-(p.mmr * p.mmr) / (2 * sigmaDampened * sigmaDampened));
+        delta *= multiplier;
+      }
+    }
+
+    // Applied last: pushes every nonzero delta further from 0 by a fixed floor amount, in
+    // whichever direction it was already headed. Not a clamp on tiny deltas only — it's added
+    // unconditionally, so it also inflates already-large deltas by the same fixed amount.
+    if (minDeltaFloor > 0 && delta !== 0) {
+      delta += Math.sign(delta) * minDeltaFloor;
+    }
+
     return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional };
   });
 }

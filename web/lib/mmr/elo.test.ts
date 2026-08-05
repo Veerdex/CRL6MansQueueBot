@@ -107,3 +107,103 @@ describe("computeEloDeltas", () => {
     }
   });
 });
+
+describe("computeEloDeltas — skew factor", () => {
+  it("with skewFactor=0 (default/omitted), behaves identically to plain baseline Elo", () => {
+    const players = [
+      player("a1", -300, "A"),
+      player("a2", -300, "A"),
+      player("a3", -300, "A"),
+      player("b1", 100, "B"),
+      player("b2", 100, "B"),
+      player("b3", 100, "B"),
+    ];
+    const withZero = computeEloDeltas(players, "B", { ...config, skewFactor: 0 });
+    const omitted = computeEloDeltas(players, "B", config);
+    for (let i = 0; i < withZero.length; i++) {
+      expect(withZero[i].delta).toBeCloseTo(omitted[i].delta, 10);
+    }
+  });
+
+  it("dampens a negative-MMR player's loss (pushed further negative) but not their win (pulled toward 0)", () => {
+    const skewConfig: EloConfig = { ...config, skewFactor: 0.5 };
+    const losing = [
+      player("a1", -300, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const lossResult = computeEloDeltas(losing, "B", skewConfig).find((r) => r.playerId === "a1")!;
+    const plainLossDelta = computeEloDeltas(losing, "B", config).find((r) => r.playerId === "a1")!.delta;
+    expect(lossResult.delta).toBeGreaterThan(plainLossDelta); // shrunk toward 0, i.e. less negative
+
+    const winning = [
+      player("a1", -300, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const winResult = computeEloDeltas(winning, "A", skewConfig).find((r) => r.playerId === "a1")!;
+    const plainWinDelta = computeEloDeltas(winning, "A", config).find((r) => r.playerId === "a1")!.delta;
+    expect(winResult.delta).toBeCloseTo(plainWinDelta, 10); // untouched — pulls back toward 0
+  });
+
+  it("mirrors dampening onto the positive side for a negative skewFactor", () => {
+    const skewConfig: EloConfig = { ...config, skewFactor: -0.5 };
+    const players = [
+      player("a1", 300, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const winResult = computeEloDeltas(players, "A", skewConfig).find((r) => r.playerId === "a1")!;
+    const plainWinDelta = computeEloDeltas(players, "A", config).find((r) => r.playerId === "a1")!.delta;
+    expect(winResult.delta).toBeGreaterThan(0);
+    expect(winResult.delta).toBeLessThan(plainWinDelta); // win pushed further positive -> dampened
+  });
+});
+
+describe("computeEloDeltas — min delta floor", () => {
+  it("with minDeltaFloor=0 (default/omitted), behaves identically to plain baseline Elo", () => {
+    const players = [
+      player("a1", 0, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const withZero = computeEloDeltas(players, "A", { ...config, minDeltaFloor: 0 });
+    const omitted = computeEloDeltas(players, "A", config);
+    for (let i = 0; i < withZero.length; i++) {
+      expect(withZero[i].delta).toBeCloseTo(omitted[i].delta, 10);
+    }
+  });
+
+  it("pushes every nonzero delta further from 0 by the floor amount, in the same direction", () => {
+    const players = [
+      player("a1", 0, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const plain = computeEloDeltas(players, "A", config);
+    const floored = computeEloDeltas(players, "A", { ...config, minDeltaFloor: 2 });
+    for (let i = 0; i < plain.length; i++) {
+      const expectedDelta = plain[i].delta + Math.sign(plain[i].delta) * 2;
+      expect(floored[i].delta).toBeCloseTo(expectedDelta, 10);
+    }
+    const winner = floored.find((r) => r.playerId === "a1")!;
+    const loser = floored.find((r) => r.playerId === "b1")!;
+    expect(winner.delta).toBeCloseTo(32 / 6 + 2, 10);
+    expect(loser.delta).toBeCloseTo(-32 / 6 - 2, 10);
+  });
+});

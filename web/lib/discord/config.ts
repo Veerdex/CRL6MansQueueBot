@@ -41,6 +41,8 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   bot_paused: 0,
   mmr_scale: 1,
   mmr_shift: 0,
+  mmr_skew_factor: 0.5,
+  mmr_min_delta: 2,
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {

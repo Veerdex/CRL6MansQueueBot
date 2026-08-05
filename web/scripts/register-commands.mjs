@@ -44,6 +44,8 @@ const CONFIG_KEYS = [
   "season_rank_display_min_games",
   "mmr_scale",
   "mmr_shift",
+  "mmr_skew_factor",
+  "mmr_min_delta",
 ];
 const CONFIG_KEY_CHOICES = CONFIG_KEYS.map((k) => ({ name: k, value: k }));
 
