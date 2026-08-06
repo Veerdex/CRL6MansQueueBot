@@ -660,12 +660,12 @@ const commands = [
       },
       {
         name: "streak-bonus",
-        description: "Toggle the win-streak MMR bonus. Streak tracking, the announcement, and the fire emoji still work when off.",
+        description: "Toggle the win-streak MMR bonus. Tracking/announcement/fire emoji still work when off.",
         type: SUB_COMMAND,
         options: [
           {
             name: "enabled",
-            description: "If true (default), winners on a 3+ game streak get bonus MMR. If false, only the MMR bonus is disabled.",
+            description: "If true (default), 3+ game win streaks get bonus MMR. If false, only the bonus is disabled.",
             type: BOOLEAN_OPTION,
             required: true,
           },
