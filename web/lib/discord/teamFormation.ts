@@ -14,6 +14,7 @@ import { getConfigNumber } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, type DiscordInteraction } from "./types";
 import { createVoiceChannels, postTrackedQueueMessage } from "./queue";
+import { getOnFirePlayerIds, mention } from "./streaks";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -81,7 +82,8 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
 // follow-on writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
 export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
+  const onFireIds = await getOnFirePlayerIds(supabase, members.map((m) => m.id));
+  const mentions = members.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
@@ -444,14 +446,14 @@ function draftPickButtonRows(seriesId: string, remaining: PlayerRow[]) {
   return buttonRows;
 }
 
-function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string) {
+function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, onFireIds: Set<string>) {
   const turnName = turnCaptain === "A" ? "Captain A" : "Captain B";
   return {
     color: BRAND_COLOR,
     title: "Captains Draft",
     fields: [
-      { name: "Captain A", value: `<@${captainA.discord_id}>`, inline: true },
-      { name: "Captain B", value: `<@${captainB.discord_id}>`, inline: true },
+      { name: "Captain A", value: mention(captainA.discord_id, onFireIds.has(captainA.id)), inline: true },
+      { name: "Captain B", value: mention(captainB.discord_id, onFireIds.has(captainB.id)), inline: true },
       { name: "Status", value: status, inline: false },
     ],
   };
@@ -476,14 +478,16 @@ async function sendDraftPickPrompt(
   turnCaptain: Team,
 ) {
   const turnPlayer = turnCaptain === "A" ? captainA : captainB;
+  const supabase = createAdminClient();
+  const onFireIds = await getOnFirePlayerIds(supabase, [captainA.id, captainB.id, ...remaining.map((p) => p.id)]);
 
   if (turnPlayer.is_test_data) {
-    const statusText = `Waiting on <@${turnPlayer.discord_id}> (test bot)...`;
+    const statusText = `Waiting on ${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} (test bot)...`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
         components: [],
       }),
     });
@@ -494,7 +498,6 @@ async function sendDraftPickPrompt(
   const dmContent = `**Captains Draft — your pick**`;
 
   // Create embed with player information
-  const supabase = createAdminClient();
   const embedFields = [];
 
   for (const player of remaining) {
@@ -543,22 +546,22 @@ async function sendDraftPickPrompt(
   const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows, [embed]);
 
   if (dmSent) {
-    const statusText = `<@${turnPlayer.discord_id}> your picking - check your DMs!`;
+    const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} your picking - check your DMs!`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
         components: [],
       }),
     });
   } else {
-    const statusText = `<@${turnPlayer.discord_id}> - Your DMs are closed. Pick from the buttons below:`;
+    const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} - Your DMs are closed. Pick from the buttons below:`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
         components: buttonRows,
       }),
     });
@@ -723,8 +726,9 @@ async function finalizeTeams(
   // Create voice channels now that teams are finalized
   await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
 
-  const teamALine = teamA.map((m) => `<@${m.discord_id}>`).join(" ");
-  const teamBLine = teamB.map((m) => `<@${m.discord_id}>`).join(" ");
+  const onFireIds = await getOnFirePlayerIds(supabase, members.map((m) => m.id));
+  const teamALine = teamA.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
+  const teamBLine = teamB.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
 
   // Delete all non-permanent messages, then post the "Teams formed!" message
   const { data: trackedMessages } = await supabase

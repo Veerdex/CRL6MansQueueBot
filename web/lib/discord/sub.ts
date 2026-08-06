@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse } from "./rest";
 import { getOrCreatePlayer, isPlayerLockedInActiveSeries, getLockedSeriesForPlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
+import { getOnFirePlayerIds, mention } from "./streaks";
 import { VIEW_CHANNEL, CONNECT, MEMBER_TYPE } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team } from "@/lib/supabase/types";
@@ -127,10 +128,11 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
+  const leavingOnFire = await getOnFirePlayerIds(supabase, [player.id]);
   const message = (await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
     method: "POST",
     body: JSON.stringify({
-      content: `<@${nomineeDiscordId}> — <@${discordId}> wants to sub out and nominated you to take their seat (Team ${leavingRow.team}). Accept to join the match.`,
+      content: `<@${nomineeDiscordId}> — ${mention(discordId, leavingOnFire.has(player.id))} wants to sub out and nominated you to take their seat (Team ${leavingRow.team}). Accept to join the match.`,
       components: [
         {
           type: MessageComponentTypes.ACTION_ROW,
@@ -275,10 +277,12 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
   }
 
   if (subRequest.message_id && series.queue_channel_id) {
+    const onFireIds = await getOnFirePlayerIds(supabase, leavingPlayer ? [nominee.id, leavingPlayer.id] : [nominee.id]);
+    const leavingMention = leavingPlayer ? mention(leavingPlayer.discord_id, onFireIds.has(leavingPlayer.id)) : "?";
     await discordFetch(`/channels/${series.queue_channel_id}/messages/${subRequest.message_id}`, {
       method: "PATCH",
       body: JSON.stringify({
-        content: `<@${nominee.discord_id}> accepted and has subbed in for <@${leavingPlayer?.discord_id ?? "?"}> on Team ${team}.`,
+        content: `${mention(nominee.discord_id, onFireIds.has(nominee.id))} accepted and has subbed in for ${leavingMention} on Team ${team}.`,
         components: [],
       }),
     }).catch((err) => console.error(`Failed to update sub request message for series ${seriesId}`, err));

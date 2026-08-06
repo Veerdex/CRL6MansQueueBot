@@ -55,6 +55,11 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set through its own
   // dedicated, boolean-validated /admin simplify-queue-messages command instead.
   queue_simplified_messages: 1,
+  // Win-streak MMR bonus — see CLAUDE.md, "MMR / Elo" (streak bonus). Same precedent as
+  // bonus_day_enabled/queue_simplified_messages: listed here for /admin config get's display,
+  // but deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set through its
+  // own dedicated, boolean-validated /admin streak-bonus toggle command instead.
+  streak_bonus_enabled: 1,
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {

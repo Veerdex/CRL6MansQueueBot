@@ -2,11 +2,12 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, AMBER_COLOR, getRankEmoji } from "./rest";
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
-import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
+import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
+import { getPriorRankWinStreak, mention, ON_FIRE_THRESHOLD } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
@@ -131,6 +132,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   const winnerLines: string[] = [];
   const loserLines: string[] = [];
   const pushLine = (sp: (typeof allSeriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
+  // Populated only for Rank Queue series — see CLAUDE.md, "MMR / Elo" (streak bonus). One line
+  // per player whose win streak just reached the announcement threshold, rendered as a second,
+  // amber-colored embed alongside the main report summary.
+  const streakAnnounceLines: string[] = [];
 
   // Pre-fetch all rank emoji to avoid async calls in loops
   const emojiByBand = new Map<string | null, string>();
@@ -147,7 +152,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
@@ -155,7 +160,9 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       getConfigNumber("mmr_scale", 1),
       getConfigNumber("mmr_skew_factor", 0.5),
       getConfigNumber("mmr_min_delta", 2),
+      getConfigNumber("streak_bonus_enabled", 1),
     ]);
+    const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Locked in at pop time (see bonusDay.ts) — not re-evaluated against "now", which could
     // have drifted outside the bonus window by the time a match actually gets reported.
     const effectiveKFactor = kFactor * series.bonus_day_multiplier;
@@ -164,8 +171,48 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
-    const results = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
-    const resultsById = new Map<string, EloResult>(results.map((r) => [r.playerId, r]));
+    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
+    const eloResultsById = new Map<string, EloResult>(eloResults.map((r) => [r.playerId, r]));
+
+    // Win-streak MMR bonus (see CLAUDE.md, "MMR / Elo" — streak bonus). The settle claim above
+    // already flipped this series to status='reported', so it must be excluded from each
+    // player's streak lookup here or it would double-count as its own most recent result —
+    // shifting both the bonus and the announcement threshold off by one game.
+    const newStreakById = new Map<string, number>();
+    const priorStreakById = new Map<string, number>();
+    await Promise.all(
+      allSeriesPlayers.map(async (sp) => {
+        if (sp.team !== winner) {
+          newStreakById.set(sp.player_id, 0);
+          return;
+        }
+        const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series!.id);
+        priorStreakById.set(sp.player_id, priorStreak);
+        newStreakById.set(sp.player_id, priorStreak + 1);
+      }),
+    );
+
+    // Folded directly into mmr_delta (not tracked as a separate column) so /admin unreport
+    // unwinds it for free — it just subtracts the stored delta, which already includes the
+    // bonus — with no extra bookkeeping. streakBonusEnabled gates only this arithmetic; the
+    // streak itself, the announcement embed, and the fire-emoji decoration below all still run
+    // when the toggle is off, per CLAUDE.md's "this just disables the extra mmr" spec.
+    const resultsById = new Map<string, EloResult>(
+      allSeriesPlayers.map((sp) => {
+        const base = eloResultsById.get(sp.player_id)!;
+        const bonus = sp.team === winner && streakBonusEnabled ? computeStreakBonus(priorStreakById.get(sp.player_id) ?? 0) : 0;
+        const result: EloResult = bonus === 0 ? base : { ...base, delta: base.delta + bonus, newMmr: base.newMmr + bonus };
+        return [sp.player_id, result];
+      }),
+    );
+
+    for (const sp of allSeriesPlayers) {
+      const streak = newStreakById.get(sp.player_id) ?? 0;
+      if (streak >= ON_FIRE_THRESHOLD) {
+        const p = playersById.get(sp.player_id)!;
+        streakAnnounceLines.push(`${mention(p.discord_id, true)} is on a ${streak} game win streak!`);
+      }
+    }
 
     await Promise.all(
       allSeriesPlayers.map(async (sp) => {
@@ -191,9 +238,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const emoji = emojiByBand.get(p.band) || "❓";
       const displayNewMmr = await getDisplayMMR(r.newMmr);
       const displayDelta = r.delta * mmrScale;
+      const onFire = (newStreakById.get(sp.player_id) ?? 0) >= ON_FIRE_THRESHOLD;
       pushLine(
         sp,
-        `<@${p.discord_id}> — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
+        `${mention(p.discord_id, onFire)} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
       );
     }
   } else {
@@ -264,9 +312,11 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   if (reportChannelId) {
     const matchId = encodeMatchId(matchNumber);
     const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1);
+    const embeds: Array<Record<string, unknown>> = [embed];
+    if (streakAnnounceLines.length > 0) embeds.push(streakAnnouncementEmbed(streakAnnounceLines));
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ embeds: [embed] }),
+      body: JSON.stringify({ embeds }),
     }).catch((err) => console.error(`Failed to post report summary for series ${series.id}`, err));
   } else {
     console.error(`Report channel not configured for series ${series.id}`);
@@ -291,4 +341,11 @@ function reportResultEmbed(winner: Team, matchId: string, winnerLines: string[],
       `**Winners**\n${winnerLines.join("\n")}\n\n` +
       `**Losers**\n${loserLines.join("\n")}`,
   };
+}
+
+// See CLAUDE.md, "MMR / Elo" (streak bonus) — fires alongside the main report embed whenever a
+// winning player's streak just reached ON_FIRE_THRESHOLD, independent of whether the MMR bonus
+// itself is currently enabled.
+function streakAnnouncementEmbed(lines: string[]) {
+  return { color: AMBER_COLOR, description: lines.join("\n") };
 }

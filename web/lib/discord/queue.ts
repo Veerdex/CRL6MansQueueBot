@@ -11,6 +11,7 @@ import { startTeamFormation } from "./teamFormation";
 import { computeBonusDayMultiplier } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber } from "./config";
+import { getOnFirePlayerIds, mention } from "./streaks";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -29,9 +30,9 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 // place (the old button-driven behavior) or letting messages pile up.
 // ---------------------------------------------------------------------------
 
-function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], headline?: string) {
+function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], onFireIds: Set<string>, headline?: string) {
   const label = QUEUE_LABELS[queueType];
-  const mentionLine = members.length ? members.map((m) => `<@${m.discord_id}>`).join(" ") : "_Empty_";
+  const mentionLine = members.length ? members.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ") : "_Empty_";
   const headlineBlock = headline ? `**${headline}**\n\n` : "";
   return {
     color: BRAND_COLOR,
@@ -45,10 +46,10 @@ function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], headline?:
 // message `content` instead — Discord does not deliver notifications for mentions that appear
 // inside an embed, only ones in `content`, so the ping has to live outside the embed to actually
 // fire.
-function queueMessageBody(queueType: QueueType, members: PlayerRow[], headline?: string, ping?: string) {
+function queueMessageBody(queueType: QueueType, members: PlayerRow[], onFireIds: Set<string>, headline?: string, ping?: string) {
   return {
     content: ping ?? "",
-    embeds: [queueStatusEmbed(queueType, members, headline)],
+    embeds: [queueStatusEmbed(queueType, members, onFireIds, headline)],
   };
 }
 
@@ -104,13 +105,14 @@ async function tryPostAndClaimQueueMessage(
   channelId: string,
   oldMessageId: string,
   members: PlayerRow[],
+  onFireIds: Set<string>,
   headline: string | undefined,
   simplified: boolean,
   ping?: string,
 ): Promise<boolean> {
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify(queueMessageBody(queueType, members, headline, ping)),
+    body: JSON.stringify(queueMessageBody(queueType, members, onFireIds, headline, ping)),
   })) as { id: string };
 
   const { data: claimed, error } = await supabase
@@ -149,10 +151,12 @@ async function postFreshQueueMessage(
   members: PlayerRow[],
   headline?: string,
 ): Promise<void> {
+  const onFireIds = await getOnFirePlayerIds(supabase, members.map((m) => m.id));
+
   if (oldMessageId === null) {
     const message = (await discordFetch(`/channels/${channelId}/messages`, {
       method: "POST",
-      body: JSON.stringify(queueMessageBody(queueType, members, headline)),
+      body: JSON.stringify(queueMessageBody(queueType, members, onFireIds, headline)),
     })) as { id: string };
     await supabase.from("crl6mansqueuebot_queue_messages").upsert({
       queue_type: queueType,
@@ -163,7 +167,7 @@ async function postFreshQueueMessage(
   }
 
   const simplified = await isQueueMessagesSimplified();
-  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, headline, simplified);
+  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, onFireIds, headline, simplified);
 }
 
 // Posts a message to a queue channel and tracks it, deleting all other non-permanent messages first.
@@ -245,12 +249,14 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
     if (!msgRow) return;
 
     const members = await fetchQueueMembers(supabase, queueType);
+    const onFireIds = await getOnFirePlayerIds(supabase, members.map((m) => m.id));
     const won = await tryPostAndClaimQueueMessage(
       supabase,
       queueType,
       msgRow.channel_id,
       msgRow.message_id,
       members,
+      onFireIds,
       headline,
       simplified,
       ping,

@@ -8,6 +8,9 @@ const DISCORD_API_BASE = "https://discord.com/api/v10";
 // design the user provided reference screenshots for.
 export const BRAND_COLOR = 0x57f287;
 
+// Win-streak announcement embed color — see CLAUDE.md, "MMR / Elo" (streak bonus).
+export const AMBER_COLOR = 0xffbf00;
+
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.

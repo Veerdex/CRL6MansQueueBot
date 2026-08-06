@@ -6,6 +6,7 @@ import { discordFetch, editOriginalResponse } from "./rest";
 import { hasAdminAccess } from "./admin";
 import { getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
+import { getOnFirePlayerIds, mention } from "./streaks";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow } from "@/lib/supabase/types";
 
@@ -143,10 +144,11 @@ async function processAbandon(interaction: DiscordInteraction, seriesIdOverride:
   await editOriginalResponse(interaction.token, { content: "Vote recorded — series cancelled." });
 
   if (series.queue_channel_id) {
+    const onFireIds = await getOnFirePlayerIds(supabase, [target.id]);
     await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
       method: "POST",
       body: JSON.stringify({
-        content: `**Series cancelled** — <@${targetDiscordId}> was voted as abandoned by ${ABANDON_VOTE_THRESHOLD} teammates. No MMR change.\n\nThis channel will close in 30 seconds.`,
+        content: `**Series cancelled** — ${mention(targetDiscordId, onFireIds.has(target.id))} was voted as abandoned by ${ABANDON_VOTE_THRESHOLD} teammates. No MMR change.\n\nThis channel will close in 30 seconds.`,
       }),
     }).catch((err) => console.error(`Failed to post abandon-void summary for series ${series.id}`, err));
   }

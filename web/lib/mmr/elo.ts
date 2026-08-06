@@ -85,3 +85,12 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
     return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional };
   });
 }
+
+// Win-streak MMR bonus (see CLAUDE.md, "MMR / Elo" — streak bonus). Pure and separate from
+// computeEloDeltas since it needs a player's prior Rank Queue win-streak length, which lives
+// in report history (DB), not anything elo.ts otherwise touches. priorStreak is the player's
+// consecutive-win count *before* the game currently being scored — 0 below a 3-game streak,
+// then +1 per game up to a +5 cap (priorStreak=3 -> +1, 4 -> +2, 5 -> +3, 6 -> +4, 7+ -> +5).
+export function computeStreakBonus(priorStreak: number): number {
+  return Math.min(Math.max(priorStreak - 2, 0), 5);
+}

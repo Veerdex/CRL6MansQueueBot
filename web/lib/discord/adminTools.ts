@@ -209,6 +209,11 @@ async function dispatchAdminSubcommand(
       await processSimplifyQueueMessagesToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
       return;
     }
+    case "streak-bonus": {
+      const enabled = getParamValue(params, "enabled");
+      await processStreakBonusToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+      return;
+    }
     case "setguildid": {
       const guildId = getParamValue(params, "guild_id");
       await processSetGuildId(interaction, actorId, typeof guildId === "string" ? guildId : null);
@@ -298,8 +303,9 @@ async function processCorrectReport(
   newWinner: "team_a" | "team_b",
 ) {
   const supabase = createAdminClient();
-  const { computeEloDeltas } = await import("@/lib/mmr/elo");
+  const { computeEloDeltas, computeStreakBonus } = await import("@/lib/mmr/elo");
   const { getConfigNumber } = await import("./config");
+  const { getPriorRankWinStreak } = await import("./streaks");
 
   // Fetch the series — must be reported
   const { data: seriesData } = await supabase
@@ -345,14 +351,16 @@ async function processCorrectReport(
 
   // Only recalculate MMR if this is a Rank Queue series
   if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
       getConfigNumber("provisional_k_multiplier", 1.75),
       getConfigNumber("mmr_skew_factor", 0.5),
       getConfigNumber("mmr_min_delta", 2),
+      getConfigNumber("streak_bonus_enabled", 1),
     ]);
+    const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Same locked-in-at-pop multiplier the original report used — a correction reuses it rather
     // than re-evaluating "now" so it stays consistent with whatever the original settle applied.
     const effectiveKFactor = kFactor * series.bonus_day_multiplier;
@@ -365,13 +373,31 @@ async function processCorrectReport(
     const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
     const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
+    // Same win-streak MMR bonus report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"
+    // — streak bonus), recomputed here since correcting the winner changes who it even applies
+    // to. This series is excluded from its own streak lookup (same reasoning as report.ts — it's
+    // already status='reported'). Doesn't attempt to re-fire the announcement embed or account
+    // for any later games that may have been played (and reported) since this series — a known,
+    // accepted limitation of correcting a match after the fact.
+    const bonusByPlayer = new Map<string, number>();
+    if (streakBonusEnabled) {
+      await Promise.all(
+        seriesPlayers.map(async (sp) => {
+          if (sp.team !== winnerTeam) return;
+          const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
+          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak));
+        }),
+      );
+    }
+
     // Update each player: reverse old delta, apply new delta
     await Promise.all(
       seriesPlayers.map(async (sp) => {
         const p = playersById.get(sp.player_id)!;
         const oldDelta = sp.mmr_delta ?? 0;
         const newResult = newResultsById.get(sp.player_id)!;
-        const correctedMmr = p.mmr - oldDelta + newResult.delta;
+        const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+        const correctedMmr = p.mmr - oldDelta + newDelta;
 
         await supabase
           .from("crl6mansqueuebot_players")
@@ -382,7 +408,7 @@ async function processCorrectReport(
 
         await supabase
           .from("crl6mansqueuebot_series_players")
-          .update({ mmr_delta: newResult.delta })
+          .update({ mmr_delta: newDelta })
           .eq("series_id", series.id)
           .eq("player_id", p.id);
       }),
@@ -1250,6 +1276,27 @@ async function processSimplifyQueueMessagesToggle(interaction: DiscordInteractio
     content: enabled
       ? "Queue messages simplified — only the latest queue-status message will be shown; older ones are auto-deleted."
       : "Queue messages no longer simplified — every join/leave will post a new status message without deleting the last one.",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// /admin streak-bonus toggle enabled:<bool> — see CLAUDE.md, "MMR / Elo" (streak bonus). Gates
+// only the extra-MMR arithmetic in report.ts/adminTools.ts's correct-report — streak tracking,
+// the amber announcement embed, and the fire-emoji mention decoration all keep running even
+// when this is off, per the feature's own spec ("this just disables the extra mmr").
+// ---------------------------------------------------------------------------
+
+async function processStreakBonusToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
+  if (enabled === undefined) {
+    await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
+    return;
+  }
+  await setConfigValue("streak_bonus_enabled", enabled ? "1" : "0");
+  await logAdminAction(actorId, "streak_bonus_toggle", "", `enabled=${enabled}`);
+  await editOriginalResponse(interaction.token, {
+    content: enabled
+      ? "Win-streak MMR bonus enabled."
+      : "Win-streak MMR bonus disabled — streaks, the win-streak announcement, and the fire-emoji mention decoration still work as normal.",
   });
 }
 

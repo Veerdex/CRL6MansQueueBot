@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeEloDeltas, type EloConfig, type EloPlayerInput } from "./elo";
+import { computeEloDeltas, computeStreakBonus, type EloConfig, type EloPlayerInput } from "./elo";
 
 const config: EloConfig = { kFactor: 32, sScale: 400, provisionalGames: 10, provisionalKMultiplier: 1.75 };
 
@@ -205,5 +205,23 @@ describe("computeEloDeltas — min delta floor", () => {
     const loser = floored.find((r) => r.playerId === "b1")!;
     expect(winner.delta).toBeCloseTo(32 / 6 + 2, 10);
     expect(loser.delta).toBeCloseTo(-32 / 6 - 2, 10);
+  });
+});
+
+describe("computeStreakBonus", () => {
+  it("is 0 below a 3-game prior streak", () => {
+    expect(computeStreakBonus(0)).toBe(0);
+    expect(computeStreakBonus(1)).toBe(0);
+    expect(computeStreakBonus(2)).toBe(0);
+  });
+
+  it("ramps +1 per game starting at a 3-game prior streak", () => {
+    expect(computeStreakBonus(3)).toBe(1);
+    expect(computeStreakBonus(4)).toBe(2);
+  });
+
+  it("caps at +5", () => {
+    expect(computeStreakBonus(7)).toBe(5);
+    expect(computeStreakBonus(12)).toBe(5);
   });
 });
