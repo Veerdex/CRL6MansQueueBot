@@ -63,6 +63,11 @@ export function computeStats(games: CompletedGame[]): GameStats {
   };
 }
 
+// 🔥 win-streak decoration threshold (Main leaderboard, current Rank Queue streak) — the
+// canonical definition lives here (not lib/discord/streaks.ts, which re-exports it) since that
+// file is `server-only` and can't be imported into leaderboard client components.
+export const FLAME_THRESHOLD = 3;
+
 export const BAND_ORDER: readonly Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
 
 export function bandRank(band: Band | null): number {

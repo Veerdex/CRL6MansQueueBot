@@ -267,12 +267,22 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
       await discordFetch(`/channels/${teamVoiceChannelId}/permissions/${leavingPlayer.discord_id}`, { method: "DELETE" }).catch((err) =>
         console.error(`Failed to revoke voice channel access from ${leavingPlayer.discord_id}`, err),
       );
-      // Permission revoke alone doesn't kick someone already connected — best-effort force
-      // disconnect via a member PATCH, swallowed since it 404s harmlessly if they'd already left.
-      await discordFetch(`/guilds/${interaction.guild_id}/members/${leavingPlayer.discord_id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ channel_id: null }),
-      }).catch(() => {});
+      // Permission revoke alone doesn't kick someone already connected, so we force-disconnect —
+      // but only if they're actually still in *this* team's voice channel. The member PATCH's
+      // channel_id:null disconnects wherever the member currently is in the guild, not scoped to
+      // any channel, so firing it unconditionally could yank someone out of an unrelated voice
+      // channel they'd since moved to. GET the voice state first and only disconnect on a match;
+      // any error (not connected at all, etc.) is treated as "leave them alone".
+      await discordFetch(`/guilds/${interaction.guild_id}/voice-states/${leavingPlayer.discord_id}`)
+        .then(async (voiceState: { channel_id?: string | null } | null) => {
+          if (voiceState?.channel_id === teamVoiceChannelId) {
+            await discordFetch(`/guilds/${interaction.guild_id}/members/${leavingPlayer.discord_id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ channel_id: null }),
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
   }
 

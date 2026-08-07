@@ -812,6 +812,12 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
     return;
   }
 
+  // Best-effort pick confirmation — mirrors sendDraftPickPrompt's is_test_data guard, since a
+  // synthetic test captain has no real Discord account to DM (sendDirectMessage would just fail).
+  if (!turnCaptainPlayer.is_test_data) {
+    await sendDirectMessage(turnCaptainPlayer.discord_id, `You picked **${target.player.display_name}**.`);
+  }
+
   const newAssignedCount = assignedCount + 1;
   const allMembers = lobby.map((x) => x.player);
 
@@ -960,6 +966,14 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
       }),
     }).catch(() => {});
     return;
+  }
+
+  // Best-effort pick confirmation — same is_test_data guard as the single-pick path above.
+  if (!turnCaptainPlayer.is_test_data) {
+    const pickedNames = claimedIds
+      .map((id) => nonCaptainRows.find((x) => x.row.player_id === id)?.player.display_name)
+      .filter((n): n is string => Boolean(n));
+    await sendDirectMessage(turnCaptainPlayer.discord_id, `You picked **${pickedNames.join(", ")}**.`);
   }
 
   const newAssignedCount = assignedCount + claimedIds.length;

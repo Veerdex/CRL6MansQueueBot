@@ -1,5 +1,8 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { FLAME_THRESHOLD } from "@/lib/leaderboard/stats";
+
+export { FLAME_THRESHOLD };
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -15,8 +18,7 @@ export const ON_FIRE_EMOJI = "🔥";
 // making the announcement embed fire on every 3-game streak.
 export const ON_FIRE_THRESHOLD = 5;
 // 🔥 mention-decoration threshold (getOnFirePlayerIds/mention below, and report.ts's summary
-// embed) — intentionally lower than ON_FIRE_THRESHOLD.
-export const FLAME_THRESHOLD = 3;
+// embed) — intentionally lower than ON_FIRE_THRESHOLD. Imported above from leaderboard/stats.ts.
 
 interface StreakGame {
   playedAt: string;

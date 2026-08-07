@@ -13,6 +13,7 @@ export interface MainBoardRow {
   wins: number;
   losses: number;
   winRate: number | null;
+  onFire: boolean;
 }
 
 const PAGE_SIZE = 20;
@@ -137,7 +138,14 @@ export default function LeaderboardTable({
                     style={{ backgroundImage: backgroundGradient }}
                   >
                     <td className="py-2 pr-3 pl-4">{position}</td>
-                    <td className="py-2 pr-3 font-medium">{row.displayName}</td>
+                    <td className="py-2 pr-3 font-medium">
+                      {row.displayName}
+                      {row.onFire && (
+                        <span className="ml-1" title="3+ game win streak">
+                          🔥
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2 pr-3">
                       <img
                         src={getRankIconPath(row.band)}
