@@ -633,7 +633,8 @@ async function sendDraftPickPrompt(
   const descriptions = new Map<string, string>();
 
   for (const player of remaining) {
-    const emoji = await getRankEmoji(player.band);
+    // Prism is a live top-N overlay (see CLAUDE.md, "Bands / ranks"), not a `band` column value.
+    const emoji = await getRankEmoji(player.is_prism ? "Prism" : player.band);
     const displayMMR = await getDisplayMMR(player.mmr);
     const { data: seriesPlayerRows } = await supabase
       .from("crl6mansqueuebot_series_players")

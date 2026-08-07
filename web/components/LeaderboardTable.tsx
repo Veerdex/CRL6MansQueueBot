@@ -2,13 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import SearchBar from "./SearchBar";
-import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
+import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
 import type { Band } from "@/lib/supabase/types";
 
 export interface MainBoardRow {
   playerId: string;
   displayName: string;
   band: Band | null;
+  // Live top-N overlay (see CLAUDE.md, "Bands / ranks") — a Prism player's `band` column still
+  // holds their real underlying band (almost always Sapphire); this flag drives the gold
+  // highlight/icon override independently of that.
+  isPrism: boolean;
   mmr: number;
   wins: number;
   losses: number;
@@ -26,7 +30,7 @@ function formatWinRate(winRate: number | null) {
 // Hex, not rgb() — a hex alpha suffix is appended below (e.g. `${color}20`), which only forms a
 // valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid CSS and
 // gets silently dropped.
-function getBandColor(band: Band | null): string {
+function getBandColor(band: DisplayBand | null): string {
   switch (band) {
     case "Iron":
       return "#7d7d7d";
@@ -36,6 +40,8 @@ function getBandColor(band: Band | null): string {
       return "#008000";
     case "Sapphire":
       return "#0000ff";
+    case "Prism":
+      return "#c084fc";
     default:
       // Unranked/null: gray
       return "#464646";
@@ -48,12 +54,10 @@ function applyMMRTransform(mmr: number, scale: number, shift: number): number {
 
 export default function LeaderboardTable({
   rows,
-  topCount,
   mmrScale,
   mmrShift,
 }: {
   rows: MainBoardRow[];
-  topCount: number;
   mmrScale: number;
   mmrShift: number;
 }) {
@@ -122,16 +126,16 @@ export default function LeaderboardTable({
             ) : (
               pageRows.map((row, i) => {
                 const position = start + i + 1;
-                const isTopCut = position <= topCount;
+                const displayBand: DisplayBand | null = row.isPrism ? "Prism" : row.band;
                 const isHighlighted = row.playerId === highlightedPlayerId;
-                const bandColor = getBandColor(row.band);
+                const bandColor = getBandColor(displayBand);
                 const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
                 return (
                   <tr
                     key={row.playerId}
                     ref={isHighlighted ? highlightRef : null}
                     className={`row-hover border-b border-border text-foreground last:border-b-0 ${
-                      isTopCut ? "top-cut" : ""
+                      row.isPrism ? "top-cut" : ""
                     } ${isHighlighted ? "highlight-pulse" : ""}`}
                     style={{ backgroundImage: backgroundGradient }}
                   >
@@ -151,9 +155,9 @@ export default function LeaderboardTable({
                     </td>
                     <td className="py-2 pr-3">
                       <img
-                        src={getRankIconPath(row.band)}
-                        alt={getRankLabel(row.band)}
-                        title={getRankLabel(row.band)}
+                        src={getRankIconPath(displayBand)}
+                        alt={getRankLabel(displayBand)}
+                        title={getRankLabel(displayBand)}
                         className="h-6 w-6"
                       />
                     </td>

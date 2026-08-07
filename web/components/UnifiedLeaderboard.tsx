@@ -4,15 +4,15 @@ import { useMemo, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
 import { bandRank, computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
-import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
+import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
-import type { SeasonHistoryRow, Band } from "@/lib/supabase/types";
+import type { SeasonHistoryRow } from "@/lib/supabase/types";
 
 // Hex, not rgb() — these get a hex alpha suffix appended below (e.g. `${color}2e`), which only
 // forms a valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid
 // CSS and gets silently dropped, which is why the glow wasn't rendering.
-function getBandColor(band: Band | null): string {
+function getBandColor(band: DisplayBand | null): string {
   switch (band) {
     case "Iron":
       return "#7d7d7d";
@@ -22,6 +22,8 @@ function getBandColor(band: Band | null): string {
       return "#008000";
     case "Sapphire":
       return "#0000ff";
+    case "Prism":
+      return "#c084fc";
     default:
       // Unranked/null: gray
       return "#464646";
@@ -81,6 +83,7 @@ export default function UnifiedLeaderboard({
         position: idx + 1,
         displayName: p.player.display_name,
         band: p.player.is_placed ? p.player.band : null,
+        isPrism: p.player.is_prism,
         mmr: p.player.mmr,
       }));
   }, [eligiblePlayers]);
@@ -96,6 +99,7 @@ export default function UnifiedLeaderboard({
           playerId: player.id,
           displayName: player.display_name,
           band: player.is_placed ? player.band : null,
+          isPrism: player.is_prism,
           mmr: player.mmr,
           wins: rankStats.wins,
           losses: rankStats.losses,
@@ -156,8 +160,9 @@ export default function UnifiedLeaderboard({
             ) : (
               <div className="space-y-2">
                 {topPlayersRows.map((row) => {
+                  const displayBand: DisplayBand | null = row.isPrism ? "Prism" : row.band;
                   // Unranked (no band) gets no glow — nothing to color it by.
-                  const bandColor = row.band === null ? null : getBandColor(row.band);
+                  const bandColor = displayBand === null ? null : getBandColor(displayBand);
                   const rowGlow = bandColor
                     ? `radial-gradient(ellipse 70% 100% at 0% 50%, ${bandColor}2e 0%, transparent 75%)`
                     : undefined;
@@ -173,9 +178,9 @@ export default function UnifiedLeaderboard({
                       </div>
                       <div className="text-right">
                         <img
-                          src={getRankIconPath(row.band)}
-                          alt={getRankLabel(row.band)}
-                          title={getRankLabel(row.band)}
+                          src={getRankIconPath(displayBand)}
+                          alt={getRankLabel(displayBand)}
+                          title={getRankLabel(displayBand)}
                           className="h-6 w-6"
                         />
                       </div>
@@ -195,9 +200,9 @@ export default function UnifiedLeaderboard({
         {viewMode === "main" && (
           <div>
             <p className="mb-4 text-sm text-muted">
-              Rank Queue standing. Top {prismTopN} rows are the live projected Prism cut.
+              Rank Queue standing. Gold rows are the current top {prismTopN} — Prism.
             </p>
-            <LeaderboardTable rows={mainBoardRows} topCount={prismTopN} mmrScale={mmrScale} mmrShift={mmrShift} />
+            <LeaderboardTable rows={mainBoardRows} mmrScale={mmrScale} mmrShift={mmrShift} />
           </div>
         )}
 

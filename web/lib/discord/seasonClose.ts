@@ -1,7 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getConfigNumber } from "./config";
-import { sendDirectMessage, getGuildId, addMemberRole, removeMemberRole } from "./rest";
 import type { SeasonRow } from "@/lib/supabase/types";
 
 type CloseSummary = { participants: number; top10: number; playersDecayed: number };
@@ -10,7 +9,7 @@ type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
 // PostgREST caps unbounded selects at a project-configured max (commonly 1000) — a season with
 // enough games/participants to exceed that would silently truncate results with no error,
-// corrupting season_rank/Top10/Prism. Every select below that can grow with community size is
+// corrupting season_rank/made_top10. Every select below that can grow with community size is
 // paged in PAGE_SIZE chunks rather than trusting a single unbounded fetch.
 const PAGE_SIZE = 1000;
 // Keeps `.in(...)` id-list URLs bounded regardless of how many rows the id list itself has.
@@ -42,6 +41,11 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 // actual end-of-season values players earned), and only afterward does the median-compression
 // soft reset run. Test-data players (dev panel) are excluded throughout, same treatment as
 // every other bot-side Discord/ranking operation (see bands.ts).
+//
+// Prism is no longer granted/stripped here — it's a live top-N overlay recomputed continuously
+// by bands.ts's recomputeBands() (daily cron, every Rank Queue report, admin actions), not a
+// season-close-only event. The `made_top10`/season_history write below is purely an archival
+// record of that season's standings, decoupled from the actual `is_prism` role state.
 // ---------------------------------------------------------------------------
 
 export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<CloseSummary> {
@@ -53,10 +57,11 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
     getConfigNumber("prism_top_n", 5),
   ]);
 
-  // ---- 1. Season standings: season_rank for every participant (>=1 reported game that
-  // season, either queue — see CLAUDE.md, "Queueing"), made_top10 for the top `prism_top_n`
-  // among those with >= top10_min_games. The `made_top10` column name predates prism_top_n
-  // becoming configurable — kept as-is (a stable identifier, not a literal claim of "10"). ----
+  // ---- Season standings: season_rank for every participant (>=1 reported game that season,
+  // either queue — see CLAUDE.md, "Queueing"), made_top10 for the top `prism_top_n` among those
+  // with >= top10_min_games — archival only now, see the note above. The `made_top10` column
+  // name predates prism_top_n becoming configurable — kept as-is (a stable identifier, not a
+  // literal claim of "10"). ----
 
   const seriesIds = (
     await fetchAllPages((from, to) =>
@@ -130,64 +135,11 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
     await supabase.from("crl6mansqueuebot_season_history").upsert(rowsChunk);
   }
 
-  // ---- 2. Prism role sync — strip from last season's holders who didn't repeat, grant to
-  // this season's new top `prism_top_n`. Reuses band_roles/'Prism' for storage (migration
-  // 0010) rather than a dedicated table; recomputeBands() (bands.ts) never touches this key. ----
-
-  const { data: previousHolders } = await supabase
-    .from("crl6mansqueuebot_players")
-    .select("id, discord_id")
-    .eq("is_prism", true)
-    .eq("is_test_data", false);
-  const previousHolderIds = new Set((previousHolders ?? []).map((p) => p.id));
-
-  const newTop10 = ranked.filter((r) => top10Ids.has(r.player.id)).map((r) => r.player);
-  const toStrip = (previousHolders ?? []).filter((p) => !top10Ids.has(p.id));
-  const toGrant = newTop10.filter((p) => !previousHolderIds.has(p.id));
-
-  const { data: prismRoleRow } = await supabase
-    .from("crl6mansqueuebot_band_roles")
-    .select("role_id")
-    .eq("band", "Prism")
-    .maybeSingle();
-  const prismRoleId = prismRoleRow?.role_id ?? null;
-
-  let guildId: string | null = null;
-  if (prismRoleId) {
-    try {
-      guildId = await getGuildId();
-    } catch (err) {
-      console.error("Season close: failed to resolve guild id, skipping Prism role sync this run", err);
-    }
-  }
-
-  await Promise.all(
-    toStrip.map(async (p) => {
-      await supabase.from("crl6mansqueuebot_players").update({ is_prism: false }).eq("id", p.id);
-      if (guildId && prismRoleId) {
-        try {
-          await removeMemberRole(guildId, p.discord_id, prismRoleId);
-        } catch (err) {
-          console.error(`Season close: failed to strip Prism role from ${p.discord_id}`, err);
-        }
-      }
-      await sendDirectMessage(p.discord_id, `The season has ended — your **Prism** (Top ${prismTopN}) role has been removed as standings reset for the new season.`);
-    }),
-  );
-
-  await Promise.all(
-    toGrant.map(async (p) => {
-      await supabase.from("crl6mansqueuebot_players").update({ is_prism: true }).eq("id", p.id);
-      if (guildId && prismRoleId) {
-        try {
-          await addMemberRole(guildId, p.discord_id, prismRoleId);
-        } catch (err) {
-          console.error(`Season close: failed to grant Prism role to ${p.discord_id}`, err);
-        }
-      }
-      await sendDirectMessage(p.discord_id, `You finished in the **Top ${prismTopN}** last season! You've been awarded the **Prism** role.`);
-    }),
-  );
+  // Prism role sync used to happen here (strip/grant against last season's `is_prism` holders).
+  // That's now handled live by bands.ts's recomputeBands() — /newseason calls it explicitly
+  // right after opening the new season (see seasons.ts), which re-evaluates the top-N cut
+  // against the fresh (all-zero) season-games counts and clears out anyone who no longer
+  // qualifies, rather than waiting for their next report.
 
   const playersDecayed = await applyMmrDecay(supabase, decayFactor);
 

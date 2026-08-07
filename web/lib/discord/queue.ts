@@ -54,7 +54,10 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
   const lines = members.length
     ? await Promise.all(
         members.map(async (m) => {
-          const band = m.is_placed ? m.band : null;
+          // Prism is a live top-N overlay (see CLAUDE.md, "Bands / ranks"), not a `band` column
+          // value — resolve it before rendering so a Prism player's roster line shows Prism
+          // rather than their underlying (almost always Sapphire) band.
+          const band = m.is_prism ? "Prism" : m.is_placed ? m.band : null;
           const emoji = await getRankEmoji(band);
           const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
           const displayMmr = Math.round(m.mmr * scale + shift);

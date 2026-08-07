@@ -45,6 +45,7 @@ export default async function InfoPage() {
     mmrScale,
     mmrShift,
     prismTopN,
+    top10MinGames,
     placedBandMMRs,
   ] = await Promise.all([
     getConfigNumber("series_timeout_hours", 2),
@@ -59,6 +60,7 @@ export default async function InfoPage() {
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
     getConfigNumber("prism_top_n", 5),
+    getConfigNumber("top10_min_games", 8),
     getPlacedPlayerBandMMRs(),
   ]);
 
@@ -179,8 +181,10 @@ export default async function InfoPage() {
               Emerald ({bandPercentileLabel.Emerald}), Sapphire ({bandPercentileLabel.Sapphire}).
             </li>
             <li>
-              <strong>Prism</strong> is a special tier for the <strong>top {prismTopN} players</strong>,
-              awarded only when a season closes — not a day-to-day band.
+              <strong>Prism</strong> is a live tier for whoever&apos;s currently in the{" "}
+              <strong>top {prismTopN} players</strong> by MMR (with at least {top10MinGames} Rank Queue
+              games played this season) — you gain and lose it the instant your standing crosses that
+              line, not just at season close.
             </li>
             <li>
               Your band is based on how your MMR compares to everyone else&apos;s, recalculated{" "}
@@ -228,8 +232,8 @@ export default async function InfoPage() {
                   <div className="min-w-0">
                     <div className="font-semibold text-foreground">Prism</div>
                     <div className="text-xs text-muted">
-                      {sapphireRange ? `Currently >${sapphireRange.max} MMR` : "No players currently placed"} • Top{" "}
-                      {prismTopN} players only, awarded at season close
+                      {sapphireRange ? `Currently >${sapphireRange.max} MMR` : "No players currently placed"} • Live
+                      top {prismTopN} cut, min {top10MinGames} games this season
                     </div>
                   </div>
                 </li>

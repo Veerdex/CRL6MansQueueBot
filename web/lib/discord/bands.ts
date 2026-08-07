@@ -11,7 +11,14 @@ import type { Band, BandRoleKey } from "@/lib/supabase/types";
 const BAND_ORDER: Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
 const VALID_BAND_ROLE_KEYS: BandRoleKey[] = ["Iron", "Garnet", "Emerald", "Sapphire", "Unranked", "Prism"];
 
-type RecomputeSummary = { placed: number; promoted: number; demoted: number; unchanged: number };
+type RecomputeSummary = {
+  placed: number;
+  promoted: number;
+  demoted: number;
+  unchanged: number;
+  prismGranted: number;
+  prismRevoked: number;
+};
 type ChangeAction = "placed" | "promoted" | "demoted";
 
 export type BandCutoffConfig = {
@@ -104,7 +111,9 @@ export function computeBandChange(
 // Band recompute — see CLAUDE.md, "Bands / ranks". Percentile-ranks every currently-placed
 // player (plus anyone crossing the placement threshold this run) by MMR, assigns bands off
 // admin-configured cumulative cutoffs, applies the grace-period + hysteresis demotion
-// safeguards, and syncs Discord roles + DMs for anyone whose band actually changed.
+// safeguards, and syncs Discord roles + DMs for anyone whose band actually changed. Once the
+// band loop finishes, a second pass evaluates the live Prism top-N overlay (see the block right
+// before this function's `return summary` for the full explanation).
 //
 // Every caller (the pg_cron-triggered daily route, report.ts after each Rank Queue settlement,
 // and /admin unreport/correct-report/recompute-bands) evaluates and writes the FULL currently-
@@ -123,19 +132,30 @@ export function computeBandChange(
 export async function recomputeBands(options?: { force?: boolean }): Promise<RecomputeSummary> {
   const supabase = createAdminClient();
 
-  const [placementGamesRequired, graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays] =
-    await Promise.all([
-      getConfigNumber("placement_games_required", 10),
-      getConfigNumber("grace_games", 3),
-      getConfigNumber("hysteresis_pct", 5),
-      getConfigNumber("band_cutoff_garnet_pctile", 40),
-      getConfigNumber("band_cutoff_emerald_pctile", 70),
-      getConfigNumber("band_cutoff_sapphire_pctile", 90),
-      getConfigNumber("grace_inactivity_days", 7),
-    ]);
+  const [
+    placementGamesRequired,
+    graceGames,
+    hysteresisPct,
+    garnetCutoff,
+    emeraldCutoff,
+    sapphireCutoff,
+    graceInactivityDays,
+    prismTopN,
+    top10MinGames,
+  ] = await Promise.all([
+    getConfigNumber("placement_games_required", 10),
+    getConfigNumber("grace_games", 3),
+    getConfigNumber("hysteresis_pct", 5),
+    getConfigNumber("band_cutoff_garnet_pctile", 40),
+    getConfigNumber("band_cutoff_emerald_pctile", 70),
+    getConfigNumber("band_cutoff_sapphire_pctile", 90),
+    getConfigNumber("grace_inactivity_days", 7),
+    getConfigNumber("prism_top_n", 5),
+    getConfigNumber("top10_min_games", 8),
+  ]);
   const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
 
-  const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0 };
+  const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0 };
 
   // Test-data players (dev panel) are synthetic and carry fake discord_ids that aren't real
   // guild members — role grant/revoke would just 404, and mixing them into the percentile pool
@@ -213,7 +233,93 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     }
 
 
+    // Mutate the local pool object so the Prism pass below (and the `oldBand` lookup on a later
+    // iteration, if any) sees this player's just-written band/placement rather than the
+    // pre-recompute snapshot fetched at the top of this function.
+    player.band = targetBand;
+    player.is_placed = true;
+
     summary[action] += 1;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prism — a live top-N overlay, not a 5th BAND_ORDER tier. Folding it into BAND_ORDER would
+  // route it through computeBandChange's grace/hysteresis machinery (which has no promotion
+  // threshold for a tier above Sapphire, so demotion would never fire) — Prism instead gets its
+  // own strict, ungated top-N check, re-run every time this function runs (daily cron, every
+  // Rank Queue report, admin unreport/correct-report/recompute-bands). A player enters Prism the
+  // moment they're placed, among the top `prism_top_n` by MMR, and have played at least
+  // `top10_min_games` Rank Queue games *this season* (mirrors the season-close-only version's
+  // eligibility gate, just evaluated live instead of once at /newseason). No grace/hysteresis —
+  // falling out of the top N immediately un-sets is_prism; the player's `band` column already
+  // holds their real underlying band (almost always Sapphire), so "go back to Sapphire" falls
+  // out for free with no separate revert step. See CLAUDE.md, "Bands / ranks".
+  // ---------------------------------------------------------------------------
+
+  const { data: activeSeasonRow } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .select("id")
+    .eq("is_active", true)
+    .maybeSingle();
+
+  const seasonGamesById = new Map<string, number>();
+  if (activeSeasonRow) {
+    const { data: seasonSeries } = await supabase
+      .from("crl6mansqueuebot_series")
+      .select("id")
+      .eq("season_id", activeSeasonRow.id)
+      .eq("status", "reported")
+      .eq("queue_type", "rank")
+      .eq("is_test_data", false);
+    const seriesIds = (seasonSeries ?? []).map((s) => s.id);
+    if (seriesIds.length > 0) {
+      const { data: seasonSeriesPlayers } = await supabase
+        .from("crl6mansqueuebot_series_players")
+        .select("player_id")
+        .in("series_id", seriesIds);
+      for (const sp of seasonSeriesPlayers ?? []) {
+        seasonGamesById.set(sp.player_id, (seasonGamesById.get(sp.player_id) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Same tiebreak philosophy as the band percentile sort above: higher MMR first, ties broken
+  // by more (season) games played, then player id as a final deterministic tiebreak.
+  const prismCandidates = pool
+    .filter((p) => p.is_placed && (seasonGamesById.get(p.id) ?? 0) >= top10MinGames)
+    .slice()
+    .sort(
+      (a, b) =>
+        b.mmr - a.mmr ||
+        (seasonGamesById.get(b.id) ?? 0) - (seasonGamesById.get(a.id) ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+  const newPrismIds = new Set(prismCandidates.slice(0, prismTopN).map((p) => p.id));
+
+  for (const player of pool) {
+    const willBePrism = newPrismIds.has(player.id);
+    if (player.is_prism === willBePrism) continue;
+
+    await supabase.from("crl6mansqueuebot_players").update({ is_prism: willBePrism }).eq("id", player.id);
+
+    if (guildId) {
+      try {
+        const bandRoleId = player.band ? roleIdByBand.get(player.band as Band) : undefined;
+        const prismRoleId = roleIdByBand.get("Prism");
+        if (willBePrism) {
+          if (bandRoleId) await removeMemberRole(guildId, player.discord_id, bandRoleId);
+          if (prismRoleId) await addMemberRole(guildId, player.discord_id, prismRoleId);
+        } else {
+          if (prismRoleId) await removeMemberRole(guildId, player.discord_id, prismRoleId);
+          if (bandRoleId) await addMemberRole(guildId, player.discord_id, bandRoleId);
+        }
+      } catch (err) {
+        console.error(`Band recompute: failed to sync Prism role for ${player.discord_id}`, err);
+      }
+    }
+
+    if (willBePrism) summary.prismGranted += 1;
+    else summary.prismRevoked += 1;
   }
 
   return summary;
@@ -249,10 +355,9 @@ export async function grantUnrankedRoleToNewPlayer(discordId: string): Promise<v
 // ---------------------------------------------------------------------------
 // /setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role> — admin-gated, maps
 // a band (or the 'Unranked' informational role for newly queued/not-yet-placed players, or the
-// season-end-only 'Prism' top-N tier, config prism_top_n) to a Discord role. recomputeBands() above only ever
-// grants/revokes Iron/Garnet/Emerald/Sapphire/Unranked — it never touches 'Prism', which is
-// exclusively synced by season close (see seasonClose.ts). Mirrors /setqueuechannel's
-// channel-mapping pattern.
+// live top-N 'Prism' tier, config prism_top_n) to a Discord role. recomputeBands() above syncs
+// all six keys: Iron/Garnet/Emerald/Sapphire/Unranked from the percentile loop, Prism from its
+// own live top-N pass right after. Mirrors /setqueuechannel's channel-mapping pattern.
 // ---------------------------------------------------------------------------
 
 export function handleSetBandRoleCommand(interaction: DiscordInteraction) {

@@ -127,10 +127,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
   // Report summary is split by winning/losing team (not one flat list) — each line shows the
   // player's MMR delta and their resulting MMR/band, per CLAUDE.md's "Reporting & disputes".
-  // For Rank Queue series, band is recomputed live for just these 6 players right below (see
-  // bands.ts's recomputeBands, onlyPlayerIds) so this reflects this exact game's result, not a
-  // stale daily-cron snapshot. Universal Queue lines below don't touch band at all (no MMR
-  // change to recompute against).
+  // For Rank Queue series, bands.ts's recomputeBands() runs right below against the full placed
+  // pool (not just these 6 — see bands.ts's doc comment for why), so this reflects this exact
+  // game's result, not a stale daily-cron snapshot. Universal Queue lines below don't touch band
+  // at all (no MMR change to recompute against).
   const winnerLines: string[] = [];
   const loserLines: string[] = [];
   const pushLine = (sp: (typeof allSeriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
@@ -139,9 +139,11 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   // amber-colored embed alongside the main report summary.
   const streakAnnounceLines: string[] = [];
 
-  // Pre-fetch all rank emoji to avoid async calls in loops
+  // Pre-fetch all rank emoji to avoid async calls in loops. Prism is a live top-N overlay (see
+  // CLAUDE.md, "Bands / ranks"), not a `players.band` value — included here so lookups can key
+  // off `p.is_prism ? "Prism" : p.band` below rather than always showing the underlying band.
   const emojiByBand = new Map<string | null, string>();
-  for (const band of [null, "Iron", "Garnet", "Emerald", "Sapphire"]) {
+  for (const band of [null, "Iron", "Garnet", "Emerald", "Sapphire", "Prism"]) {
     emojiByBand.set(band, await getRankEmoji(band));
   }
 
@@ -150,7 +152,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     // even when queue_type is "rank" — see CLAUDE.md, "Flag as test data".
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      const emoji = emojiByBand.get(p.band) || "❓";
+      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
       pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else if (series.queue_type === "rank") {
@@ -249,18 +251,21 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     await recomputeBands();
     const { data: refreshedBands } = await supabase
       .from("crl6mansqueuebot_players")
-      .select("id, band")
+      .select("id, band, is_prism")
       .in("id", allSeriesPlayers.map((sp) => sp.player_id));
     for (const rb of refreshedBands ?? []) {
       const p = playersById.get(rb.id);
-      if (p) p.band = rb.band;
+      if (p) {
+        p.band = rb.band;
+        p.is_prism = rb.is_prism;
+      }
     }
 
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
-      const emoji = emojiByBand.get(p.band) || "❓";
+      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
       const displayNewMmr = await getDisplayMMR(r.newMmr);
       const displayDelta = r.delta * mmrScale;
       const onFire = (newStreakById.get(sp.player_id) ?? 0) >= FLAME_THRESHOLD;
@@ -281,7 +286,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     );
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      const emoji = emojiByBand.get(p.band) || "❓";
+      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
       pushLine(sp, `<@${p.discord_id}> ${emoji}`);
     }
   }

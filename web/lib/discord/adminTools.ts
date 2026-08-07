@@ -652,10 +652,10 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
     actorId,
     "recompute_bands",
     undefined,
-    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged}`,
+    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} prismGranted=${summary.prismGranted} prismRevoked=${summary.prismRevoked}`,
   );
   await editOriginalResponse(interaction.token, {
-    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}.`,
+    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.`,
   });
 }
 
