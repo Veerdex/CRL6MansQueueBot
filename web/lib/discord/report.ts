@@ -240,13 +240,12 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       }),
     );
 
-    // Bands may have just changed as a direct result of this match — recompute now, scoped to
-    // just these 6 players (percentile rank is still computed against the whole pool, see
-    // bands.ts's onlyPlayerIds doc comment), rather than waiting for the next daily cron tick.
+    // Bands may have just changed as a direct result of this match — recompute now (the full
+    // placed pool, see bands.ts's doc comment) rather than waiting for the next daily cron tick.
     // Promotion/demotion + its role-sync/DM land immediately; refetch each player's band
     // afterward so the summary embed below reflects the post-recompute value, not the
     // pre-match snapshot in playersById.
-    await recomputeBands({ onlyPlayerIds: allSeriesPlayers.map((sp) => sp.player_id) });
+    await recomputeBands();
     const { data: refreshedBands } = await supabase
       .from("crl6mansqueuebot_players")
       .select("id, band")

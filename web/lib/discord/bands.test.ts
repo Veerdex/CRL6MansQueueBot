@@ -73,4 +73,22 @@ describe("computeBandChange", () => {
     const change = computeBandChange(player, 85, false, config);
     expect(change).toBeNull();
   });
+
+  it("force bypasses grace and demotes immediately even inside the grace period", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true };
+    const change = computeBandChange(player, 10, false, config, { force: true });
+    expect(change).toEqual({ action: "demoted", targetBand: "Iron" });
+  });
+
+  it("force bypasses hysteresis too, demoting even inside the buffer", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true };
+    const change = computeBandChange(player, 86, false, config, { force: true });
+    expect(change).toEqual({ action: "demoted", targetBand: "Emerald" });
+  });
+
+  it("force does not affect promotions or same-band results", () => {
+    const player = { band: "Garnet" as const, band_games_played: 0, is_placed: true };
+    expect(computeBandChange(player, 75, false, config, { force: true })).toEqual({ action: "promoted", targetBand: "Emerald" });
+    expect(computeBandChange(player, 50, false, config, { force: true })).toBeNull();
+  });
 });

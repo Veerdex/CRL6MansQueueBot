@@ -133,9 +133,11 @@ async function dispatchAdminSubcommand(
       await processForceLeave(interaction, actorId, typeof target === "string" ? target : null);
       return;
     }
-    case "recompute-bands":
-      await processRecomputeBands(interaction, actorId);
+    case "recompute-bands": {
+      const force = getParamValue(params, "force");
+      await processRecomputeBands(interaction, actorId, force === true);
       return;
+    }
     case "config": {
       if (path[1] === "get") {
         const key = getParamValue(params, "key");
@@ -279,9 +281,9 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
 
   if (series.queue_type === "rank") {
     // Unwinding MMR can push a player's band back down just as easily as correcting a winner
-    // can push it up — same scoped live recompute as report.ts/correct-report, rather than
-    // leaving it to the next daily cron tick.
-    await recomputeBands({ onlyPlayerIds: players.map((sp) => sp.player_id) });
+    // can push it up — same live recompute as report.ts/correct-report, rather than leaving it
+    // to the next daily cron tick.
+    await recomputeBands();
   }
 
   // Delete prediction record if it exists
@@ -422,9 +424,9 @@ async function processCorrectReport(
     );
 
     // Correcting the winner can push a player's MMR across a band threshold — recompute now,
-    // scoped to just these 6 players, same as report.ts's live per-report recompute (see
-    // CLAUDE.md, "Reporting & disputes"), rather than leaving it to the next daily cron tick.
-    await recomputeBands({ onlyPlayerIds: seriesPlayers.map((sp) => sp.player_id) });
+    // same as report.ts's live recompute (see CLAUDE.md, "Reporting & disputes"), rather than
+    // leaving it to the next daily cron tick.
+    await recomputeBands();
   }
 
   // Update the series winner
@@ -635,20 +637,25 @@ async function processForceLeave(interaction: DiscordInteraction, actorId: strin
 }
 
 // ---------------------------------------------------------------------------
-// /admin recompute-bands — thin manual trigger for the same recomputeBands() the daily
-// pg_cron job calls (bands.ts).
+// /admin recompute-bands [force:<bool>] — manual trigger for the same recomputeBands() the daily
+// pg_cron job calls (bands.ts). `force:true` bypasses grace/hysteresis for this run only,
+// reseating every placed player straight to their true current percentile — a one-time fix for
+// players whose band got locked in against a tiny early-placement pool (see bands.ts's doc
+// comment) and would otherwise never accumulate enough band_games_played on their own to pass
+// grace. Not meant for routine use — normal play should rely on the unforced daily/live path so
+// grace/hysteresis keep doing their job of damping game-to-game noise.
 // ---------------------------------------------------------------------------
 
-async function processRecomputeBands(interaction: DiscordInteraction, actorId: string) {
-  const summary = await recomputeBands();
+async function processRecomputeBands(interaction: DiscordInteraction, actorId: string, force: boolean) {
+  const summary = await recomputeBands({ force });
   await logAdminAction(
     actorId,
     "recompute_bands",
     undefined,
-    `placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged}`,
+    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged}`,
   );
   await editOriginalResponse(interaction.token, {
-    content: `Recomputed bands — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}.`,
+    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}.`,
   });
 }
 

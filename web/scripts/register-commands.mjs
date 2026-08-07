@@ -475,6 +475,14 @@ const commands = [
         name: "recompute-bands",
         description: "Manually trigger the daily band recompute.",
         type: SUB_COMMAND,
+        options: [
+          {
+            name: "force",
+            description: "Bypass grace/hysteresis and reseat everyone to their true percentile (one-time fix).",
+            type: BOOLEAN_OPTION,
+            required: false,
+          },
+        ],
       },
       {
         name: "config",
