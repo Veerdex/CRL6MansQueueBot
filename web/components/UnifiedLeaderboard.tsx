@@ -155,15 +155,21 @@ export default function UnifiedLeaderboard({
             ) : (
               <div className="space-y-2">
                 {topPlayersRows.map((row) => {
-                  const bandColor = row.band === "Sapphire" && row.position <= prismTopN
-                    ? getPrismColor()
-                    : getBandColor(row.band);
-                  const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
+                  // Unranked (no band) gets no glow — nothing to color it by.
+                  const bandColor =
+                    row.band === null
+                      ? null
+                      : row.band === "Sapphire" && row.position <= prismTopN
+                        ? getPrismColor()
+                        : getBandColor(row.band);
+                  const rowGlow = bandColor
+                    ? `radial-gradient(ellipse 70% 100% at 0% 50%, ${bandColor}2e 0%, transparent 75%)`
+                    : undefined;
                   return (
                     <div
                       key={row.position}
                       className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
-                      style={{ backgroundImage: backgroundGradient }}
+                      style={rowGlow ? { backgroundImage: rowGlow } : undefined}
                     >
                       <div className="min-w-fit text-sm font-semibold text-muted">#{row.position}</div>
                       <div className="flex-1 min-w-0">
