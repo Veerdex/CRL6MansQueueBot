@@ -604,6 +604,48 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
 }
 
 // ---------------------------------------------------------------------------
+// /status — read-only snapshot of the queue mapped to the current channel (same
+// channel-inference as /q/l), rendered as the same one-player-per-line roster embed hybrid
+// mode's live roster message uses (rank emoji + mention + band + MMR) — regardless of the
+// channel's actual queue_message_mode, since this is a one-off lookup, not a persistent
+// tracked message. Replies ephemerally, matching /q/l's own confirmation/error replies.
+// ---------------------------------------------------------------------------
+
+export function handleStatusCommand(interaction: DiscordInteraction) {
+  after(() => processStatusCommand(interaction));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processStatusCommand(interaction: DiscordInteraction) {
+  const supabase = createAdminClient();
+  const channelId = interaction.channel_id;
+  if (!channelId) {
+    await editOriginalResponse(interaction.token, { content: "Run this inside a queue channel." });
+    return;
+  }
+
+  const { data: msgRow } = await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .select("queue_type")
+    .eq("channel_id", channelId)
+    .maybeSingle();
+  if (!msgRow) {
+    await editOriginalResponse(interaction.token, {
+      content: "This channel isn't set up as a queue channel — ask an admin to run /setqueuechannel here.",
+    });
+    return;
+  }
+  const queueType = msgRow.queue_type as QueueType;
+
+  const members = await fetchQueueMembers(supabase, queueType);
+  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+  await editOriginalResponse(interaction.token, { embeds: [await hybridRosterEmbed(queueType, members, streaks)] });
+}
+
+// ---------------------------------------------------------------------------
 // Pop: lock the 6 players in, cross-remove from the other queue, create the series
 // + match category/text channel (see CLAUDE.md, "Match channels (created per series
 // on pop)").

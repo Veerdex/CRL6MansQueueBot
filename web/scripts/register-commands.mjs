@@ -192,6 +192,11 @@ const commands = [
     type: 1,
   },
   {
+    name: "status",
+    description: "Show who's currently in the queue mapped to this channel.",
+    type: 1,
+  },
+  {
     name: "add-admin-role",
     description: "Grant a Discord role admin access and match-channel visibility.",
     type: 1,

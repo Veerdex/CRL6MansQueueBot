@@ -3,7 +3,7 @@ import { InteractionType, InteractionResponseType } from "discord-interactions";
 import { verifyDiscordRequest } from "@/lib/discord/verify";
 import { getConfigNumber } from "@/lib/discord/config";
 import type { DiscordInteraction } from "@/lib/discord/types";
-import { handleQueueJoinCommand, handleQueueLeaveCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand, handleSetLogChannelCommand, handleSetQueueMentionRoleCommand } from "@/lib/discord/queue";
+import { handleQueueJoinCommand, handleQueueLeaveCommand, handleStatusCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand, handleSetLogChannelCommand, handleSetQueueMentionRoleCommand } from "@/lib/discord/queue";
 import { handleSetNotificationChannelCommand, handleSetNotificationRoleCommand, handleNotificationButton } from "@/lib/discord/notifications";
 import {
   handleAddAdminRoleCommand,
@@ -124,6 +124,10 @@ export async function POST(request: Request) {
 
     if (commandName === "l" || commandName === "leave") {
       return NextResponse.json(handleQueueLeaveCommand(interaction));
+    }
+
+    if (commandName === "status") {
+      return NextResponse.json(handleStatusCommand(interaction));
     }
 
     if (commandName === "add-admin-role") {

@@ -111,6 +111,7 @@ async function processHelp(interaction: DiscordInteraction) {
     "**Commands**",
     "`/q` or `/queue` — join the queue mapped to the current channel (e.g. #universal-queue, #rank-queue).",
     "`/l` or `/leave` — leave that queue.",
+    "`/status` — show who's currently in the queue mapped to the current channel.",
     "`/vote-default mode:<balanced|captains>` — set your default team-formation vote (still overridable per game).",
     "`/report` — run inside your match channel to report the result (inferred from your own team). Settles immediately.",
     "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement for yourself; they must accept via a button.",
