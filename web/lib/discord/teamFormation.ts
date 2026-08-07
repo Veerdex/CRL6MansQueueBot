@@ -19,10 +19,10 @@ import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-// Votes required to void a series via mutual agreement — usable during both 'forming' (this
-// vote-message button) and 'active' (the /cancel slash command, since there's no vote message
-// once teams are set) via the shared crl6mansqueuebot_cancel_votes table. See
-// registerCancelVoteAndMaybeVoid below and CLAUDE.md, "Series end".
+// Votes required to void a series via mutual agreement — usable during both 'forming' and
+// 'active' via the /cancel slash command (no vote-message button anymore — removed since it
+// duplicated /cancel as a voting option) against the shared crl6mansqueuebot_cancel_votes
+// table. See registerCancelVoteAndMaybeVoid below and CLAUDE.md, "Series end".
 const CANCEL_VOTE_THRESHOLD = 4;
 
 // ---------------------------------------------------------------------------
@@ -30,17 +30,17 @@ const CANCEL_VOTE_THRESHOLD = 4;
 // See CLAUDE.md, "Team formation (on pop)" / "Team formation, in the match channel".
 // ---------------------------------------------------------------------------
 
-function voteEmbed(balancedCount: number, captainsCount: number, cancelCount: number, timeoutSeconds: number) {
+function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds: number) {
   const minutes = Math.round(timeoutSeconds / 60);
   return {
     color: BRAND_COLOR,
     description:
       `**You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote. Vote by clicking the buttons below.**\n` +
-      `This message needs **3 player interactions** to proceed! An exact 3-3 tie resolves to Captains.`,
+      `This message needs **3 player interactions** to proceed! An exact 3-3 tie resolves to Captains.\n` +
+      `Want to cancel this match instead? Use \`/cancel\`.`,
     fields: [
       { name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true },
       { name: "Captains", value: `${captainsCount} / 3`, inline: true },
-      { name: "Cancel", value: `${cancelCount} / ${CANCEL_VOTE_THRESHOLD}`, inline: true },
     ],
   };
 }
@@ -52,12 +52,6 @@ function voteButtons(seriesId: string) {
       components: [
         { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Balanced", custom_id: `vote:${seriesId}:balanced` },
         { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Captains", custom_id: `vote:${seriesId}:captains` },
-      ],
-    },
-    {
-      type: MessageComponentTypes.ACTION_ROW,
-      components: [
-        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.SECONDARY, label: "Cancel", custom_id: `cancel:${seriesId}` },
       ],
     },
   ];
@@ -93,7 +87,7 @@ export async function startTeamFormation(supabase: AdminClient, guildId: string,
   const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
+    body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
@@ -118,11 +112,9 @@ export async function castVote(
   await supabase.from("crl6mansqueuebot_series_votes").upsert({ series_id: seriesId, player_id: playerId, choice });
 
   const { data: votes } = await supabase.from("crl6mansqueuebot_series_votes").select("choice").eq("series_id", seriesId);
-  const { data: cancelVotes } = await supabase.from("crl6mansqueuebot_cancel_votes").select("player_id").eq("series_id", seriesId);
 
   const balancedCount = (votes ?? []).filter((v) => v.choice === "balanced").length;
   const captainsCount = (votes ?? []).filter((v) => v.choice === "captains").length;
-  const cancelCount = (cancelVotes ?? []).length;
 
   let winner: VoteChoice | null = null;
   if (balancedCount >= 3) winner = "balanced";
@@ -133,7 +125,7 @@ export async function castVote(
     const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
     await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
+      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds)], components: voteButtons(seriesId) }),
     });
     return;
   }
@@ -212,80 +204,12 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
   await castVote(supabase, interaction.guild_id, seriesId, interaction.channel_id, series.formation_message_id, members, player.id, choice);
 }
 
-// ---------------------------------------------------------------------------
-// Cancel button entry point
-// ---------------------------------------------------------------------------
-
-export function handleCancelButton(interaction: DiscordInteraction, seriesId: string) {
-  after(() => processCancelButton(interaction, seriesId));
-  return {
-    type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
-  };
-}
-
-async function processCancelButton(interaction: DiscordInteraction, seriesId: string) {
-  const supabase = createAdminClient();
-  const discordId = interactionUserId(interaction);
-  if (!discordId || !interaction.guild_id || !interaction.channel_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
-    return;
-  }
-
-  const { data: player } = await supabase.from("crl6mansqueuebot_players").select("*").eq("discord_id", discordId).maybeSingle();
-  const { data: lobbyRow } = player
-    ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
-    : { data: null };
-  if (!player || !lobbyRow) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "You're not part of this match.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
-    return;
-  }
-
-  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
-  if (!series || series.vote_result || series.status !== "forming" || !series.formation_message_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Match is no longer in voting phase.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
-    return;
-  }
-
-  const { voided, cancelCount } = await registerCancelVoteAndMaybeVoid(supabase, series, player.id);
-  if (voided) return; // helper already deleted the vote message and posted the cancellation notice
-
-  // Update the message to show new cancel count
-  const { data: votes } = await supabase.from("crl6mansqueuebot_series_votes").select("choice").eq("series_id", seriesId);
-  const balancedCount = (votes ?? []).filter((v) => v.choice === "balanced").length;
-  const captainsCount = (votes ?? []).filter((v) => v.choice === "captains").length;
-  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-
-  await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
-  });
-}
-
 // Casts (or re-casts) `playerId`'s cancel vote against `series` and, once CANCEL_VOTE_THRESHOLD
 // is reached, atomically voids it (same UPDATE...WHERE-status-IN claim pattern used throughout
 // this codebase, so a race against a simultaneous /report or /abandon can't double-settle).
-// Shared by the forming-phase vote-message button and the /cancel slash command below — both
-// write to the same crl6mansqueuebot_cancel_votes table, so a vote cast either way counts once
-// toward the same total. Voice channels only exist once a series is 'active' (finalizeTeams
-// creates them) — deleteMatchChannels no-ops on the null ids a still-'forming' series has.
+// Called by the /cancel slash command below, for both 'forming' and 'active' series. Voice
+// channels only exist once a series is 'active' (finalizeTeams creates them) —
+// deleteMatchChannels no-ops on the null ids a still-'forming' series has.
 async function registerCancelVoteAndMaybeVoid(
   supabase: AdminClient,
   series: SeriesRow,
@@ -330,9 +254,10 @@ async function registerCancelVoteAndMaybeVoid(
 }
 
 // ---------------------------------------------------------------------------
-// /cancel — usable by any of the 6 players in a popped match (forming OR active — the button
-// above only covers 'forming', since there's no vote message left once teams are set). Casts a
-// no-fault cancel vote toward the same CANCEL_VOTE_THRESHOLD; no target, unlike /abandon (see
+// /cancel — usable by any of the 6 players in a popped match, in either 'forming' or 'active'
+// status (no vote-message button anymore — removed since it duplicated /cancel as a voting
+// option; this command is now the only way to cast a cancel vote). Casts a no-fault cancel
+// vote toward the same CANCEL_VOTE_THRESHOLD; no target, unlike /abandon (see
 // CLAUDE.md, "Mid-series abandonment") which blames a specific player and needs only 3 of the
 // remaining 5. `id:` is an optional admin-gated override, same pattern as /report/`/sub`/`/abandon`.
 // ---------------------------------------------------------------------------

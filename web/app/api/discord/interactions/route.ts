@@ -18,7 +18,7 @@ import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleSubAcceptButton } from "@/lib/discord/sub";
 import { handleAbandonCommand } from "@/lib/discord/abandon";
-import { handleVoteButton, handleCancelButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand } from "@/lib/discord/teamFormation";
+import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand } from "@/lib/discord/teamFormation";
 import type { VoteChoice } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand } from "@/lib/discord/bands";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
@@ -67,10 +67,6 @@ export async function POST(request: Request) {
 
     if (action === "vote" && arg1 && (arg2 === "balanced" || arg2 === "captains")) {
       return NextResponse.json(handleVoteButton(interaction, arg1, arg2 as VoteChoice));
-    }
-
-    if (action === "cancel" && arg1) {
-      return NextResponse.json(handleCancelButton(interaction, arg1));
     }
 
     if (action === "draft_pick" && arg1 && arg2) {

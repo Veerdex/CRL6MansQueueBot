@@ -733,7 +733,11 @@ export async function createVoiceChannels(
   }
 
   const voiceOverwrites = (teamMembers: PlayerRow[]): PermissionOverwrite[] => [
-    { id: guildId, type: ROLE_TYPE, deny: VIEW_CHANNEL.toString() },
+    // Viewable by anyone (so the community can see which games are live) but joinable only by
+    // the team, admins, and the bot — @everyone gets VIEW_CHANNEL but has CONNECT denied, and
+    // that denial is overridden below by member/role-specific allows, since Discord resolves
+    // @everyone first and member/role overwrites take precedence over it.
+    { id: guildId, type: ROLE_TYPE, allow: VIEW_CHANNEL.toString(), deny: CONNECT.toString() },
     // Test bots use synthetic discord_ids (e.g. "test_bot_..."), not real snowflakes — Discord's
     // API rejects the entire channel-creation request if any permission_overwrites id isn't a
     // real snowflake, so they must be excluded here rather than just skipped elsewhere.

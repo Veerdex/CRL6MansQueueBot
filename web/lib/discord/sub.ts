@@ -264,25 +264,18 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
       body: JSON.stringify({ type: MEMBER_TYPE, allow: (VIEW_CHANNEL | CONNECT).toString() }),
     }).catch((err) => console.error(`Failed to grant voice channel access to sub ${nominee.discord_id}`, err));
     if (leavingPlayer) {
+      // Revoking the leaving player's member-level overwrite is enough on its own — Discord
+      // enforces voice-channel permission changes on already-connected users in real time, so
+      // if they're actually sitting in *this* team's channel, losing CONNECT here (falling
+      // back to the @everyone overwrite, which denies it — see createVoiceChannels in
+      // queue.ts) disconnects them from it within seconds with no extra API call needed.
+      // Deliberately not using the member PATCH `channel_id:null` endpoint here — that
+      // disconnects wherever the member currently is in the *guild*, not scoped to this
+      // channel, which previously kicked a leaving player out of an unrelated voice channel
+      // they'd since moved to (fixed this session).
       await discordFetch(`/channels/${teamVoiceChannelId}/permissions/${leavingPlayer.discord_id}`, { method: "DELETE" }).catch((err) =>
         console.error(`Failed to revoke voice channel access from ${leavingPlayer.discord_id}`, err),
       );
-      // Permission revoke alone doesn't kick someone already connected, so we force-disconnect —
-      // but only if they're actually still in *this* team's voice channel. The member PATCH's
-      // channel_id:null disconnects wherever the member currently is in the guild, not scoped to
-      // any channel, so firing it unconditionally could yank someone out of an unrelated voice
-      // channel they'd since moved to. GET the voice state first and only disconnect on a match;
-      // any error (not connected at all, etc.) is treated as "leave them alone".
-      await discordFetch(`/guilds/${interaction.guild_id}/voice-states/${leavingPlayer.discord_id}`)
-        .then(async (voiceState: { channel_id?: string | null } | null) => {
-          if (voiceState?.channel_id === teamVoiceChannelId) {
-            await discordFetch(`/guilds/${interaction.guild_id}/members/${leavingPlayer.discord_id}`, {
-              method: "PATCH",
-              body: JSON.stringify({ channel_id: null }),
-            }).catch(() => {});
-          }
-        })
-        .catch(() => {});
     }
   }
 
