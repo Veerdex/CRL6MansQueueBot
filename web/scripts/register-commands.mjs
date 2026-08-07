@@ -679,15 +679,20 @@ const commands = [
         type: SUB_COMMAND,
       },
       {
-        name: "simplify-queue-messages",
-        description: "Toggle whether old queue-status messages are auto-deleted so only one shows at a time.",
+        name: "queue-message-mode",
+        description: "Set how join/leave queue messages behave: simplified, default, or hybrid.",
         type: SUB_COMMAND,
         options: [
           {
-            name: "enabled",
-            description: "If true (default), auto-delete old queue-status messages. If false, let them stack.",
-            type: BOOLEAN_OPTION,
+            name: "mode",
+            description: "simplified = one live message; default = messages stack; hybrid = announcement + roster messages.",
+            type: STRING_OPTION,
             required: true,
+            choices: [
+              { name: "simplified", value: "simplified" },
+              { name: "default", value: "default" },
+              { name: "hybrid", value: "hybrid" },
+            ],
           },
         ],
       },

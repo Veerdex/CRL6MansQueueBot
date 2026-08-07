@@ -204,9 +204,9 @@ async function dispatchAdminSubcommand(
       await processStart(interaction, actorId);
       return;
     }
-    case "simplify-queue-messages": {
-      const enabled = getParamValue(params, "enabled");
-      await processSimplifyQueueMessagesToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+    case "queue-message-mode": {
+      const mode = getParamValue(params, "mode");
+      await processQueueMessageModeSet(interaction, actorId, typeof mode === "string" ? mode : undefined);
       return;
     }
     case "streak-bonus": {
@@ -1270,25 +1270,26 @@ async function processStart(interaction: DiscordInteraction, actorId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// /admin simplify-queue-messages enabled:<bool> — toggles whether the queue-status message
-// (join/leave in #rank-queue / #universal-queue) auto-deletes the previous one so only one shows
-// at a time (the default, "simplified" behavior — see queue.ts's isQueueMessagesSimplified()).
-// Turned off, every join/leave posts a new status message without deleting the last one, so the
-// channel keeps a running history instead of pruning down to a single live message.
+// /admin queue-message-mode mode:<simplified|default|hybrid> — controls how join/leave messages
+// behave in #rank-queue / #universal-queue. See queue.ts's getQueueMessageMode() for the full
+// description of each mode.
 // ---------------------------------------------------------------------------
 
-async function processSimplifyQueueMessagesToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
-  if (enabled === undefined) {
-    await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
+const QUEUE_MESSAGE_MODE_DESCRIPTIONS: Record<string, string> = {
+  simplified: "Queue messages set to simplified — only the latest queue-status message is shown; older ones are auto-deleted.",
+  default: "Queue messages set to default — every join/leave posts a new status message without deleting the last one.",
+  hybrid:
+    "Queue messages set to hybrid — every join/leave posts a small announcement (always kept) plus a one-player-per-line roster message (single live message, except the final roster at pop time is kept permanently).",
+};
+
+async function processQueueMessageModeSet(interaction: DiscordInteraction, actorId: string, mode: string | undefined) {
+  if (mode !== "simplified" && mode !== "default" && mode !== "hybrid") {
+    await editOriginalResponse(interaction.token, { content: "mode must be simplified, default, or hybrid." });
     return;
   }
-  await setConfigValue("queue_simplified_messages", enabled ? "1" : "0");
-  await logAdminAction(actorId, "simplify_queue_messages_toggle", "", `enabled=${enabled}`);
-  await editOriginalResponse(interaction.token, {
-    content: enabled
-      ? "Queue messages simplified — only the latest queue-status message will be shown; older ones are auto-deleted."
-      : "Queue messages no longer simplified — every join/leave will post a new status message without deleting the last one.",
-  });
+  await setConfigValue("queue_message_mode", mode);
+  await logAdminAction(actorId, "queue_message_mode_set", "", `mode=${mode}`);
+  await editOriginalResponse(interaction.token, { content: QUEUE_MESSAGE_MODE_DESCRIPTIONS[mode] });
 }
 
 // ---------------------------------------------------------------------------

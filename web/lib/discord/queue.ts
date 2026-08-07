@@ -10,8 +10,9 @@ import { interactionUserId, interactionDisplayName, type DiscordInteraction } fr
 import { startTeamFormation } from "./teamFormation";
 import { computeBonusDayMultiplier } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
-import { getConfigNumber } from "./config";
+import { getConfigNumber, getConfigValue } from "./config";
 import { getStreakIds, mention, type StreakIds } from "./streaks";
+import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -43,16 +44,55 @@ function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], streaks: S
   };
 }
 
+// Hybrid mode's roster message: one player per line (rank emoji + name + band + MMR) instead of
+// the flat @mention line above — the headline lives in its own separate, always-stacking
+// announcement message instead (see postHybridAnnouncement), so this embed is roster-only.
+async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds) {
+  const label = QUEUE_LABELS[queueType];
+  const scale = await getConfigNumber("mmr_scale", 1);
+  const shift = await getConfigNumber("mmr_shift", 0);
+  const lines = members.length
+    ? await Promise.all(
+        members.map(async (m) => {
+          const band = m.is_placed ? m.band : null;
+          const emoji = await getRankEmoji(band);
+          const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
+          const displayMmr = Math.round(m.mmr * scale + shift);
+          return `${emoji} ${who} — ${getRankLabel(band)} · ${displayMmr} MMR`;
+        }),
+      )
+    : ["_Empty_"];
+  return {
+    color: BRAND_COLOR,
+    description: `**Current Queue Members: ${members.length}**\n${lines.join("\n")}`,
+    footer: { text: `Run /q to join the ${label} or /l to leave.` },
+  };
+}
+
 // `headline` (the "<@user> has joined/left..." line) stays in the embed as display text. `ping`
 // is the separate first-join role-mention line (e.g. `<@&roleId>`) and is sent as the top-level
 // message `content` instead — Discord does not deliver notifications for mentions that appear
 // inside an embed, only ones in `content`, so the ping has to live outside the embed to actually
 // fire.
-function queueMessageBody(queueType: QueueType, members: PlayerRow[], streaks: StreakIds, headline?: string, ping?: string) {
+async function queueMessageBody(mode: QueueMessageMode, queueType: QueueType, members: PlayerRow[], streaks: StreakIds, headline?: string, ping?: string) {
+  if (mode === "hybrid") {
+    return { content: "", embeds: [await hybridRosterEmbed(queueType, members, streaks)] };
+  }
   return {
     content: ping ?? "",
     embeds: [queueStatusEmbed(queueType, members, streaks, headline)],
   };
+}
+
+// Hybrid mode's announcement message — "<@user> has joined/left the ... Queue!" posted on its
+// own, every join/leave, and intentionally never tracked/deleted: it's a running log of queue
+// activity, separate from the single live roster message (hybridRosterEmbed) below it. Carries
+// the first-join role ping in `content` (embeds don't notify — see queueMessageBody above).
+async function postHybridAnnouncement(channelId: string, headline: string, ping?: string) {
+  await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: ping ?? "", embeds: [{ color: BRAND_COLOR, description: `**${headline}**` }] }),
+  }).catch((err) => console.error(`Failed to post hybrid queue announcement in ${channelId}`, err));
 }
 
 async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
@@ -76,13 +116,28 @@ async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): P
   return playerIds.map((id) => byId.get(id)).filter((p): p is PlayerRow => Boolean(p));
 }
 
-// /admin simplify-queue-messages enabled:<bool> — see CLAUDE.md-style precedent of bot_paused's
-// stop/start and bonus_day_enabled's dedicated toggle in adminTools.ts. Default (1/true) matches
-// this feature's original always-on behavior: exactly one live queue-status message per channel,
-// with every join/leave deleting the previous one. Toggled off, join/leave messages stack in the
-// channel like ordinary chat instead of being pruned.
-async function isQueueMessagesSimplified(): Promise<boolean> {
-  return (await getConfigNumber("queue_simplified_messages", 1)) !== 0;
+export type QueueMessageMode = "simplified" | "default" | "hybrid";
+
+// /admin queue-message-mode mode:<simplified|default|hybrid> — see CLAUDE.md-style precedent of
+// bot_paused's stop/start and bonus_day_enabled's dedicated toggle in adminTools.ts.
+//   - "simplified" (default): exactly one live queue-status message per channel — every
+//     join/leave deletes the previous one and posts a fresh combined headline+roster message.
+//   - "default": every join/leave posts a new combined headline+roster message without deleting
+//     the last one, so the channel keeps a running history instead of pruning down to one.
+//   - "hybrid": every join/leave posts two messages — a small headline-only announcement that
+//     always stacks (never deleted), plus a one-player-per-line roster message that behaves like
+//     "simplified" (single live message, delete-and-repost) EXCEPT the roster posted at the
+//     moment a queue pops (6th join) is frozen permanently instead — see
+//     freezeQueueRosterMessage — so it stays visible as a record of who played that match.
+//
+// Reads the new `queue_message_mode` string config first; falls back to the older
+// `queue_simplified_messages` boolean (pre-hybrid) so an admin who already toggled that keeps
+// their choice honored until they explicitly pick a mode via the new command.
+async function getQueueMessageMode(): Promise<QueueMessageMode> {
+  const raw = await getConfigValue("queue_message_mode");
+  if (raw === "simplified" || raw === "default" || raw === "hybrid") return raw;
+  const legacySimplified = (await getConfigNumber("queue_simplified_messages", 1)) !== 0;
+  return legacySimplified ? "simplified" : "default";
 }
 
 // Posts a fresh message, then atomically claims it as the tracked one for `queueType` before
@@ -97,10 +152,10 @@ async function isQueueMessagesSimplified(): Promise<boolean> {
 // refreshQueueMessage) know to retry with a fresh member snapshot rather than silently dropping
 // whatever change motivated their refresh.
 //
-// `simplified` gates only the *old, previously-tracked* message's deletion below — the
-// losing-race cleanup a few lines down always runs regardless, since that's a duplicate this
-// exact call itself created (never shown to anyone as "history"), not the old message the
-// toggle is about preserving.
+// `mode` gates only the *old, previously-tracked* message's deletion below (kept for "default"
+// mode, deleted for "simplified" and "hybrid") — the losing-race cleanup a few lines down always
+// runs regardless, since that's a duplicate this exact call itself created (never shown to
+// anyone as "history"), not the old message the mode is about preserving.
 async function tryPostAndClaimQueueMessage(
   supabase: AdminClient,
   queueType: QueueType,
@@ -109,12 +164,12 @@ async function tryPostAndClaimQueueMessage(
   members: PlayerRow[],
   streaks: StreakIds,
   headline: string | undefined,
-  simplified: boolean,
+  mode: QueueMessageMode,
   ping?: string,
 ): Promise<boolean> {
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify(queueMessageBody(queueType, members, streaks, headline, ping)),
+    body: JSON.stringify(await queueMessageBody(mode, queueType, members, streaks, headline, ping)),
   })) as { id: string };
 
   const { data: claimed, error } = await supabase
@@ -126,7 +181,7 @@ async function tryPostAndClaimQueueMessage(
   if (error) console.error(`Queue message claim failed for ${queueType}`, error);
 
   if (!error && claimed && claimed.length > 0) {
-    if (simplified) {
+    if (mode !== "default") {
       await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
         console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
       );
@@ -154,11 +209,12 @@ async function postFreshQueueMessage(
   headline?: string,
 ): Promise<void> {
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+  const mode = await getQueueMessageMode();
 
   if (oldMessageId === null) {
     const message = (await discordFetch(`/channels/${channelId}/messages`, {
       method: "POST",
-      body: JSON.stringify(queueMessageBody(queueType, members, streaks, headline)),
+      body: JSON.stringify(await queueMessageBody(mode, queueType, members, streaks, headline)),
     })) as { id: string };
     await supabase.from("crl6mansqueuebot_queue_messages").upsert({
       queue_type: queueType,
@@ -168,8 +224,7 @@ async function postFreshQueueMessage(
     return;
   }
 
-  const simplified = await isQueueMessagesSimplified();
-  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, streaks, headline, simplified);
+  await tryPostAndClaimQueueMessage(supabase, queueType, channelId, oldMessageId, members, streaks, headline, mode);
 }
 
 // Posts a message to a queue channel and tracks it, deleting all other non-permanent messages first.
@@ -241,7 +296,8 @@ export async function postTrackedQueueMessage(
 const MAX_REFRESH_ATTEMPTS = 5;
 
 export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string, ping?: string) {
-  const simplified = await isQueueMessagesSimplified();
+  const mode = await getQueueMessageMode();
+  let announced = false;
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt++) {
     const { data: msgRow } = await supabase
       .from("crl6mansqueuebot_queue_messages")
@@ -249,6 +305,14 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
       .eq("queue_type", queueType)
       .maybeSingle();
     if (!msgRow) return;
+
+    // Hybrid mode's headline-only announcement is a separate, always-stacking message — post it
+    // once (not on retries, which just re-attempt the roster message's own claim race) alongside
+    // the roster refresh below, which carries no headline/ping of its own in hybrid mode.
+    if (mode === "hybrid" && headline && !announced) {
+      await postHybridAnnouncement(msgRow.channel_id, headline, ping);
+      announced = true;
+    }
 
     const members = await fetchQueueMembers(supabase, queueType);
     const streaks = await getStreakIds(supabase, members.map((m) => m.id));
@@ -259,13 +323,39 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
       msgRow.message_id,
       members,
       streaks,
-      headline,
-      simplified,
-      ping,
+      mode === "hybrid" ? undefined : headline,
+      mode,
+      mode === "hybrid" ? undefined : ping,
     );
     if (won) return;
   }
   console.error(`Queue message refresh for ${queueType} gave up after ${MAX_REFRESH_ATTEMPTS} attempts`);
+}
+
+// Hybrid mode only: the roster message posted for a queue's final 6/6 state at pop time is a
+// historical record of "who played this match" and must survive forever — including through the
+// next queue cycle's own roster refreshes, which would otherwise delete it as their "old"
+// message the moment the next cycle's first join lands. Re-homes its tracking out of
+// crl6mansqueuebot_queue_messages (the single-row-per-queue_type table every refresh reads and
+// deletes from) into crl6mansqueuebot_queue_channel_messages' existing keep_permanently
+// mechanism (the same one finalizeTeams's "Teams formed!" message uses in teamFormation.ts),
+// then clears the queue_type's row entirely so the next cycle's first join starts fresh via
+// postFreshQueueMessage's oldMessageId===null path instead of trying to delete this message.
+async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueType) {
+  const { data: msgRow } = await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .select("*")
+    .eq("queue_type", queueType)
+    .maybeSingle();
+  if (!msgRow) return;
+
+  await supabase.from("crl6mansqueuebot_queue_messages").delete().eq("queue_type", queueType);
+  await supabase.from("crl6mansqueuebot_queue_channel_messages").insert({
+    channel_id: msgRow.channel_id,
+    message_id: msgRow.message_id,
+    message_type: "status",
+    keep_permanently: true,
+  } as any);
 }
 
 export async function initQueueMessage(queueType: QueueType, channelId: string) {
@@ -475,6 +565,15 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
 
   if (result?.status === "joined" && result.queue_size >= 6) {
     const guildId = interaction.guild_id ?? (await getGuildId());
+    // Show the queue at 6/6 (same "has joined" treatment as any other join) before handlePop
+    // clears crl6mansqueuebot_queue_members and the vote embed replaces this as the channel's
+    // newest message.
+    await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
+    // Hybrid mode: freeze the roster message just posted above (the final 6/6 state) so it's
+    // never deleted by a future queue cycle — see freezeQueueRosterMessage.
+    if ((await getQueueMessageMode()) === "hybrid") {
+      await freezeQueueRosterMessage(supabase, queueType);
+    }
     await handlePop(supabase, queueType, guildId, channelId);
     // Pop succeeded — delete the deferred response so it auto-dismisses
     await deleteOriginalResponse(interaction.token);
