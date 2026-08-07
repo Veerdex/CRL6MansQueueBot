@@ -7,16 +7,23 @@ import {
   ButtonStyleTypes,
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { PlayerRow, SeriesLobbyRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
-import { getAdminRoleIds } from "./admin";
-import { getConfigNumber } from "./config";
+import type { PlayerRow, SeriesLobbyRow, SeriesRow, Team, VoteChoice } from "@/lib/supabase/types";
+import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
+import { getAdminRoleIds, hasAdminAccess } from "./admin";
+import { getConfigNumber, getDisplayMMR } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
-import { interactionUserId, type DiscordInteraction } from "./types";
-import { createVoiceChannels, postTrackedQueueMessage } from "./queue";
+import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
+import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { getOnFirePlayerIds, mention } from "./streaks";
+import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
+
+// Votes required to void a series via mutual agreement — usable during both 'forming' (this
+// vote-message button) and 'active' (the /cancel slash command, since there's no vote message
+// once teams are set) via the shared crl6mansqueuebot_cancel_votes table. See
+// registerCancelVoteAndMaybeVoid below and CLAUDE.md, "Series end".
+const CANCEL_VOTE_THRESHOLD = 4;
 
 // ---------------------------------------------------------------------------
 // Vote message: Balanced vs Captains, first to 3/6 wins, exact 3-3 tie -> Captains.
@@ -33,7 +40,7 @@ function voteEmbed(balancedCount: number, captainsCount: number, cancelCount: nu
     fields: [
       { name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true },
       { name: "Captains", value: `${captainsCount} / 3`, inline: true },
-      { name: "Cancel", value: `${cancelCount} / 4`, inline: true },
+      { name: "Cancel", value: `${cancelCount} / ${CANCEL_VOTE_THRESHOLD}`, inline: true },
     ],
   };
 }
@@ -257,29 +264,8 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
     return;
   }
 
-  // Upsert cancel vote (same player can't double-vote)
-  await supabase.from("crl6mansqueuebot_cancel_votes").upsert({ series_id: seriesId, player_id: player.id });
-
-  const { data: cancelVotes } = await supabase.from("crl6mansqueuebot_cancel_votes").select("player_id").eq("series_id", seriesId);
-  const cancelCount = (cancelVotes ?? []).length;
-
-  // If 4+ players voted to cancel, void the series
-  if (cancelCount >= 4) {
-    // Atomic void claim
-    const { data: claimed } = await supabase
-      .from("crl6mansqueuebot_series")
-      .update({ status: "void" })
-      .eq("id", seriesId)
-      .eq("status", "forming")
-      .select("id");
-    if (claimed && claimed.length > 0) {
-      // Clear pending series state and remove message
-      await supabase.from("crl6mansqueuebot_series_votes").delete().eq("series_id", seriesId);
-      await supabase.from("crl6mansqueuebot_cancel_votes").delete().eq("series_id", seriesId);
-      await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
-      return;
-    }
-  }
+  const { voided, cancelCount } = await registerCancelVoteAndMaybeVoid(supabase, series, player.id);
+  if (voided) return; // helper already deleted the vote message and posted the cancellation notice
 
   // Update the message to show new cancel count
   const { data: votes } = await supabase.from("crl6mansqueuebot_series_votes").select("choice").eq("series_id", seriesId);
@@ -290,6 +276,113 @@ async function processCancelButton(interaction: DiscordInteraction, seriesId: st
   await discordFetch(`/channels/${interaction.channel_id}/messages/${series.formation_message_id}`, {
     method: "PATCH",
     body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, cancelCount, timeoutSeconds)], components: voteButtons(seriesId) }),
+  });
+}
+
+// Casts (or re-casts) `playerId`'s cancel vote against `series` and, once CANCEL_VOTE_THRESHOLD
+// is reached, atomically voids it (same UPDATE...WHERE-status-IN claim pattern used throughout
+// this codebase, so a race against a simultaneous /report or /abandon can't double-settle).
+// Shared by the forming-phase vote-message button and the /cancel slash command below — both
+// write to the same crl6mansqueuebot_cancel_votes table, so a vote cast either way counts once
+// toward the same total. Voice channels only exist once a series is 'active' (finalizeTeams
+// creates them) — deleteMatchChannels no-ops on the null ids a still-'forming' series has.
+async function registerCancelVoteAndMaybeVoid(
+  supabase: AdminClient,
+  series: SeriesRow,
+  playerId: string,
+): Promise<{ cancelCount: number; voided: boolean }> {
+  await supabase.from("crl6mansqueuebot_cancel_votes").upsert({ series_id: series.id, player_id: playerId });
+
+  const { data: cancelVotes } = await supabase.from("crl6mansqueuebot_cancel_votes").select("player_id").eq("series_id", series.id);
+  const cancelCount = (cancelVotes ?? []).length;
+  if (cancelCount < CANCEL_VOTE_THRESHOLD) return { cancelCount, voided: false };
+
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ status: "void", winner_team: null })
+    .eq("id", series.id)
+    .in("status", ["forming", "active"])
+    .select("id");
+  if (!claimed || claimed.length === 0) return { cancelCount, voided: false };
+
+  await clearPendingSeriesState(supabase, series.id);
+  await supabase.from("crl6mansqueuebot_series_votes").delete().eq("series_id", series.id);
+  await supabase.from("crl6mansqueuebot_cancel_votes").delete().eq("series_id", series.id);
+
+  if (series.formation_message_id && series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
+  }
+  if (series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: `**Series cancelled** — ${CANCEL_VOTE_THRESHOLD} players voted to cancel. No MMR change.`,
+      }),
+    }).catch(() => {});
+  }
+
+  // Same 30s closing-warning window /report and /abandon use before the actual voice-channel
+  // teardown — no-op for a still-'forming' void, since voice channels don't exist yet.
+  await new Promise((resolve) => setTimeout(resolve, 30_000));
+  await deleteMatchChannels(supabase, series);
+
+  return { cancelCount, voided: true };
+}
+
+// ---------------------------------------------------------------------------
+// /cancel — usable by any of the 6 players in a popped match (forming OR active — the button
+// above only covers 'forming', since there's no vote message left once teams are set). Casts a
+// no-fault cancel vote toward the same CANCEL_VOTE_THRESHOLD; no target, unlike /abandon (see
+// CLAUDE.md, "Mid-series abandonment") which blames a specific player and needs only 3 of the
+// remaining 5. `id:` is an optional admin-gated override, same pattern as /report/`/sub`/`/abandon`.
+// ---------------------------------------------------------------------------
+
+export function handleCancelCommand(interaction: DiscordInteraction) {
+  const idOption = interaction.data?.options?.find((o) => o.name === "id")?.value;
+  const seriesIdOverride = typeof idOption === "string" && idOption.length > 0 ? idOption : null;
+  after(() => processCancelCommand(interaction, seriesIdOverride));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processCancelCommand(interaction: DiscordInteraction, seriesIdOverride: string | null) {
+  const supabase = createAdminClient();
+  const discordId = interactionUserId(interaction);
+  if (!discordId) {
+    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    return;
+  }
+
+  const caller = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+
+  let series: SeriesRow | null;
+  if (seriesIdOverride) {
+    if (!(await hasAdminAccess(interaction))) {
+      await editOriginalResponse(interaction.token, { content: "Only admins can cancel by id: from outside the match." });
+      return;
+    }
+    const { data } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesIdOverride).maybeSingle();
+    series = data;
+  } else {
+    series = await getLockedSeriesForPlayer(supabase, caller.id);
+  }
+
+  if (!series) {
+    await editOriginalResponse(interaction.token, { content: seriesIdOverride ? "Series not found." : "You're not part of an active match." });
+    return;
+  }
+  if (series.status !== "forming" && series.status !== "active") {
+    await editOriginalResponse(interaction.token, { content: "This match has already been settled." });
+    return;
+  }
+
+  const { voided, cancelCount } = await registerCancelVoteAndMaybeVoid(supabase, series, caller.id);
+  await editOriginalResponse(interaction.token, {
+    content: voided
+      ? "Series cancelled — enough players voted to cancel."
+      : `Vote recorded — ${cancelCount}/${CANCEL_VOTE_THRESHOLD} needed to cancel this match.`,
   });
 }
 
@@ -446,6 +539,42 @@ function draftPickButtonRows(seriesId: string, remaining: PlayerRow[]) {
   return buttonRows;
 }
 
+// A STRING_SELECT with min_values === max_values === pickCount collapses what would otherwise
+// be `pickCount` separate round-trips into one interaction — Discord auto-submits once exactly
+// that many options are selected. Used for Captain B's turn (2 picks at once) instead of the
+// button flow above. Discord caps select option label/description at 100 chars each.
+function draftPickSelectRow(seriesId: string, remaining: PlayerRow[], pickCount: number, descriptions: Map<string, string>) {
+  return [
+    {
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        {
+          type: MessageComponentTypes.STRING_SELECT,
+          custom_id: `draft_pick_multi:${seriesId}`,
+          placeholder: `Choose ${pickCount} players`,
+          min_values: pickCount,
+          max_values: pickCount,
+          options: remaining.map((p) => ({
+            label: p.display_name.slice(0, 100),
+            value: p.id,
+            description: (descriptions.get(p.id) ?? "").slice(0, 100),
+          })),
+        },
+      ],
+    },
+  ];
+}
+
+// How many players the captain whose turn it is needs to pick right now. Captain A always
+// picks 1; Captain B picks however many are left minus 1 (the last one auto-assigns to A —
+// see CLAUDE.md, "Team formation (on pop)"). Normally that's 2 (6 players - 2 captains - A's 1
+// pick = 3 remaining, B picks 2), computed from `remainingCount` rather than hardcoded so an
+// in-flight draft mid-deploy (e.g. B already picked 1 under the old one-at-a-time flow) still
+// resolves correctly with a 1-pick button prompt instead of a stale 2-pick expectation.
+function expectedPickCount(turnCaptain: Team, remainingCount: number): number {
+  return turnCaptain === "B" ? Math.max(1, remainingCount - 1) : 1;
+}
+
 function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, onFireIds: Set<string>) {
   const turnName = turnCaptain === "A" ? "Captain A" : "Captain B";
   return {
@@ -494,14 +623,17 @@ async function sendDraftPickPrompt(
     return;
   }
 
-  const buttonRows = draftPickButtonRows(seriesId, remaining);
-  const dmContent = `**Captains Draft — your pick**`;
+  const pickCount = expectedPickCount(turnCaptain, remaining.length);
+  const dmContent = pickCount > 1 ? `**Captains Draft — pick ${pickCount} players**` : `**Captains Draft — your pick**`;
 
-  // Create embed with player information
+  // Create embed with player information, and in parallel a short "MMR | W-L" description
+  // per player reused by the multi-select's option descriptions below.
   const embedFields = [];
+  const descriptions = new Map<string, string>();
 
   for (const player of remaining) {
     const emoji = await getRankEmoji(player.band);
+    const displayMMR = await getDisplayMMR(player.mmr);
     const { data: seriesPlayerRows } = await supabase
       .from("crl6mansqueuebot_series_players")
       .select("team, series_id")
@@ -510,9 +642,10 @@ async function sendDraftPickPrompt(
     if (!seriesPlayerRows || seriesPlayerRows.length === 0) {
       embedFields.push({
         name: player.display_name,
-        value: `${player.mmr.toFixed(0)} MMR ${emoji} | **W:** 0 | **L:** 0`,
+        value: `${displayMMR.toFixed(0)} MMR ${emoji} | **W:** 0 | **L:** 0`,
         inline: false,
       });
+      descriptions.set(player.id, `${displayMMR.toFixed(0)} MMR | W: 0 | L: 0`);
       continue;
     }
 
@@ -532,18 +665,21 @@ async function sendDraftPickPrompt(
     const losses = seriesPlayerRows.length - wins;
     embedFields.push({
       name: player.display_name,
-      value: `${player.mmr.toFixed(0)} MMR ${emoji} | **W:** ${wins} | **L:** ${losses}`,
+      value: `${displayMMR.toFixed(0)} MMR ${emoji} | **W:** ${wins} | **L:** ${losses}`,
       inline: false,
     });
+    descriptions.set(player.id, `${displayMMR.toFixed(0)} MMR | W: ${wins} | L: ${losses}`);
   }
 
   const embed = {
-    title: "Choose a Player",
+    title: pickCount > 1 ? `Choose ${pickCount} Players` : "Choose a Player",
     color: BRAND_COLOR,
     fields: embedFields,
   };
 
-  const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, buttonRows, [embed]);
+  const componentRows = pickCount > 1 ? draftPickSelectRow(seriesId, remaining, pickCount, descriptions) : draftPickButtonRows(seriesId, remaining);
+
+  const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, componentRows, [embed]);
 
   if (dmSent) {
     const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} your picking - check your DMs!`;
@@ -556,13 +692,13 @@ async function sendDraftPickPrompt(
       }),
     });
   } else {
-    const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} - Your DMs are closed. Pick from the buttons below:`;
+    const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} - Your DMs are closed. Pick from the ${pickCount > 1 ? "menu" : "buttons"} below:`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
         embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
-        components: buttonRows,
+        components: componentRows,
       }),
     });
   }
@@ -697,6 +833,157 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   }
 }
 
+// Multi-select entry point for Captain B's pick (normally 2 players in one interaction — see
+// draftPickSelectRow/expectedPickCount above). Mirrors processDraftPick's validation, but
+// claims every selected player in one UPDATE...WHERE-IN...IS-NULL call so a partial race (some
+// of the selected players already claimed by the time this lands) can't split-brain the draft:
+// if the claim comes back short, everything it did manage to claim is reverted and the captain
+// is asked to retry rather than leaving the draft in a half-assigned state.
+export function handleDraftPickMultiButton(interaction: DiscordInteraction, seriesId: string, pickedPlayerIds: string[]) {
+  after(() => processDraftPickMulti(interaction, seriesId, pickedPlayerIds));
+  return {
+    type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
+  };
+}
+
+async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: string, pickedPlayerIds: string[]) {
+  const supabase = createAdminClient();
+  const discordId = interactionUserId(interaction);
+  if (!discordId) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+  const guildId = interaction.guild_id ?? (await getGuildId());
+
+  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
+  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "The draft isn't active for this match.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const lobby = await fetchLobbyRowsWithPlayers(supabase, seriesId);
+  const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
+  const captainBRow = lobby.find((x) => x.row.is_captain && x.row.team === "B");
+  if (!captainARow || !captainBRow) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Something's wrong with this draft — ask an admin to check it.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const nonCaptainRows = lobby.filter((x) => !x.row.is_captain);
+  const assignedCount = nonCaptainRows.filter((x) => x.row.team).length;
+  const turnCaptain = deriveTurnCaptain(assignedCount);
+  if (!turnCaptain) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "The draft has already finished.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const turnCaptainPlayer = turnCaptain === "A" ? captainARow.player : captainBRow.player;
+  if (turnCaptainPlayer.discord_id !== discordId) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "It's not your pick.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const available = nonCaptainRows.filter((x) => !x.row.team);
+  const availableIds = new Set(available.map((x) => x.row.player_id));
+  const uniquePickedIds = [...new Set(pickedPlayerIds)];
+  const requiredCount = expectedPickCount(turnCaptain, available.length);
+  if (uniquePickedIds.length !== requiredCount || !uniquePickedIds.every((id) => availableIds.has(id))) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "That selection isn't valid anymore — the draft may have moved on.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_series_lobby")
+    .update({ team: turnCaptain })
+    .eq("series_id", seriesId)
+    .in("player_id", uniquePickedIds)
+    .is("team", null)
+    .select("player_id");
+  const claimedIds = (claimed ?? []).map((c) => c.player_id);
+
+  if (claimedIds.length === 0) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Those picks already happened.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  if (claimedIds.length < uniquePickedIds.length) {
+    // Partial race — someone else claimed one of the selected players first. Revert what we
+    // did manage to claim rather than leaving the draft in a half-assigned state.
+    await supabase.from("crl6mansqueuebot_series_lobby").update({ team: null }).eq("series_id", seriesId).in("player_id", claimedIds);
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "One of those players was just picked — try again.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const newAssignedCount = assignedCount + claimedIds.length;
+  const allMembers = lobby.map((x) => x.player);
+  const claimedIdSet = new Set(claimedIds);
+
+  if (newAssignedCount >= 3) {
+    const lastRemaining = nonCaptainRows.find((x) => !claimedIdSet.has(x.row.player_id) && !x.row.team);
+    const teamAssignments = new Map<string, Team>();
+    for (const x of lobby) if (x.row.team) teamAssignments.set(x.row.player_id, x.row.team);
+    for (const id of claimedIds) teamAssignments.set(id, turnCaptain);
+    if (lastRemaining) {
+      await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("series_id", seriesId).eq("player_id", lastRemaining.row.player_id);
+      teamAssignments.set(lastRemaining.row.player_id, "A");
+    }
+    await finalizeTeams(supabase, guildId, seriesId, series.queue_channel_id, series.formation_message_id, allMembers, teamAssignments);
+  } else {
+    const nextTurn = deriveTurnCaptain(newAssignedCount)!;
+    const remaining = nonCaptainRows.filter((x) => !claimedIdSet.has(x.row.player_id) && !x.row.team).map((x) => x.player);
+    await sendDraftPickPrompt(series.queue_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, remaining, nextTurn);
+    await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Finalize: write series_players, drop the lobby, flip the series to 'active', create the
 // two team voice channels, unlock the text channel's message lock, post a summary.
@@ -750,10 +1037,14 @@ async function finalizeTeams(
     .eq("channel_id", queueChannelId)
     .eq("keep_permanently", false);
 
-  // Post the "Teams formed!" message
+  // Post the "Teams formed!" message. Mentions in `content` (not just embed fields) are what
+  // actually trigger a Discord notification — see CLAUDE.md, "Queue channels" for the same
+  // content-vs-embed distinction on the first-join role ping.
+  const allMentions = members.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({
+      content: `${allMentions} — teams are formed!`,
       embeds: [
         {
           color: BRAND_COLOR,

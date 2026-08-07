@@ -17,7 +17,8 @@ import { handleNewSeasonCommand } from "@/lib/discord/seasons";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleSubAcceptButton } from "@/lib/discord/sub";
-import { handleVoteButton, handleCancelButton, handleDraftPickButton } from "@/lib/discord/teamFormation";
+import { handleAbandonCommand } from "@/lib/discord/abandon";
+import { handleVoteButton, handleCancelButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand } from "@/lib/discord/teamFormation";
 import type { VoteChoice } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand } from "@/lib/discord/bands";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
@@ -74,6 +75,10 @@ export async function POST(request: Request) {
 
     if (action === "draft_pick" && arg1 && arg2) {
       return NextResponse.json(handleDraftPickButton(interaction, arg1, arg2));
+    }
+
+    if (action === "draft_pick_multi" && arg1) {
+      return NextResponse.json(handleDraftPickMultiButton(interaction, arg1, interaction.data?.values ?? []));
     }
 
     if (action === "notification" && (arg1 === "rank" || arg1 === "universal")) {
@@ -155,6 +160,14 @@ export async function POST(request: Request) {
 
     if (commandName === "sub") {
       return NextResponse.json(handleSubCommand(interaction));
+    }
+
+    if (commandName === "abandon") {
+      return NextResponse.json(handleAbandonCommand(interaction));
+    }
+
+    if (commandName === "cancel") {
+      return NextResponse.json(handleCancelCommand(interaction));
     }
 
     if (commandName === "setbandrole") {

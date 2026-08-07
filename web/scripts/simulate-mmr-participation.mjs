@@ -158,7 +158,7 @@ const players = [];
 for (let i = 0; i < NUM_PLAYERS; i++) {
   const skill = rng() ** 2 * 40 + 60;
   const score = rng() ** (2 * (1 - skill / 130)) * 100;
-  players.push({ id: `p${i}`, skill, participationScore: score, mmr: 0, rankGamesPlayed: 0, wins: 0, losses: 0, gamesPlayed: 0 });
+  players.push({ id: `p${i}`, skill, participationScore: score, mmr: 0, rankGamesPlayed: 0, wins: 0, losses: 0, gamesPlayed: 0, history: [] });
 }
 
 for (let round = 1; round <= ROUNDS; round++) {
@@ -191,6 +191,7 @@ for (let round = 1; round <= ROUNDS; round++) {
       const onWinningTeam = (winner === "A" ? teamA : teamB).some((x) => x.id === p.id);
       if (onWinningTeam) p.wins++;
       else p.losses++;
+      p.history.push({ round, gameNumber: p.gamesPlayed, delta: r.delta, mmrAfter: p.mmr, result: onWinningTeam ? "W" : "L", wasProvisional: r.wasProvisional });
     }
   }
 }
@@ -226,3 +227,46 @@ if (csvPath) {
   writeFileSync(csvPath, lines.join("\n"));
   console.log(`\nWrote ${players.length} rows to ${csvPath}`);
 }
+
+// --- Provisional vs. standard delta stats, across every recorded game for every player ---
+const allGames = players.flatMap((p) => p.history);
+const provisionalGames = allGames.filter((h) => h.wasProvisional);
+const standardGames = allGames.filter((h) => !h.wasProvisional);
+
+function deltaStats(games, label) {
+  const deltas = games.map((h) => h.delta);
+  const absDeltas = deltas.map((d) => Math.abs(d));
+  console.log(`${label}: n=${games.length}, mean_signed_delta=${mean(deltas).toFixed(4)}, mean_abs_delta=${mean(absDeltas).toFixed(4)}, min=${Math.min(...deltas).toFixed(3)}, max=${Math.max(...deltas).toFixed(3)}`);
+}
+
+console.log(`\n${"=".repeat(100)}`);
+console.log("PROVISIONAL VS. STANDARD DELTA STATS (all players, all games)");
+console.log(`${"=".repeat(100)}`);
+deltaStats(provisionalGames, "Provisional games (first 10 rank games per player)");
+deltaStats(standardGames, "Standard games (11th+ rank game per player)");
+
+// --- Best / worst performer game-by-game breakdown ---------------------------------------
+// "Best"/"worst" = highest/lowest final MMR. Worst is additionally constrained to >=10 games
+// played, so a single lucky/unlucky game from a low-participation player can't win the label.
+const MIN_GAMES_FOR_WORST = 10;
+
+const bestPlayer = players.reduce((best, p) => (p.mmr > best.mmr ? p : best), players[0]);
+const eligibleForWorst = players.filter((p) => p.gamesPlayed >= MIN_GAMES_FOR_WORST);
+const worstPlayer = eligibleForWorst.reduce((worst, p) => (p.mmr < worst.mmr ? p : worst), eligibleForWorst[0]);
+
+function printHistory(label, p) {
+  console.log(`\n--- ${label}: ${p.id} (skill=${p.skill.toFixed(2)}, participation_score=${p.participationScore.toFixed(2)}, final_mmr=${p.mmr.toFixed(3)}, games=${p.gamesPlayed}, W-L=${p.wins}-${p.losses}) ---`);
+  console.log(`${"Game#".padEnd(6)} | ${"Round".padEnd(6)} | ${"Result".padEnd(6)} | ${"Provisional".padEnd(11)} | ${"Delta".padEnd(10)} | ${"MMR After"}`);
+  console.log("-".repeat(60));
+  for (const h of p.history) {
+    console.log(
+      `${h.gameNumber.toString().padEnd(6)} | ${h.round.toString().padEnd(6)} | ${h.result.padEnd(6)} | ${(h.wasProvisional ? "yes" : "no").padEnd(11)} | ${h.delta.toFixed(3).padEnd(10)} | ${h.mmrAfter.toFixed(3)}`
+    );
+  }
+}
+
+console.log(`\n${"=".repeat(100)}`);
+console.log("BEST / WORST PERFORMER BREAKDOWN");
+console.log(`${"=".repeat(100)}`);
+printHistory("BEST performer (highest final MMR)", bestPlayer);
+printHistory(`WORST performer (lowest final MMR, min ${MIN_GAMES_FOR_WORST} games)`, worstPlayer);

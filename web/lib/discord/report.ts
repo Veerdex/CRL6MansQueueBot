@@ -8,7 +8,7 @@ import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { recomputeBands } from "./bands";
 import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
-import { getPriorRankWinStreak, mention, ON_FIRE_THRESHOLD } from "./streaks";
+import { getPriorRankWinStreak, mention, ON_FIRE_THRESHOLD, FLAME_THRESHOLD } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
@@ -256,7 +256,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const emoji = emojiByBand.get(p.band) || "❓";
       const displayNewMmr = await getDisplayMMR(r.newMmr);
       const displayDelta = r.delta * mmrScale;
-      const onFire = (newStreakById.get(sp.player_id) ?? 0) >= ON_FIRE_THRESHOLD;
+      const onFire = (newStreakById.get(sp.player_id) ?? 0) >= FLAME_THRESHOLD;
       pushLine(
         sp,
         `${mention(p.discord_id, onFire)} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,

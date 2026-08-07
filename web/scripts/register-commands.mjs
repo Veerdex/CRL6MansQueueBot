@@ -292,6 +292,38 @@ const commands = [
     ],
   },
   {
+    name: "abandon",
+    description: "Vote that a player has abandoned your current match (3 of the other 5 needed).",
+    type: 1,
+    options: [
+      {
+        name: "target",
+        description: "The player you're reporting as having abandoned the match.",
+        type: USER_OPTION,
+        required: true,
+      },
+      {
+        name: "id",
+        description: "Series id override — admins only, for voting from outside the match channel.",
+        type: STRING_OPTION,
+        required: false,
+      },
+    ],
+  },
+  {
+    name: "cancel",
+    description: "Vote to cancel your current match (4 of 6 needed, no MMR change).",
+    type: 1,
+    options: [
+      {
+        name: "id",
+        description: "Series id override — admins only, for cancelling from outside the match channel.",
+        type: STRING_OPTION,
+        required: false,
+      },
+    ],
+  },
+  {
     name: "setbandrole",
     description: "Map a band (or the Placed gate / Prism season-Top-N role) to a Discord role for auto role-sync.",
     type: 1,

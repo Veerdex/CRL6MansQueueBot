@@ -10,7 +10,13 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // never participates in this feature. Test-data series are excluded, same as bands.ts/seasonClose.ts.
 
 export const ON_FIRE_EMOJI = "🔥";
+// Amber "on a streak!" announcement embed threshold (report.ts) — separate from FLAME_THRESHOLD
+// below, since the user asked for the 🔥 mention decoration to trigger earlier without also
+// making the announcement embed fire on every 3-game streak.
 export const ON_FIRE_THRESHOLD = 5;
+// 🔥 mention-decoration threshold (getOnFirePlayerIds/mention below, and report.ts's summary
+// embed) — intentionally lower than ON_FIRE_THRESHOLD.
+export const FLAME_THRESHOLD = 3;
 
 interface StreakGame {
   playedAt: string;
@@ -99,7 +105,7 @@ export async function getOnFirePlayerIds(supabase: AdminClient, playerIds: strin
 
   const onFire = new Set<string>();
   for (const [playerId, games] of gamesByPlayer) {
-    if (consecutiveWins(games) >= ON_FIRE_THRESHOLD) onFire.add(playerId);
+    if (consecutiveWins(games) >= FLAME_THRESHOLD) onFire.add(playerId);
   }
   return onFire;
 }
