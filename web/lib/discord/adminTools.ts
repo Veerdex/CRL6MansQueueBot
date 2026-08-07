@@ -277,6 +277,13 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
     }),
   );
 
+  if (series.queue_type === "rank") {
+    // Unwinding MMR can push a player's band back down just as easily as correcting a winner
+    // can push it up — same scoped live recompute as report.ts/correct-report, rather than
+    // leaving it to the next daily cron tick.
+    await recomputeBands({ onlyPlayerIds: players.map((sp) => sp.player_id) });
+  }
+
   // Delete prediction record if it exists
   const predictionTable =
     series.queue_type === "rank" ? "crl6mansqueuebot_rank_game_predictions" : "crl6mansqueuebot_universal_game_predictions";
