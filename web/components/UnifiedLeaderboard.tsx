@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
-import { bandRank, computeStats, filterGames } from "@/lib/leaderboard/stats";
+import { bandRank, computeStats, filterGames, FLAME_THRESHOLD } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
@@ -45,6 +45,18 @@ function applyMMRTransform(mmr: number, scale: number, shift: number): number {
   return mmr * scale + shift;
 }
 
+// Sorts on the same (band, MMR) values the rows actually display, so ranking can never
+// diverge from what's shown. MMR always breaks ties within a band — including among
+// unplaced players, who all tie on band (null).
+function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number {
+  const bandDiff =
+    bandRank(b.player.is_placed ? b.player.band : null) - bandRank(a.player.is_placed ? a.player.band : null);
+  if (bandDiff !== 0) return bandDiff;
+  const mmrDiff = b.player.mmr - a.player.mmr;
+  if (mmrDiff !== 0) return mmrDiff;
+  return a.player.id.localeCompare(b.player.id);
+}
+
 export default function UnifiedLeaderboard({
   players,
   activeSeason,
@@ -61,17 +73,8 @@ export default function UnifiedLeaderboard({
   // Top Players view: simplified list
   const topPlayersRows = useMemo(() => {
     return eligiblePlayers
-      .sort((a, b) => {
-        const bandDiff = bandRank(b.player.band) - bandRank(a.player.band);
-        if (bandDiff !== 0) return bandDiff;
-        if (!a.player.is_placed) {
-          const gamesDiff = b.player.total_games_played - a.player.total_games_played;
-          if (gamesDiff !== 0) return gamesDiff;
-        }
-        const mmrDiff = b.player.mmr - a.player.mmr;
-        if (mmrDiff !== 0) return mmrDiff;
-        return a.player.id.localeCompare(b.player.id);
-      })
+      .slice()
+      .sort(compareLeaderboardRank)
       .slice(0, 20)
       .map((p, idx) => ({
         position: idx + 1,
@@ -84,17 +87,8 @@ export default function UnifiedLeaderboard({
   // Main view: current leaderboard
   const mainBoardRows = useMemo(() => {
     const rows: MainBoardRow[] = eligiblePlayers
-      .sort((a, b) => {
-        const bandDiff = bandRank(b.player.band) - bandRank(a.player.band);
-        if (bandDiff !== 0) return bandDiff;
-        if (!a.player.is_placed) {
-          const gamesDiff = b.player.total_games_played - a.player.total_games_played;
-          if (gamesDiff !== 0) return gamesDiff;
-        }
-        const mmrDiff = b.player.mmr - a.player.mmr;
-        if (mmrDiff !== 0) return mmrDiff;
-        return a.player.id.localeCompare(b.player.id);
-      })
+      .slice()
+      .sort(compareLeaderboardRank)
       .map(({ player, games }) => {
         const rankStats = computeStats(filterGames(games, { queueType: "rank" }));
         return {
@@ -105,6 +99,7 @@ export default function UnifiedLeaderboard({
           wins: rankStats.wins,
           losses: rankStats.losses,
           winRate: rankStats.winRate,
+          onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
         };
       });
     return rows;

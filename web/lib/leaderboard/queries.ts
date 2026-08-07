@@ -1,6 +1,6 @@
 import "server-only";
 import { createServerClient } from "../supabase/server";
-import type { PlayerRow, QueueType, SeasonHistoryRow, SeasonRow, Team } from "../supabase/types";
+import type { Band, PlayerRow, QueueType, SeasonHistoryRow, SeasonRow, Team } from "../supabase/types";
 
 export interface CompletedGame {
   seriesId: string;
@@ -107,4 +107,17 @@ export async function getAllPlayersWithGames(): Promise<PlayerWithGames[]> {
     );
     return { player, games };
   });
+}
+
+// Lightweight — just band + MMR for every currently-placed, real player. Powers the
+// Info page's live "current MMR range per band" display; doesn't need game history.
+export async function getPlacedPlayerBandMMRs(): Promise<{ band: Band; mmr: number }[]> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("band, mmr")
+    .eq("is_placed", true)
+    .eq("is_test_data", false);
+  if (error) throw error;
+  return (data ?? []).filter((p): p is { band: Band; mmr: number } => p.band !== null);
 }
