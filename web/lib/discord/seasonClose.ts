@@ -47,14 +47,16 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<CloseSummary> {
   const supabase = createAdminClient();
 
-  const [decayFactor, top10MinGames] = await Promise.all([
+  const [decayFactor, top10MinGames, prismTopN] = await Promise.all([
     getConfigNumber("decay_factor", 0.25),
     getConfigNumber("top10_min_games", 8),
+    getConfigNumber("prism_top_n", 5),
   ]);
 
   // ---- 1. Season standings: season_rank for every participant (>=1 reported game that
-  // season, either queue — see CLAUDE.md, "Queueing"), made_top10 for the top 10 among those
-  // with >= top10_min_games. ----
+  // season, either queue — see CLAUDE.md, "Queueing"), made_top10 for the top `prism_top_n`
+  // among those with >= top10_min_games. The `made_top10` column name predates prism_top_n
+  // becoming configurable — kept as-is (a stable identifier, not a literal claim of "10"). ----
 
   const seriesIds = (
     await fetchAllPages((from, to) =>
@@ -108,13 +110,13 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   // Same tiebreak philosophy as the daily band recompute (bands.ts): higher MMR ranks first,
   // ties broken by more season games played (more established), then player id as a final
   // deterministic tiebreak — this is also the "most games played" tiebreak CLAUDE.md specifies
-  // for the #10 Top 10 cutoff.
+  // for the Prism top-cut (`prism_top_n`).
   const ranked = players
     .map((p) => ({ player: p, seasonGames: gamesPlayedByPlayerId.get(p.id) ?? 0 }))
     .sort((a, b) => b.player.mmr - a.player.mmr || b.seasonGames - a.seasonGames || a.player.id.localeCompare(b.player.id));
 
   const eligibleForTop10 = ranked.filter((r) => r.seasonGames >= top10MinGames);
-  const top10Ids = new Set(eligibleForTop10.slice(0, 10).map((r) => r.player.id));
+  const top10Ids = new Set(eligibleForTop10.slice(0, prismTopN).map((r) => r.player.id));
 
   const historyRows = ranked.map((r, index) => ({
     season_id: closedSeason.id,
@@ -129,8 +131,8 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   }
 
   // ---- 2. Prism role sync — strip from last season's holders who didn't repeat, grant to
-  // this season's new Top 10. Reuses band_roles/'Prism' for storage (migration 0010) rather
-  // than a dedicated table; recomputeBands() (bands.ts) never touches this key. ----
+  // this season's new top `prism_top_n`. Reuses band_roles/'Prism' for storage (migration
+  // 0010) rather than a dedicated table; recomputeBands() (bands.ts) never touches this key. ----
 
   const { data: previousHolders } = await supabase
     .from("crl6mansqueuebot_players")
@@ -169,7 +171,7 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
           console.error(`Season close: failed to strip Prism role from ${p.discord_id}`, err);
         }
       }
-      await sendDirectMessage(p.discord_id, "The season has ended — your **Prism** (Top 10) role has been removed as standings reset for the new season.");
+      await sendDirectMessage(p.discord_id, `The season has ended — your **Prism** (Top ${prismTopN}) role has been removed as standings reset for the new season.`);
     }),
   );
 
@@ -183,7 +185,7 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
           console.error(`Season close: failed to grant Prism role to ${p.discord_id}`, err);
         }
       }
-      await sendDirectMessage(p.discord_id, "You finished in the **Top 10** last season! You've been awarded the **Prism** role.");
+      await sendDirectMessage(p.discord_id, `You finished in the **Top ${prismTopN}** last season! You've been awarded the **Prism** role.`);
     }),
   );
 

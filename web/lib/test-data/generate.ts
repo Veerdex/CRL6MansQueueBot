@@ -1,6 +1,6 @@
 import "server-only";
 import { createAdminClient } from "../supabase/admin";
-import { PLACEMENT_GAMES_REQUIRED, TOP10_MIN_GAMES } from "../leaderboard/constants";
+import { PLACEMENT_GAMES_REQUIRED, TOP10_MIN_GAMES, PRISM_TOP_N } from "../leaderboard/constants";
 import type { Band, QueueType, SeasonRow, Team } from "../supabase/types";
 
 interface PlayerSeedSpec {
@@ -228,7 +228,7 @@ export async function generateTestData(): Promise<{ playersAdded: number }> {
       mmr_at_close: (spec.mmr ?? 0) - 100,
       season_games_played: spec.previousSeasonGames,
       season_rank: rankIndex + 1,
-      made_top10: spec.previousSeasonGames >= TOP10_MIN_GAMES && rankIndex < 10,
+      made_top10: spec.previousSeasonGames >= TOP10_MIN_GAMES && rankIndex < PRISM_TOP_N,
     }));
 
   if (seasonHistoryRows.length > 0) {

@@ -38,6 +38,7 @@ interface UnifiedLeaderboardProps {
   previousSeasonHistory: Map<string, SeasonHistoryRow>;
   mmrScale: number;
   mmrShift: number;
+  prismTopN: number;
 }
 
 function applyMMRTransform(mmr: number, scale: number, shift: number): number {
@@ -51,6 +52,7 @@ export default function UnifiedLeaderboard({
   previousSeasonHistory,
   mmrScale,
   mmrShift,
+  prismTopN,
 }: UnifiedLeaderboardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("main");
 
@@ -157,7 +159,7 @@ export default function UnifiedLeaderboard({
             ) : (
               <div className="space-y-2">
                 {topPlayersRows.map((row) => {
-                  const bandColor = row.band === "Sapphire" && row.position <= 10
+                  const bandColor = row.band === "Sapphire" && row.position <= prismTopN
                     ? getPrismColor()
                     : getBandColor(row.band);
                   const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
@@ -195,9 +197,9 @@ export default function UnifiedLeaderboard({
         {viewMode === "main" && (
           <div>
             <p className="mb-4 text-sm text-muted">
-              Rank Queue standing. Top 10 rows are the live projected Prism cut.
+              Rank Queue standing. Top {prismTopN} rows are the live projected Prism cut.
             </p>
-            <LeaderboardTable rows={mainBoardRows} topCount={10} mmrScale={mmrScale} mmrShift={mmrShift} />
+            <LeaderboardTable rows={mainBoardRows} topCount={prismTopN} mmrScale={mmrScale} mmrShift={mmrShift} />
           </div>
         )}
 

@@ -35,6 +35,7 @@ const CONFIG_KEYS = [
   "placement_games_required",
   "decay_factor",
   "top10_min_games",
+  "prism_top_n",
   "series_timeout_hours",
   "vote_timeout_seconds",
   "sub_request_timeout_minutes",
@@ -292,7 +293,7 @@ const commands = [
   },
   {
     name: "setbandrole",
-    description: "Map a band (or the Placed gate / Prism Top 10 role) to a Discord role for auto role-sync.",
+    description: "Map a band (or the Placed gate / Prism season-Top-N role) to a Discord role for auto role-sync.",
     type: 1,
     options: [
       {
@@ -584,7 +585,7 @@ const commands = [
               { name: "Garnet", value: "Garnet" },
               { name: "Emerald", value: "Emerald" },
               { name: "Sapphire", value: "Sapphire" },
-              { name: "Prism (Top 10)", value: "Prism" },
+              { name: "Prism (season Top N)", value: "Prism" },
               { name: "Unranked", value: "Unranked" },
             ],
           },

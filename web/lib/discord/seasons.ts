@@ -17,7 +17,7 @@ function deferredEphemeral(run: () => Promise<void>) {
 
 // ---------------------------------------------------------------------------
 // /newseason — owner-or-admin-role gated. Closes any current season (median-compression MMR
-// soft reset, season_history standings, Top 10/Prism role sync — see seasonClose.ts and
+// soft reset, season_history standings, Prism top-cut role sync — see seasonClose.ts and
 // CLAUDE.md, "Seasons") and opens the next one. Manual-trigger only for now — no scheduled
 // monthly rollover.
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ async function processNewSeason(interaction: DiscordInteraction, confirmation: s
   await logAdminAction(actorId, "new_season", created.id, `season_number=${nextNumber}`);
   await editOriginalResponse(interaction.token, {
     content: current
-      ? `Closed season ${current.season_number} (standings recorded, MMR soft-reset, Top 10/Prism updated) and started season ${nextNumber}.`
+      ? `Closed season ${current.season_number} (standings recorded, MMR soft-reset, Prism top-cut updated) and started season ${nextNumber}.`
       : `Started season ${nextNumber} (no prior active season).`,
   });
 }

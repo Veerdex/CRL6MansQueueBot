@@ -30,6 +30,7 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   placement_games_required: 10,
   decay_factor: 0.25,
   top10_min_games: 8,
+  prism_top_n: 5,
   series_timeout_hours: 2,
   vote_timeout_seconds: 180,
   sub_request_timeout_minutes: 10,

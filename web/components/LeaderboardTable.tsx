@@ -123,7 +123,7 @@ export default function LeaderboardTable({
                 const position = start + i + 1;
                 const isTopCut = position <= topCount;
                 const isHighlighted = row.playerId === highlightedPlayerId;
-                const bandColor = row.band === "Sapphire" && position <= 10
+                const bandColor = row.band === "Sapphire" && position <= topCount
                   ? getPrismColor()
                   : getBandColor(row.band);
                 const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;

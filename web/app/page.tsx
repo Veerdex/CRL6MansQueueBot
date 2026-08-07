@@ -11,11 +11,12 @@ import type { SeasonHistoryRow } from "@/lib/supabase/types";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [activeSeason, players, mmrScale, mmrShift] = await Promise.all([
+  const [activeSeason, players, mmrScale, mmrShift, prismTopN] = await Promise.all([
     getActiveSeason(),
     getAllPlayersWithGames(),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
+    getConfigNumber("prism_top_n", 5),
   ]);
 
   const previousSeason = activeSeason ? await getPreviousSeason(activeSeason.season_number) : null;
@@ -31,6 +32,7 @@ export default async function HomePage() {
       previousSeasonHistory={previousSeasonHistory}
       mmrScale={mmrScale}
       mmrShift={mmrShift}
+      prismTopN={prismTopN}
     />
   );
 }

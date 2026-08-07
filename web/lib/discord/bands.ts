@@ -201,7 +201,7 @@ export async function grantUnrankedRoleToNewPlayer(discordId: string): Promise<v
 // ---------------------------------------------------------------------------
 // /setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role> — admin-gated, maps
 // a band (or the 'Unranked' informational role for newly queued/not-yet-placed players, or the
-// season-end-only 'Prism' Top 10 tier) to a Discord role. recomputeBands() above only ever
+// season-end-only 'Prism' top-N tier, config prism_top_n) to a Discord role. recomputeBands() above only ever
 // grants/revokes Iron/Garnet/Emerald/Sapphire/Unranked — it never touches 'Prism', which is
 // exclusively synced by season close (see seasonClose.ts). Mirrors /setqueuechannel's
 // channel-mapping pattern.
