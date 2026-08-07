@@ -101,7 +101,11 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
   const allPlayers = players ?? [];
 
   const alreadyPlaced = allPlayers.filter((p) => p.is_placed);
-  const newlyPlaced = allPlayers.filter((p) => !p.is_placed && p.total_games_played >= placementGamesRequired);
+  // Gated on rank_games_played, not total_games_played — placement assigns a real band off the
+  // player's MMR, and Universal Queue games never move MMR (see CLAUDE.md, "Queueing"), so only
+  // Rank Queue games should count toward earning one. This doesn't reintroduce the old
+  // chicken-and-egg bootstrap problem since Rank Queue is open to unplaced players from game one.
+  const newlyPlaced = allPlayers.filter((p) => !p.is_placed && p.rank_games_played >= placementGamesRequired);
   const pool = [...alreadyPlaced, ...newlyPlaced];
   if (pool.length === 0) return summary;
 
