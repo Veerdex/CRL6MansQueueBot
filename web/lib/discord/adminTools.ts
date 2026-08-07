@@ -413,6 +413,11 @@ async function processCorrectReport(
           .eq("player_id", p.id);
       }),
     );
+
+    // Correcting the winner can push a player's MMR across a band threshold — recompute now,
+    // scoped to just these 6 players, same as report.ts's live per-report recompute (see
+    // CLAUDE.md, "Reporting & disputes"), rather than leaving it to the next daily cron tick.
+    await recomputeBands({ onlyPlayerIds: seriesPlayers.map((sp) => sp.player_id) });
   }
 
   // Update the series winner
