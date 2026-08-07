@@ -25,6 +25,10 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   s_scale: 400,
   hysteresis_pct: 5,
   grace_games: 3,
+  // Grace-inactivity bypass — see CLAUDE.md, "Bands / ranks". Days since a player's last Rank
+  // Queue game after which grace is treated as expired even if band_games_played hasn't reached
+  // grace_games yet. 7 = one week.
+  grace_inactivity_days: 7,
   provisional_games: 10,
   provisional_k_multiplier: 1.75,
   placement_games_required: 10,

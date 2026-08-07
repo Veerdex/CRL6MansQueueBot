@@ -7,6 +7,7 @@ const config: BandCutoffConfig = {
   garnetCutoff: 40,
   emeraldCutoff: 70,
   sapphireCutoff: 90,
+  graceInactivityDays: 0, // disabled by default so pre-existing games-based-grace tests are unaffected
 };
 
 describe("targetBandForPercentile", () => {
@@ -90,5 +91,48 @@ describe("computeBandChange", () => {
     const player = { band: "Garnet" as const, band_games_played: 0, is_placed: true };
     expect(computeBandChange(player, 75, false, config, { force: true })).toEqual({ action: "promoted", targetBand: "Emerald" });
     expect(computeBandChange(player, 50, false, config, { force: true })).toBeNull();
+  });
+});
+
+describe("computeBandChange — grace-inactivity bypass", () => {
+  const inactivityConfig: BandCutoffConfig = { ...config, graceInactivityDays: 7 };
+  const now = new Date("2026-08-07T00:00:00.000Z");
+  const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  it("still blocks demotion within the grace period for an actively-playing player", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: daysAgo(1) };
+    const change = computeBandChange(player, 10, false, inactivityConfig, { now });
+    expect(change).toBeNull();
+  });
+
+  it("bypasses grace once inactivity crosses the threshold, still subject to hysteresis", () => {
+    // Sapphire's promotion-in threshold is 90; hysteresis is 5, so anything below 85 demotes.
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: daysAgo(11) };
+    const change = computeBandChange(player, 10, false, inactivityConfig, { now });
+    expect(change).toEqual({ action: "demoted", targetBand: "Iron" });
+  });
+
+  it("inactivity bypass alone doesn't skip hysteresis — still holds inside the buffer", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: daysAgo(11) };
+    const change = computeBandChange(player, 86, false, inactivityConfig, { now });
+    expect(change).toBeNull();
+  });
+
+  it("triggers at exactly the threshold boundary (inclusive)", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: daysAgo(7) };
+    const change = computeBandChange(player, 10, false, inactivityConfig, { now });
+    expect(change).toEqual({ action: "demoted", targetBand: "Iron" });
+  });
+
+  it("is a no-op when disabled (graceInactivityDays <= 0), even for a very stale player", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: daysAgo(365) };
+    const change = computeBandChange(player, 10, false, config, { now });
+    expect(change).toBeNull();
+  });
+
+  it("does not trigger when last_rank_game_at is unknown (null)", () => {
+    const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: null };
+    const change = computeBandChange(player, 10, false, inactivityConfig, { now });
+    expect(change).toBeNull();
   });
 });

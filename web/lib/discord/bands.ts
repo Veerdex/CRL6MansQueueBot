@@ -20,6 +20,10 @@ export type BandCutoffConfig = {
   garnetCutoff: number;
   emeraldCutoff: number;
   sapphireCutoff: number;
+  // Days since a player's last Rank Queue game after which grace is treated as expired even if
+  // band_games_played hasn't reached graceGames yet — see computeBandChange's inactivity check
+  // below. <= 0 disables the check entirely (grace then only expires by games played, as before).
+  graceInactivityDays: number;
 };
 
 // Pure decision logic — no Discord, no DB — extracted from the recompute loop below so the
@@ -32,7 +36,7 @@ export function targetBandForPercentile(pctile: number, config: BandCutoffConfig
 }
 
 export function computeBandChange(
-  player: { band: Band | null; band_games_played: number; is_placed: boolean },
+  player: { band: Band | null; band_games_played: number; is_placed: boolean; last_rank_game_at?: string | null },
   pctile: number,
   isNewlyPlaced: boolean,
   config: BandCutoffConfig,
@@ -41,7 +45,8 @@ export function computeBandChange(
   // force:true) to correct players whose band got locked in against a tiny early-placement pool
   // and would otherwise never accumulate enough band_games_played to pass grace on their own —
   // not used by the normal daily/live recompute path.
-  options?: { force?: boolean },
+  // `now`: injectable for tests; defaults to the real current time.
+  options?: { force?: boolean; now?: Date },
 ): { action: ChangeAction; targetBand: Band } | null {
   const targetBand = targetBandForPercentile(pctile, config);
 
@@ -61,18 +66,34 @@ export function computeBandChange(
     return { action: "demoted", targetBand };
   }
 
-  if (targetIndex < currentIndex && player.band_games_played >= config.graceGames) {
-    // Grace checked first (the caller's `>=` above), then hysteresis: only demote if more than
-    // hysteresisPct percentile points below the promotion-in threshold for their *current*
-    // band, not just below the raw target-band cutoff.
-    const promotionThreshold: Partial<Record<Band, number>> = {
-      Garnet: config.garnetCutoff,
-      Emerald: config.emeraldCutoff,
-      Sapphire: config.sapphireCutoff,
-    };
-    const threshold = promotionThreshold[currentBand];
-    if (threshold !== undefined && pctile < threshold - config.hysteresisPct) {
-      return { action: "demoted", targetBand };
+  if (targetIndex < currentIndex) {
+    const gracePassedByGames = player.band_games_played >= config.graceGames;
+    // A player who reaches a band and then stops playing entirely never accumulates more
+    // band_games_played, so games-based grace alone would protect them forever regardless of
+    // how far the pool moves under them. Treat grace as expired once they've gone
+    // graceInactivityDays without a Rank Queue game, even if band_games_played is still under
+    // graceGames — this only unlocks the hysteresis check below, it doesn't force a demotion by
+    // itself, and it never fires for an actively-playing player (each game refreshes
+    // last_rank_game_at in report.ts).
+    const gracePassedByInactivity =
+      config.graceInactivityDays > 0 &&
+      player.last_rank_game_at != null &&
+      (options?.now ?? new Date()).getTime() - new Date(player.last_rank_game_at).getTime() >=
+        config.graceInactivityDays * 24 * 60 * 60 * 1000;
+
+    if (gracePassedByGames || gracePassedByInactivity) {
+      // Grace checked first (above), then hysteresis: only demote if more than hysteresisPct
+      // percentile points below the promotion-in threshold for their *current* band, not just
+      // below the raw target-band cutoff.
+      const promotionThreshold: Partial<Record<Band, number>> = {
+        Garnet: config.garnetCutoff,
+        Emerald: config.emeraldCutoff,
+        Sapphire: config.sapphireCutoff,
+      };
+      const threshold = promotionThreshold[currentBand];
+      if (threshold !== undefined && pctile < threshold - config.hysteresisPct) {
+        return { action: "demoted", targetBand };
+      }
     }
   }
 
@@ -102,15 +123,17 @@ export function computeBandChange(
 export async function recomputeBands(options?: { force?: boolean }): Promise<RecomputeSummary> {
   const supabase = createAdminClient();
 
-  const [placementGamesRequired, graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff] = await Promise.all([
-    getConfigNumber("placement_games_required", 10),
-    getConfigNumber("grace_games", 3),
-    getConfigNumber("hysteresis_pct", 5),
-    getConfigNumber("band_cutoff_garnet_pctile", 40),
-    getConfigNumber("band_cutoff_emerald_pctile", 70),
-    getConfigNumber("band_cutoff_sapphire_pctile", 90),
-  ]);
-  const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff };
+  const [placementGamesRequired, graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays] =
+    await Promise.all([
+      getConfigNumber("placement_games_required", 10),
+      getConfigNumber("grace_games", 3),
+      getConfigNumber("hysteresis_pct", 5),
+      getConfigNumber("band_cutoff_garnet_pctile", 40),
+      getConfigNumber("band_cutoff_emerald_pctile", 70),
+      getConfigNumber("band_cutoff_sapphire_pctile", 90),
+      getConfigNumber("grace_inactivity_days", 7),
+    ]);
+  const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
 
   const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0 };
 

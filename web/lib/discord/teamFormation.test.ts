@@ -13,6 +13,7 @@ function player(id: string, mmr: number): PlayerRow {
     total_games_played: 0,
     rank_games_played: 0,
     band_games_played: 0,
+    last_rank_game_at: null,
     is_prism: false,
     is_test_data: false,
     vote_default: null,

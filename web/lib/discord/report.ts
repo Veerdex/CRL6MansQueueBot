@@ -234,6 +234,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
             total_games_played: p.total_games_played + 1,
             rank_games_played: p.rank_games_played + 1,
             band_games_played: p.band_games_played + 1,
+            last_rank_game_at: new Date().toISOString(),
           })
           .eq("id", p.id);
         await supabase.from("crl6mansqueuebot_series_players").update({ mmr_delta: r.delta }).eq("series_id", series!.id).eq("player_id", p.id);

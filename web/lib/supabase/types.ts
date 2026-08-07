@@ -17,6 +17,7 @@ export type PlayerRow = {
   total_games_played: number;
   rank_games_played: number;
   band_games_played: number;
+  last_rank_game_at: string | null;
   is_prism: boolean;
   is_test_data: boolean;
   vote_default: VoteChoice | null;

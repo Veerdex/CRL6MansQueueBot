@@ -30,6 +30,7 @@ const CONFIG_KEYS = [
   "s_scale",
   "hysteresis_pct",
   "grace_games",
+  "grace_inactivity_days",
   "provisional_games",
   "provisional_k_multiplier",
   "placement_games_required",

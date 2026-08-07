@@ -15,8 +15,10 @@ const BAND_IMAGES: Record<Band, string> = {
   Iron: "/ranks/Iron.png",
   Garnet: "/ranks/Garnet.png",
   Emerald: "/ranks/Emerald.png",
-  Sapphire: "/info/sapphire-iridescent.png",
+  Sapphire: "/ranks/Sapphire.png",
 };
+
+const PRISM_IMAGE = "/info/prism.png";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -42,6 +44,7 @@ export default async function InfoPage() {
     graceGames,
     mmrScale,
     mmrShift,
+    prismTopN,
     placedBandMMRs,
   ] = await Promise.all([
     getConfigNumber("series_timeout_hours", 2),
@@ -55,6 +58,7 @@ export default async function InfoPage() {
     getConfigNumber("grace_games", 3),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
+    getConfigNumber("prism_top_n", 5),
     getPlacedPlayerBandMMRs(),
   ]);
 
@@ -175,8 +179,8 @@ export default async function InfoPage() {
               Emerald ({bandPercentileLabel.Emerald}), Sapphire ({bandPercentileLabel.Sapphire}).
             </li>
             <li>
-              <strong>Prism</strong> is a special tier for the top players, awarded only when a season
-              closes — not a day-to-day band.
+              <strong>Prism</strong> is a special tier for the <strong>top {prismTopN} players</strong>,
+              awarded only when a season closes — not a day-to-day band.
             </li>
             <li>
               Your band is based on how your MMR compares to everyone else&apos;s, recalculated{" "}
@@ -215,6 +219,22 @@ export default async function InfoPage() {
                 </li>
               );
             })}
+            {(() => {
+              const sapphireRange = bandDisplayRanges.get("Sapphire");
+              return (
+                <li className="flex items-center gap-3 rounded-lg bg-surface-2/40 px-3 py-2.5">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={PRISM_IMAGE} alt="Prism" className="h-10 w-10 shrink-0 object-contain" />
+                  <div className="min-w-0">
+                    <div className="font-semibold text-foreground">Prism</div>
+                    <div className="text-xs text-muted">
+                      {sapphireRange ? `Currently >${sapphireRange.max} MMR` : "No players currently placed"} • Top{" "}
+                      {prismTopN} players only, awarded at season close
+                    </div>
+                  </div>
+                </li>
+              );
+            })()}
           </ul>
           <p className="text-xs text-muted">
             Ranges reflect current standings and shift as players climb, drop, and place — treat them as
