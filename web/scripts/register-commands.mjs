@@ -308,7 +308,7 @@ const commands = [
   },
   {
     name: "nominate",
-    description: "Request a sub for any player in your current match, including yourself (run inside the match channel).",
+    description: "Request a sub for any player in your match, including yourself (run inside the match channel).",
     type: 1,
     options: [
       {
