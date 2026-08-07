@@ -200,7 +200,7 @@ export default function UnifiedLeaderboard({
         {viewMode === "main" && (
           <div>
             <p className="mb-4 text-sm text-muted">
-              Rank Queue standing. Gold rows are the current top {prismTopN} — Prism.
+              Rank Queue standing.
             </p>
             <LeaderboardTable rows={mainBoardRows} mmrScale={mmrScale} mmrShift={mmrShift} />
           </div>
