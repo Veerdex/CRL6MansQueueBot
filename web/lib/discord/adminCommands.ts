@@ -113,7 +113,8 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/l` or `/leave` — leave that queue.",
     "`/vote-default mode:<balanced|captains>` — set your default team-formation vote (still overridable per game).",
     "`/report` — run inside your match channel to report the result (inferred from your own team). Settles immediately.",
-    "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement; they must accept via a button.",
+    "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement for yourself; they must accept via a button.",
+    "`/nominate target:<@user> nominee:<@user>` — run inside your match channel to request a sub for any player in the match (disconnected, etc.), including yourself.",
     "`/abandon target:<@user>` — run inside your match channel to vote a player as abandoned. 3 votes cancels the series.",
     "`/help` — show this message.",
   ];

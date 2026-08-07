@@ -306,6 +306,31 @@ const commands = [
     ],
   },
   {
+    name: "nominate",
+    description: "Request a sub for any player in your current match, including yourself (run inside the match channel).",
+    type: 1,
+    options: [
+      {
+        name: "target",
+        description: "The player who needs to be subbed out.",
+        type: USER_OPTION,
+        required: true,
+      },
+      {
+        name: "nominee",
+        description: "The player to nominate as their replacement.",
+        type: USER_OPTION,
+        required: true,
+      },
+      {
+        name: "id",
+        description: "Series id override — admins only, for nominating from outside the match channel.",
+        type: STRING_OPTION,
+        required: false,
+      },
+    ],
+  },
+  {
     name: "abandon",
     description: "Vote that a player has abandoned your current match (3 of the other 5 needed).",
     type: 1,

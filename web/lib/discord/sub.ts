@@ -17,6 +17,13 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // channel. `id:` is an optional admin-gated override, same pattern as /report. Nominates a
 // specific replacement, who must accept via a button before the swap happens. See CLAUDE.md,
 // "Substitutes".
+//
+// /nominate target:<@user> nominee:<@user> — same flow, but lets any of the 6 players in the
+// match request a sub for a *different* player in that match (disconnected, wifi died, etc.,
+// and can't run /sub themselves). Both commands funnel into processSubRequest below, which
+// resolves "the leaving player" from either the caller (/sub) or an explicit target
+// (/nominate) — everything past that point (duplicate-request check, the posted message, the
+// sub_requests row, and the entire accept flow) is identical either way.
 // ---------------------------------------------------------------------------
 
 export function handleSubCommand(interaction: DiscordInteraction) {
@@ -24,7 +31,21 @@ export function handleSubCommand(interaction: DiscordInteraction) {
   const seriesIdOverride = typeof idOption === "string" && idOption.length > 0 ? idOption : null;
   const nomineeOption = interaction.data?.options?.find((o) => o.name === "nominee")?.value;
   const nomineeDiscordId = typeof nomineeOption === "string" ? nomineeOption : null;
-  after(() => processSub(interaction, seriesIdOverride, nomineeDiscordId));
+  after(() => processSubRequest(interaction, seriesIdOverride, null, nomineeDiscordId));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+export function handleNominateCommand(interaction: DiscordInteraction) {
+  const idOption = interaction.data?.options?.find((o) => o.name === "id")?.value;
+  const seriesIdOverride = typeof idOption === "string" && idOption.length > 0 ? idOption : null;
+  const targetOption = interaction.data?.options?.find((o) => o.name === "target")?.value;
+  const targetDiscordId = typeof targetOption === "string" ? targetOption : null;
+  const nomineeOption = interaction.data?.options?.find((o) => o.name === "nominee")?.value;
+  const nomineeDiscordId = typeof nomineeOption === "string" ? nomineeOption : null;
+  after(() => processSubRequest(interaction, seriesIdOverride, targetDiscordId, nomineeDiscordId, /* requireExplicitTarget */ true));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
@@ -48,20 +69,38 @@ async function resolveSeriesForCommand(
   return getLockedSeriesForPlayer(supabase, playerId);
 }
 
-async function processSub(interaction: DiscordInteraction, seriesIdOverride: string | null, nomineeDiscordId: string | null) {
+// Shared core behind both /sub (targetDiscordId omitted — you're subbing yourself out) and
+// /nominate (targetDiscordId explicit — requesting a sub on behalf of any of the 6, including
+// yourself). The caller must be one of the 6 participants either way, since the series is
+// always resolved from the caller's own membership (or the admin-gated id: override) — this
+// is what keeps /nominate scoped to "the match you're in" rather than letting an outsider
+// request subs for a match they have nothing to do with.
+async function processSubRequest(
+  interaction: DiscordInteraction,
+  seriesIdOverride: string | null,
+  targetDiscordId: string | null,
+  nomineeDiscordId: string | null,
+  requireExplicitTarget = false,
+) {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
     return;
   }
+  if (requireExplicitTarget && !targetDiscordId) {
+    await editOriginalResponse(interaction.token, { content: "Missing target." });
+    return;
+  }
   if (!nomineeDiscordId) {
     await editOriginalResponse(interaction.token, { content: "Missing nominee." });
     return;
   }
+  const isSelfSub = !targetDiscordId;
+  const effectiveTargetDiscordId = targetDiscordId ?? discordId;
 
-  const player = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
-  const series = await resolveSeriesForCommand(supabase, interaction, seriesIdOverride, player.id);
+  const caller = await getOrCreatePlayer(supabase, discordId, interactionDisplayName(interaction));
+  const series = await resolveSeriesForCommand(supabase, interaction, seriesIdOverride, caller.id);
   if (series === "forbidden") {
     await editOriginalResponse(interaction.token, { content: "Only admins can sub by id: from outside the match channel." });
     return;
@@ -89,21 +128,34 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  const leavingRow = seriesPlayers.find((sp) => sp.player_id === player.id);
-  if (!leavingRow) {
-    await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
-    return;
-  }
-
-  if (nomineeDiscordId === discordId) {
-    await editOriginalResponse(interaction.token, { content: "You can't nominate yourself." });
-    return;
-  }
   const { data: participants } = await supabase.from("crl6mansqueuebot_players").select("id, discord_id").in(
     "id",
     seriesPlayers.map((sp) => sp.player_id),
   );
-  if ((participants ?? []).some((p) => p.discord_id === nomineeDiscordId)) {
+  const byDiscordId = new Map((participants ?? []).map((p) => [p.discord_id, p]));
+
+  // The caller resolved a series via their own membership above, so they're always in
+  // byDiscordId — this check is really about the *target* when /nominate names someone else.
+  const target = byDiscordId.get(effectiveTargetDiscordId);
+  if (!target) {
+    await editOriginalResponse(interaction.token, {
+      content: isSelfSub ? "You're not part of this match." : "That player isn't part of this match.",
+    });
+    return;
+  }
+  const leavingRow = seriesPlayers.find((sp) => sp.player_id === target.id);
+  if (!leavingRow) {
+    await editOriginalResponse(interaction.token, { content: "Something's wrong with this match's roster — ask an admin to check it." });
+    return;
+  }
+
+  if (nomineeDiscordId === effectiveTargetDiscordId) {
+    await editOriginalResponse(interaction.token, {
+      content: isSelfSub ? "You can't nominate yourself." : "That player can't be nominated as their own replacement.",
+    });
+    return;
+  }
+  if (byDiscordId.has(nomineeDiscordId)) {
     await editOriginalResponse(interaction.token, { content: "That player is already in this match." });
     return;
   }
@@ -115,24 +167,31 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  // Check if this nominee has already been nominated by this player
+  // Check if this nominee has already been nominated for this leaving player
   const { data: duplicateRequest } = await supabase
     .from("crl6mansqueuebot_sub_requests")
     .select("series_id")
     .eq("series_id", series.id)
-    .eq("leaving_player_id", player.id)
+    .eq("leaving_player_id", target.id)
     .eq("nominee_discord_id", nomineeDiscordId)
     .maybeSingle();
   if (duplicateRequest) {
-    await editOriginalResponse(interaction.token, { content: "You've already nominated that player for a sub." });
+    await editOriginalResponse(interaction.token, {
+      content: isSelfSub ? "You've already nominated that player for a sub." : "That player has already been nominated as their sub.",
+    });
     return;
   }
 
-  const leavingStreaks = await getStreakIds(supabase, [player.id]);
+  const streaks = await getStreakIds(supabase, isSelfSub ? [target.id] : [target.id, caller.id]);
+  const targetMention = mention(effectiveTargetDiscordId, { onFire: streaks.onFireIds.has(target.id), cold: streaks.coldIds.has(target.id) });
+  const requestContent = isSelfSub
+    ? `<@${nomineeDiscordId}> — ${targetMention} wants to sub out and nominated you to take their seat (Team ${leavingRow.team}). Accept to join the match.`
+    : `<@${nomineeDiscordId}> — ${mention(discordId, { onFire: streaks.onFireIds.has(caller.id), cold: streaks.coldIds.has(caller.id) })} nominated you to sub in for ${targetMention} (Team ${leavingRow.team}). Accept to join the match.`;
+
   const message = (await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
     method: "POST",
     body: JSON.stringify({
-      content: `<@${nomineeDiscordId}> — ${mention(discordId, { onFire: leavingStreaks.onFireIds.has(player.id), cold: leavingStreaks.coldIds.has(player.id) })} wants to sub out and nominated you to take their seat (Team ${leavingRow.team}). Accept to join the match.`,
+      content: requestContent,
       components: [
         {
           type: MessageComponentTypes.ACTION_ROW,
@@ -141,7 +200,7 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
               type: MessageComponentTypes.BUTTON,
               style: ButtonStyleTypes.SUCCESS,
               label: "Accept",
-              custom_id: `sub_accept:${series.id}:${player.id}`,
+              custom_id: `sub_accept:${series.id}:${target.id}`,
             },
           ],
         },
@@ -151,7 +210,7 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
 
   const { error: insertError } = await supabase.from("crl6mansqueuebot_sub_requests").insert({
     series_id: series.id,
-    leaving_player_id: player.id,
+    leaving_player_id: target.id,
     nominee_discord_id: nomineeDiscordId,
     team: leavingRow.team,
     message_id: message.id,
@@ -162,7 +221,9 @@ async function processSub(interaction: DiscordInteraction, seriesIdOverride: str
     return;
   }
 
-  await editOriginalResponse(interaction.token, { content: `Sub request sent to <@${nomineeDiscordId}>.` });
+  await editOriginalResponse(interaction.token, {
+    content: isSelfSub ? `Sub request sent to <@${nomineeDiscordId}>.` : `Sub request sent to <@${nomineeDiscordId}> for <@${effectiveTargetDiscordId}>.`,
+  });
 }
 
 // ---------------------------------------------------------------------------

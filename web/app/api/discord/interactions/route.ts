@@ -16,7 +16,7 @@ import {
 import { handleNewSeasonCommand } from "@/lib/discord/seasons";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
-import { handleSubCommand, handleSubAcceptButton } from "@/lib/discord/sub";
+import { handleSubCommand, handleNominateCommand, handleSubAcceptButton } from "@/lib/discord/sub";
 import { handleAbandonCommand } from "@/lib/discord/abandon";
 import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand } from "@/lib/discord/teamFormation";
 import type { VoteChoice } from "@/lib/supabase/types";
@@ -160,6 +160,10 @@ export async function POST(request: Request) {
 
     if (commandName === "sub") {
       return NextResponse.json(handleSubCommand(interaction));
+    }
+
+    if (commandName === "nominate") {
+      return NextResponse.json(handleNominateCommand(interaction));
     }
 
     if (commandName === "abandon") {
