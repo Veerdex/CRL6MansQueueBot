@@ -134,3 +134,68 @@ export async function getMatchTimeStats(): Promise<{ timeOfDay: TimeOfDayStatsRo
   if (dayOfWeekResult.error) throw dayOfWeekResult.error;
   return { timeOfDay: timeOfDayResult.data ?? [], dayOfWeek: dayOfWeekResult.data ?? [] };
 }
+
+export interface MMRDistributionPlayer {
+  mmr: number;
+  band: Band | null;
+  isPlaced: boolean;
+  isPrism: boolean;
+  rankGamesPlayed: number;
+}
+
+export interface MMRDistributionStats {
+  players: MMRDistributionPlayer[];
+  totalMatchesPlayed: number;
+  rankMatchesPlayed: number;
+  universalMatchesPlayed: number;
+}
+
+// Powers the MMR distribution graph on the hidden match-time-stats page. Match counts use
+// head:true counts rather than fetching rows — CLAUDE.md's seasonClose.ts note documents that
+// PostgREST silently truncates unbounded selects past a project row cap, and a plain fetch-then-
+// .length count would walk straight into that with no error.
+export async function getMMRDistributionStats(): Promise<MMRDistributionStats> {
+  const supabase = createServerClient();
+  const [playersResult, totalCount, rankCount, universalCount] = await Promise.all([
+    supabase
+      .from("crl6mansqueuebot_players")
+      .select("mmr, band, is_placed, is_prism, total_games_played, rank_games_played")
+      .eq("is_test_data", false),
+    supabase.from("crl6mansqueuebot_series").select("*", { count: "exact", head: true }).eq("status", "reported").eq("is_test_data", false),
+    supabase
+      .from("crl6mansqueuebot_series")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "reported")
+      .eq("is_test_data", false)
+      .eq("queue_type", "rank"),
+    supabase
+      .from("crl6mansqueuebot_series")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "reported")
+      .eq("is_test_data", false)
+      .eq("queue_type", "universal"),
+  ]);
+  if (playersResult.error) throw playersResult.error;
+  if (totalCount.error) throw totalCount.error;
+  if (rankCount.error) throw rankCount.error;
+  if (universalCount.error) throw universalCount.error;
+
+  // Same "eligible player" convention UnifiedLeaderboard.tsx uses: only count players who've
+  // actually played at least one game (any queue) toward any aggregate.
+  const players = (playersResult.data ?? [])
+    .filter((p) => p.total_games_played >= 1)
+    .map((p) => ({
+      mmr: p.mmr,
+      band: p.band,
+      isPlaced: p.is_placed,
+      isPrism: p.is_prism,
+      rankGamesPlayed: p.rank_games_played,
+    }));
+
+  return {
+    players,
+    totalMatchesPlayed: totalCount.count ?? 0,
+    rankMatchesPlayed: rankCount.count ?? 0,
+    universalMatchesPlayed: universalCount.count ?? 0,
+  };
+}

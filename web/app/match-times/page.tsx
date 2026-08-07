@@ -1,6 +1,8 @@
 import Link from "next/link";
-import { getMatchTimeStats } from "@/lib/leaderboard/queries";
+import { getMatchTimeStats, getMMRDistributionStats } from "@/lib/leaderboard/queries";
+import { getConfigNumber } from "@/lib/discord/config";
 import LineChart from "@/components/LineChart";
+import MMRDistributionPanel from "@/components/MMRDistributionPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +21,12 @@ function segmentLabel(index: number): string {
 }
 
 export default async function MatchTimesPage() {
-  const { timeOfDay, dayOfWeek } = await getMatchTimeStats();
+  const [{ timeOfDay, dayOfWeek }, distribution, mmrScale, mmrShift] = await Promise.all([
+    getMatchTimeStats(),
+    getMMRDistributionStats(),
+    getConfigNumber("mmr_scale", 1),
+    getConfigNumber("mmr_shift", 0),
+  ]);
 
   const overall = timeOfDay.map((row) => row.supercharged_count + row.non_supercharged_count);
   const supercharged = timeOfDay.map((row) => row.supercharged_count);
@@ -59,10 +66,21 @@ export default async function MatchTimesPage() {
         />
       </div>
 
-      <div className="panel animate-in-delay-2 p-4 sm:p-6">
+      <div className="panel animate-in-delay-2 mb-6 p-4 sm:p-6">
         <h2 className="mb-1 text-lg font-bold text-foreground">Day of Week</h2>
         <p className="mb-4 text-sm text-muted">Matches formed per day of week (Pacific time).</p>
         <LineChart series={[{ label: "Overall", color: "#a3a3a3", values: weeklyValues }]} xLabels={weeklyLabels} />
+      </div>
+
+      <div className="panel animate-in-delay-2 p-4 sm:p-6">
+        <MMRDistributionPanel
+          players={distribution.players}
+          totalMatchesPlayed={distribution.totalMatchesPlayed}
+          rankMatchesPlayed={distribution.rankMatchesPlayed}
+          universalMatchesPlayed={distribution.universalMatchesPlayed}
+          mmrScale={mmrScale}
+          mmrShift={mmrShift}
+        />
       </div>
     </div>
   );
