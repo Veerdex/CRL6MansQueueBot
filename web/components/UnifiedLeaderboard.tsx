@@ -28,10 +28,6 @@ function getBandColor(band: Band | null): string {
   }
 }
 
-function getPrismColor(): string {
-  return "#ffffff";
-}
-
 type ViewMode = "top-players" | "main" | "all-time";
 
 interface UnifiedLeaderboardProps {
@@ -73,9 +69,11 @@ export default function UnifiedLeaderboard({
 
   const eligiblePlayers = players.filter(({ player }) => player.total_games_played >= 1);
 
-  // Top Players view: simplified list
+  // Top Players view: simplified list — unranked players are excluded, not just unbanded on
+  // the Main board, since this view is specifically a ranking by band/MMR.
   const topPlayersRows = useMemo(() => {
     return eligiblePlayers
+      .filter(({ player }) => player.is_placed)
       .slice()
       .sort(compareLeaderboardRank)
       .slice(0, 20)
@@ -159,12 +157,7 @@ export default function UnifiedLeaderboard({
               <div className="space-y-2">
                 {topPlayersRows.map((row) => {
                   // Unranked (no band) gets no glow — nothing to color it by.
-                  const bandColor =
-                    row.band === null
-                      ? null
-                      : row.band === "Sapphire" && row.position <= prismTopN
-                        ? getPrismColor()
-                        : getBandColor(row.band);
+                  const bandColor = row.band === null ? null : getBandColor(row.band);
                   const rowGlow = bandColor
                     ? `radial-gradient(ellipse 70% 100% at 0% 50%, ${bandColor}2e 0%, transparent 75%)`
                     : undefined;

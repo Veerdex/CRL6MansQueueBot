@@ -42,10 +42,6 @@ function getBandColor(band: Band | null): string {
   }
 }
 
-function getPrismColor(): string {
-  return "#ffffff";
-}
-
 function applyMMRTransform(mmr: number, scale: number, shift: number): number {
   return mmr * scale + shift;
 }
@@ -128,9 +124,7 @@ export default function LeaderboardTable({
                 const position = start + i + 1;
                 const isTopCut = position <= topCount;
                 const isHighlighted = row.playerId === highlightedPlayerId;
-                const bandColor = row.band === "Sapphire" && position <= topCount
-                  ? getPrismColor()
-                  : getBandColor(row.band);
+                const bandColor = getBandColor(row.band);
                 const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
                 return (
                   <tr
