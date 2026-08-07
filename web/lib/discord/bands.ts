@@ -70,15 +70,23 @@ export function computeBandChange(
 }
 
 // ---------------------------------------------------------------------------
-// Daily band recompute — see CLAUDE.md, "Bands / ranks". Percentile-ranks every currently-
-// placed player (plus anyone crossing the placement threshold this run) by MMR, assigns bands
-// off admin-configured cumulative cutoffs, applies the grace-period + hysteresis demotion
-// safeguards, and syncs Discord roles + DMs for anyone whose band actually changed. Called by
-// the pg_cron-triggered /api/discord/recompute-bands route — see CLAUDE.md, "Discord bot
-// runtime architecture".
+// Band recompute — see CLAUDE.md, "Bands / ranks". Percentile-ranks every currently-placed
+// player (plus anyone crossing the placement threshold this run) by MMR, assigns bands off
+// admin-configured cumulative cutoffs, applies the grace-period + hysteresis demotion
+// safeguards, and syncs Discord roles + DMs for anyone whose band actually changed.
+//
+// Two callers: the pg_cron-triggered /api/discord/recompute-bands route (no `onlyPlayerIds` —
+// see CLAUDE.md, "Discord bot runtime architecture") runs this over the whole pool once daily,
+// and report.ts calls it after every Rank Queue settlement with `onlyPlayerIds` set to that
+// series' 6 players. Percentile rank is inherently relative to the *whole* pool, so `onlyPlayerIds`
+// only narrows which players' band changes get written/role-synced/DM'd — the pool pull and
+// percentile computation below always cover everyone, otherwise a scoped call would rank its 6
+// players against a stale or partial distribution. Other players' bands stay exactly as of the
+// last time they were actually written (their last report, or the last daily cron tick),
+// consistent with the daily cron being the source of truth for anyone who hasn't just played.
 // ---------------------------------------------------------------------------
 
-export async function recomputeBands(): Promise<RecomputeSummary> {
+export async function recomputeBands(options?: { onlyPlayerIds?: string[] }): Promise<RecomputeSummary> {
   const supabase = createAdminClient();
 
   const [placementGamesRequired, graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff] = await Promise.all([
@@ -90,6 +98,7 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
   ]);
   const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff };
+  const onlyIds = options?.onlyPlayerIds ? new Set(options.onlyPlayerIds) : null;
 
   const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0 };
 
@@ -131,6 +140,8 @@ export async function recomputeBands(): Promise<RecomputeSummary> {
   }
 
   for (const player of pool) {
+    if (onlyIds && !onlyIds.has(player.id)) continue;
+
     const pctile = percentileById.get(player.id)!;
     const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig);
 

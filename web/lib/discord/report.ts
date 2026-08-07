@@ -6,6 +6,7 @@ import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
+import { recomputeBands } from "./bands";
 import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
 import { getPriorRankWinStreak, mention, ON_FIRE_THRESHOLD } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
@@ -126,9 +127,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
   // Report summary is split by winning/losing team (not one flat list) — each line shows the
   // player's MMR delta and their resulting MMR/band, per CLAUDE.md's "Reporting & disputes".
-  // Band itself isn't recomputed live (bands.ts's recompute is a daily cron job — see
-  // CLAUDE.md, "Bands / ranks"), so the band shown here is the player's last-known band as of
-  // the most recent daily recompute, not necessarily reflecting this exact game's MMR change.
+  // For Rank Queue series, band is recomputed live for just these 6 players right below (see
+  // bands.ts's recomputeBands, onlyPlayerIds) so this reflects this exact game's result, not a
+  // stale daily-cron snapshot. Universal Queue lines below don't touch band at all (no MMR
+  // change to recompute against).
   const winnerLines: string[] = [];
   const loserLines: string[] = [];
   const pushLine = (sp: (typeof allSeriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
@@ -230,6 +232,22 @@ async function processReport(interaction: DiscordInteraction, result: string | n
         await supabase.from("crl6mansqueuebot_series_players").update({ mmr_delta: r.delta }).eq("series_id", series!.id).eq("player_id", p.id);
       }),
     );
+
+    // Bands may have just changed as a direct result of this match — recompute now, scoped to
+    // just these 6 players (percentile rank is still computed against the whole pool, see
+    // bands.ts's onlyPlayerIds doc comment), rather than waiting for the next daily cron tick.
+    // Promotion/demotion + its role-sync/DM land immediately; refetch each player's band
+    // afterward so the summary embed below reflects the post-recompute value, not the
+    // pre-match snapshot in playersById.
+    await recomputeBands({ onlyPlayerIds: allSeriesPlayers.map((sp) => sp.player_id) });
+    const { data: refreshedBands } = await supabase
+      .from("crl6mansqueuebot_players")
+      .select("id, band")
+      .in("id", allSeriesPlayers.map((sp) => sp.player_id));
+    for (const rb of refreshedBands ?? []) {
+      const p = playersById.get(rb.id);
+      if (p) p.band = rb.band;
+    }
 
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
