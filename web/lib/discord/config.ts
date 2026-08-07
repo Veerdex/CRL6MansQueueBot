@@ -39,6 +39,9 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   vote_timeout_seconds: 180,
   sub_request_timeout_minutes: 10,
   queue_member_timeout_minutes: 30,
+  // Minimum time after teams are formed before /report is allowed to settle — see CLAUDE.md,
+  // "Reporting & disputes". Prevents a false/premature report right after teams are decided.
+  report_cooldown_minutes: 15,
   band_cutoff_garnet_pctile: 40,
   band_cutoff_emerald_pctile: 70,
   band_cutoff_sapphire_pctile: 90,

@@ -48,6 +48,8 @@ export type SeriesRow = {
   vote_result: VoteChoice | null;
   formation_message_id: string | null;
   bonus_day_multiplier: number;
+  teams_formed_at: string | null;
+  private_match_password: string | null;
 };
 
 export type SeriesPlayerRow = {

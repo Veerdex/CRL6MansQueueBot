@@ -942,7 +942,17 @@ async function finalizeTeams(
 ) {
   await supabase.from("crl6mansqueuebot_series_players").insert(members.map((m) => ({ series_id: seriesId, player_id: m.id, team: teamAssignments.get(m.id)! })));
   await supabase.from("crl6mansqueuebot_series_lobby").delete().eq("series_id", seriesId);
-  await supabase.from("crl6mansqueuebot_series").update({ status: "active" }).eq("id", seriesId);
+
+  // Private match credentials — see CLAUDE.md, "Team formation (on pop)". Name is a fixed
+  // constant, password is 4 random digits (leading zeros allowed) generated fresh per series.
+  // teams_formed_at also backs the /report cooldown (see report.ts) — stamped here since this is
+  // the single point both the balanced and captains-draft paths funnel through.
+  const privateMatchPassword = Array.from({ length: 4 }, () => Math.floor(Math.random() * 10)).join("");
+  const teamsFormedAt = new Date().toISOString();
+  await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ status: "active", teams_formed_at: teamsFormedAt, private_match_password: privateMatchPassword })
+    .eq("id", seriesId);
 
   const teamA = members.filter((m) => teamAssignments.get(m.id) === "A");
   const teamB = members.filter((m) => teamAssignments.get(m.id) === "B");
@@ -953,6 +963,26 @@ async function finalizeTeams(
 
   // Create voice channels now that teams are finalized
   await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
+
+  // DM each real player their private match credentials (see CLAUDE.md, "Team formation (on
+  // pop)") — best-effort, same is_test_data guard as the draft-pick confirmation DM, since
+  // synthetic test bots have no real Discord account to DM.
+  await Promise.all(
+    members
+      .filter((m) => !m.is_test_data)
+      .map((m) =>
+        sendDirectMessage(m.discord_id, "Your teams are formed — join the private match with the credentials below.", undefined, [
+          {
+            color: BRAND_COLOR,
+            title: "Private Match Credentials",
+            fields: [
+              { name: "Name", value: "crlw6m", inline: true },
+              { name: "Password", value: privateMatchPassword, inline: true },
+            ],
+          },
+        ]),
+      ),
+  );
 
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
   const memberMention = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });

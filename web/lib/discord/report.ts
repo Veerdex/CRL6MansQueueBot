@@ -82,6 +82,21 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     return;
   }
 
+  // Report cooldown — see CLAUDE.md, "Reporting & disputes". Blocks a report right after teams
+  // are formed, to prevent a false/premature report; teams_formed_at is stamped once, in
+  // teamFormation.ts's finalizeTeams, regardless of which path (balanced/captains) got there.
+  if (series.teams_formed_at) {
+    const cooldownMinutes = await getConfigNumber("report_cooldown_minutes", 15);
+    const elapsedMinutes = (Date.now() - new Date(series.teams_formed_at).getTime()) / 60000;
+    if (elapsedMinutes < cooldownMinutes) {
+      const remaining = Math.ceil(cooldownMinutes - elapsedMinutes);
+      await editOriginalResponse(interaction.token, {
+        content: `You can't report yet — wait ${remaining} more minute${remaining === 1 ? "" : "s"} after teams are formed to prevent false reports.`,
+      });
+      return;
+    }
+  }
+
   const { data: allSeriesPlayers } = await supabase.from("crl6mansqueuebot_series_players").select("*").eq("series_id", series.id);
   if (!allSeriesPlayers || allSeriesPlayers.length !== 6) {
     await editOriginalResponse(interaction.token, { content: "Something's wrong with this match's roster — ask an admin to check it." });
