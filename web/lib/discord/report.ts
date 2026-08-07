@@ -8,7 +8,7 @@ import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { recomputeBands } from "./bands";
 import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
-import { getPriorRankWinStreak, mention, ON_FIRE_THRESHOLD, FLAME_THRESHOLD } from "./streaks";
+import { getPriorRankWinStreak, getPriorRankLossStreak, mention, ON_FIRE_THRESHOLD, FLAME_THRESHOLD, COLD_THRESHOLD } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
@@ -182,12 +182,19 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     // shifting both the bonus and the announcement threshold off by one game.
     const newStreakById = new Map<string, number>();
     const priorStreakById = new Map<string, number>();
+    // Mirror of newStreakById for the losing side — purely cosmetic (🥶 decoration below), no
+    // MMR bonus attached, so unlike the winner branch there's no prior-streak value to stash for
+    // a bonus calculation, just the resulting streak length.
+    const newLossStreakById = new Map<string, number>();
     await Promise.all(
       allSeriesPlayers.map(async (sp) => {
         if (sp.team !== winner) {
           newStreakById.set(sp.player_id, 0);
+          const priorLossStreak = await getPriorRankLossStreak(supabase, sp.player_id, series!.id);
+          newLossStreakById.set(sp.player_id, priorLossStreak + 1);
           return;
         }
+        newLossStreakById.set(sp.player_id, 0);
         const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series!.id);
         priorStreakById.set(sp.player_id, priorStreak);
         newStreakById.set(sp.player_id, priorStreak + 1);
@@ -212,7 +219,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const streak = newStreakById.get(sp.player_id) ?? 0;
       if (streak >= ON_FIRE_THRESHOLD) {
         const p = playersById.get(sp.player_id)!;
-        streakAnnounceLines.push(`${mention(p.discord_id, true)} is on a ${streak} game win streak!`);
+        streakAnnounceLines.push(`${mention(p.discord_id, { onFire: true })} is on a ${streak} game win streak!`);
       }
     }
 
@@ -257,9 +264,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const displayNewMmr = await getDisplayMMR(r.newMmr);
       const displayDelta = r.delta * mmrScale;
       const onFire = (newStreakById.get(sp.player_id) ?? 0) >= FLAME_THRESHOLD;
+      const cold = (newLossStreakById.get(sp.player_id) ?? 0) >= COLD_THRESHOLD;
       pushLine(
         sp,
-        `${mention(p.discord_id, onFire)} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
+        `${mention(p.discord_id, { onFire, cold })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
       );
     }
   } else {

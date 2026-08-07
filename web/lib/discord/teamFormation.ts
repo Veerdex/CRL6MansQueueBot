@@ -14,7 +14,7 @@ import { getConfigNumber, getDisplayMMR } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
-import { getOnFirePlayerIds, mention } from "./streaks";
+import { getStreakIds, mention, type StreakIds } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -89,8 +89,8 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
 // follow-on writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
 export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-  const onFireIds = await getOnFirePlayerIds(supabase, members.map((m) => m.id));
-  const mentions = members.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
+  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
@@ -575,14 +575,14 @@ function expectedPickCount(turnCaptain: Team, remainingCount: number): number {
   return turnCaptain === "B" ? Math.max(1, remainingCount - 1) : 1;
 }
 
-function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, onFireIds: Set<string>) {
+function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, streaks: StreakIds) {
   const turnName = turnCaptain === "A" ? "Captain A" : "Captain B";
   return {
     color: BRAND_COLOR,
     title: "Captains Draft",
     fields: [
-      { name: "Captain A", value: mention(captainA.discord_id, onFireIds.has(captainA.id)), inline: true },
-      { name: "Captain B", value: mention(captainB.discord_id, onFireIds.has(captainB.id)), inline: true },
+      { name: "Captain A", value: mention(captainA.discord_id, { onFire: streaks.onFireIds.has(captainA.id), cold: streaks.coldIds.has(captainA.id) }), inline: true },
+      { name: "Captain B", value: mention(captainB.discord_id, { onFire: streaks.onFireIds.has(captainB.id), cold: streaks.coldIds.has(captainB.id) }), inline: true },
       { name: "Status", value: status, inline: false },
     ],
   };
@@ -608,15 +608,16 @@ async function sendDraftPickPrompt(
 ) {
   const turnPlayer = turnCaptain === "A" ? captainA : captainB;
   const supabase = createAdminClient();
-  const onFireIds = await getOnFirePlayerIds(supabase, [captainA.id, captainB.id, ...remaining.map((p) => p.id)]);
+  const streaks = await getStreakIds(supabase, [captainA.id, captainB.id, ...remaining.map((p) => p.id)]);
+  const turnPlayerDecoration = { onFire: streaks.onFireIds.has(turnPlayer.id), cold: streaks.coldIds.has(turnPlayer.id) };
 
   if (turnPlayer.is_test_data) {
-    const statusText = `Waiting on ${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} (test bot)...`;
+    const statusText = `Waiting on ${mention(turnPlayer.discord_id, turnPlayerDecoration)} (test bot)...`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks)],
         components: [],
       }),
     });
@@ -682,22 +683,22 @@ async function sendDraftPickPrompt(
   const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, componentRows, [embed]);
 
   if (dmSent) {
-    const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} your picking - check your DMs!`;
+    const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} your picking - check your DMs!`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks)],
         components: [],
       }),
     });
   } else {
-    const statusText = `${mention(turnPlayer.discord_id, onFireIds.has(turnPlayer.id))} - Your DMs are closed. Pick from the ${pickCount > 1 ? "menu" : "buttons"} below:`;
+    const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} - Your DMs are closed. Pick from the ${pickCount > 1 ? "menu" : "buttons"} below:`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, onFireIds)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks)],
         components: componentRows,
       }),
     });
@@ -1027,9 +1028,10 @@ async function finalizeTeams(
   // Create voice channels now that teams are finalized
   await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
 
-  const onFireIds = await getOnFirePlayerIds(supabase, members.map((m) => m.id));
-  const teamALine = teamA.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
-  const teamBLine = teamB.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
+  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+  const memberMention = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
+  const teamALine = teamA.map(memberMention).join(" ");
+  const teamBLine = teamB.map(memberMention).join(" ");
 
   // Delete all non-permanent messages, then post the "Teams formed!" message
   const { data: trackedMessages } = await supabase
@@ -1054,7 +1056,7 @@ async function finalizeTeams(
   // Post the "Teams formed!" message. Mentions in `content` (not just embed fields) are what
   // actually trigger a Discord notification — see CLAUDE.md, "Queue channels" for the same
   // content-vs-embed distinction on the first-join role ping.
-  const allMentions = members.map((m) => mention(m.discord_id, onFireIds.has(m.id))).join(" ");
+  const allMentions = members.map(memberMention).join(" ");
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({

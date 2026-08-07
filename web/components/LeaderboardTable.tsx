@@ -14,6 +14,7 @@ export interface MainBoardRow {
   losses: number;
   winRate: number | null;
   onFire: boolean;
+  coldStreak: boolean;
 }
 
 const PAGE_SIZE = 20;
@@ -143,6 +144,11 @@ export default function LeaderboardTable({
                       {row.onFire && (
                         <span className="ml-1" title="3+ game win streak">
                           🔥
+                        </span>
+                      )}
+                      {row.coldStreak && (
+                        <span className="ml-1" title="3+ game losing streak">
+                          🥶
                         </span>
                       )}
                     </td>

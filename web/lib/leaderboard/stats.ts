@@ -68,6 +68,10 @@ export function computeStats(games: CompletedGame[]): GameStats {
 // file is `server-only` and can't be imported into leaderboard client components.
 export const FLAME_THRESHOLD = 3;
 
+// 🥶 losing-streak decoration threshold — same mirror-of-FLAME_THRESHOLD treatment, purely
+// cosmetic (no MMR effect, no separate announcement-embed threshold like ON_FIRE_THRESHOLD).
+export const COLD_THRESHOLD = 3;
+
 export const BAND_ORDER: readonly Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
 
 export function bandRank(band: Band | null): number {

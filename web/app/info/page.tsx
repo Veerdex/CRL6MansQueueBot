@@ -138,6 +138,11 @@ export default async function InfoPage() {
             <li>
               A single loss <em>resets your streak to zero</em> — bonus included.
             </li>
+            <li>
+              Lose <strong>3 Rank Queue games in a row</strong> and you get a 🥶 next to your name instead —
+              same bot messages and Main Leaderboard treatment as the fire streak, but purely visual with{" "}
+              <strong>no effect on MMR</strong>.
+            </li>
           </ul>
         </Section>
 

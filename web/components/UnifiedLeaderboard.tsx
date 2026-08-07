@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
-import { bandRank, computeStats, filterGames, FLAME_THRESHOLD } from "@/lib/leaderboard/stats";
+import { bandRank, computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
@@ -100,6 +100,7 @@ export default function UnifiedLeaderboard({
           losses: rankStats.losses,
           winRate: rankStats.winRate,
           onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
+          coldStreak: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
         };
       });
     return rows;
