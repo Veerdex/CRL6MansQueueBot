@@ -9,24 +9,27 @@ import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
 import type { SeasonHistoryRow, Band } from "@/lib/supabase/types";
 
+// Hex, not rgb() — these get a hex alpha suffix appended below (e.g. `${color}2e`), which only
+// forms a valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid
+// CSS and gets silently dropped, which is why the glow wasn't rendering.
 function getBandColor(band: Band | null): string {
   switch (band) {
     case "Iron":
-      return "rgb(125, 125, 125)";
+      return "#7d7d7d";
     case "Garnet":
-      return "rgb(255, 0, 0)";
+      return "#ff0000";
     case "Emerald":
-      return "rgb(0, 128, 0)";
+      return "#008000";
     case "Sapphire":
-      return "rgb(0, 0, 255)";
+      return "#0000ff";
     default:
       // Unranked/null: gray
-      return "rgb(70, 70, 70)";
+      return "#464646";
   }
 }
 
 function getPrismColor(): string {
-  return "rgb(255, 255, 255)";
+  return "#ffffff";
 }
 
 type ViewMode = "top-players" | "main" | "all-time";
