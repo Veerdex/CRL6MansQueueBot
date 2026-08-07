@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, discordFetch, getGuildId } from "./rest";
-import { getConfigNumber, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
+import { getConfigNumber, getConfigValue, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
 import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
@@ -569,7 +569,9 @@ async function processAdjustMmr(
 
   const newMmr = hasAbsolute ? (mmr as number) : player.mmr + (delta as number);
   await supabase.from("crl6mansqueuebot_players").update({ mmr: newMmr }).eq("id", player.id);
-  await logAdminAction(actorId, "adjust_mmr", player.discord_id, `${player.mmr.toFixed(1)} -> ${newMmr.toFixed(1)}`);
+  await logAdminAction(actorId, "adjust_mmr", player.discord_id, undefined, [
+    { field: "MMR", before: player.mmr.toFixed(1), after: newMmr.toFixed(1) },
+  ]);
   await sendDirectMessage(player.discord_id, `An admin manually adjusted your MMR: ${player.mmr.toFixed(1)} → ${newMmr.toFixed(1)}.`);
   await editOriginalResponse(interaction.token, { content: `<@${player.discord_id}>: ${player.mmr.toFixed(1)} → ${newMmr.toFixed(1)}.` });
 }
@@ -727,8 +729,11 @@ async function processConfigSet(interaction: DiscordInteraction, actorId: string
       return;
     }
 
+    const oldValue = await getConfigValue(key);
     await setConfigValue(key, String(value));
-    await logAdminAction(actorId, "config_set", key, `value=${value}`);
+    await logAdminAction(actorId, "config_set", key, undefined, [
+      { field: key, before: oldValue ?? `${KNOWN_CONFIG_DEFAULTS[key]} (default)`, after: String(value) },
+    ]);
     await editOriginalResponse(interaction.token, { content: `${key} set to ${value}.` });
   } catch (err) {
     console.error("Failed to set config", err);
@@ -903,6 +908,10 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
   }
 
   const supabase = createAdminClient();
+  // /admin reset doesn't touch crl6mansqueuebot_config (see comment near the bottom of this
+  // function), so log_channel_id survives — but read it up front anyway for symmetry with
+  // full-reset below and in case that changes later.
+  const logChannelId = (await getConfigValue("log_channel_id")) ?? undefined;
 
   try {
     // Delete in order of foreign key dependencies to avoid constraint violations
@@ -976,7 +985,7 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
     // Keep admin roles untouched
     // Keep config values untouched
 
-    await logAdminAction(actorId, "reset", "all_game_data", "Wiped all series, queue members, test data, and reset player stats to 0");
+    await logAdminAction(actorId, "reset", "all_game_data", "Wiped all series, queue members, test data, and reset player stats to 0", undefined, logChannelId);
     await editOriginalResponse(interaction.token, {
       content: "✅ All game data reset to clean slate. Test data removed. Players retained with stats reset to 0.",
     });
@@ -998,6 +1007,10 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
   }
 
   const supabase = createAdminClient();
+  // full-reset wipes crl6mansqueuebot_config entirely (below), which deletes log_channel_id
+  // along with everything else — read it before the wipe so the action that destroys the log
+  // channel's own config can still be posted to it (see logAdminAction's logChannelIdOverride).
+  const logChannelId = (await getConfigValue("log_channel_id")) ?? undefined;
 
   try {
     // Delete in order of foreign key dependencies. UUID/non-null columns must use
@@ -1074,7 +1087,7 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
       throw new Error(`Full reset failed with ${errors.length} error(s)`);
     }
 
-    await logAdminAction(actorId, "full_reset", "all_data", "Complete factory reset — all data and configuration deleted");
+    await logAdminAction(actorId, "full_reset", "all_data", "Complete factory reset — all data and configuration deleted", undefined, logChannelId);
     await editOriginalResponse(interaction.token, {
       content: "✅ Complete factory reset done. Bot is now brand new. You'll need to run setup commands again.",
     });
@@ -1240,13 +1253,17 @@ async function processSetRankEmoji(
     const supabase = createAdminClient();
     const discordId = interactionUserId(interaction);
 
+    const { data: existingEmoji } = await supabase.from("crl6mansqueuebot_rank_emoji").select("emoji_id").eq("band", band).maybeSingle();
+
     await supabase.from("crl6mansqueuebot_rank_emoji").upsert({
       band,
       emoji_id: createdEmoji.id,
       set_by: discordId,
     } as any);
 
-    await logAdminAction(actorId, "set_rank_emoji", band, `emoji_id=${createdEmoji.id}`);
+    await logAdminAction(actorId, "set_rank_emoji", band, undefined, [
+      { field: `${band} emoji`, before: (existingEmoji as any)?.emoji_id ? `<:rank_${band.toLowerCase()}:${(existingEmoji as any).emoji_id}>` : null, after: `<:rank_${band.toLowerCase()}:${createdEmoji.id}>` },
+    ]);
     await editOriginalResponse(interaction.token, {
       content: `Successfully set emoji for ${band} rank: <:rank_${band.toLowerCase()}:${createdEmoji.id}>`,
     });
@@ -1261,8 +1278,9 @@ async function processSetRankEmoji(
 // ---------------------------------------------------------------------------
 
 async function processStop(interaction: DiscordInteraction, actorId: string) {
+  const oldValue = await getConfigValue("bot_paused");
   await setConfigValue("bot_paused", "1");
-  await logAdminAction(actorId, "stop_bot", "", "bot paused");
+  await logAdminAction(actorId, "stop_bot", undefined, undefined, [{ field: "bot_paused", before: oldValue ?? "0 (default)", after: "1" }]);
   await editOriginalResponse(interaction.token, { content: "Bot paused — all player commands are blocked." });
 }
 
@@ -1294,8 +1312,11 @@ async function processQueueMessageModeSet(interaction: DiscordInteraction, actor
     await editOriginalResponse(interaction.token, { content: "mode must be simplified, default, or hybrid." });
     return;
   }
+  const oldValue = await getConfigValue("queue_message_mode");
   await setConfigValue("queue_message_mode", mode);
-  await logAdminAction(actorId, "queue_message_mode_set", "", `mode=${mode}`);
+  await logAdminAction(actorId, "queue_message_mode_set", undefined, undefined, [
+    { field: "queue_message_mode", before: oldValue ?? "simplified (default)", after: mode },
+  ]);
   await editOriginalResponse(interaction.token, { content: QUEUE_MESSAGE_MODE_DESCRIPTIONS[mode] });
 }
 
@@ -1311,8 +1332,11 @@ async function processStreakBonusToggle(interaction: DiscordInteraction, actorId
     await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
     return;
   }
+  const oldValue = await getConfigValue("streak_bonus_enabled");
   await setConfigValue("streak_bonus_enabled", enabled ? "1" : "0");
-  await logAdminAction(actorId, "streak_bonus_toggle", "", `enabled=${enabled}`);
+  await logAdminAction(actorId, "streak_bonus_toggle", undefined, undefined, [
+    { field: "streak_bonus_enabled", before: oldValue ?? "1 (default)", after: enabled ? "1" : "0" },
+  ]);
   await editOriginalResponse(interaction.token, {
     content: enabled
       ? "Win-streak MMR bonus enabled."
@@ -1332,8 +1356,11 @@ async function processBonusDayToggle(interaction: DiscordInteraction, actorId: s
     await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
     return;
   }
+  const oldValue = await getConfigValue("bonus_day_enabled");
   await setConfigValue("bonus_day_enabled", enabled ? "1" : "0");
-  await logAdminAction(actorId, "bonus_day_toggle", "", `enabled=${enabled}`);
+  await logAdminAction(actorId, "bonus_day_toggle", undefined, undefined, [
+    { field: "bonus_day_enabled", before: oldValue ?? "1 (default)", after: enabled ? "1" : "0" },
+  ]);
   await editOriginalResponse(interaction.token, { content: `Weekly bonus day ${enabled ? "enabled" : "disabled"}.` });
 }
 
@@ -1342,8 +1369,11 @@ async function processBonusDaySetBonus(interaction: DiscordInteraction, actorId:
     await editOriginalResponse(interaction.token, { content: "percent must be a number >= 0 (e.g. 50 for +50%)." });
     return;
   }
+  const oldValue = await getConfigValue("bonus_day_bonus_pct");
   await setConfigValue("bonus_day_bonus_pct", String(percent));
-  await logAdminAction(actorId, "bonus_day_set_bonus", "", `percent=${percent}`);
+  await logAdminAction(actorId, "bonus_day_set_bonus", undefined, undefined, [
+    { field: "bonus_day_bonus_pct", before: oldValue ?? "50 (default)", after: String(percent) },
+  ]);
   await editOriginalResponse(interaction.token, {
     content: `Bonus day K-factor bonus set to +${percent}% (K is multiplied by ${(1 + percent / 100).toFixed(2)} during the bonus window).`,
   });
@@ -1355,8 +1385,15 @@ async function processBonusDaySetDay(interaction: DiscordInteraction, actorId: s
     await editOriginalResponse(interaction.token, { content: "Invalid day." });
     return;
   }
+  const oldValue = await getConfigValue("bonus_day_of_week");
   await setConfigValue("bonus_day_of_week", String(dayIndex));
-  await logAdminAction(actorId, "bonus_day_set_day", "", `day=${BONUS_DAY_NAMES[dayIndex]}`);
+  await logAdminAction(actorId, "bonus_day_set_day", undefined, undefined, [
+    {
+      field: "bonus_day_of_week",
+      before: oldValue !== null ? BONUS_DAY_NAMES[Number(oldValue)] : `${BONUS_DAY_NAMES[6]} (default)`,
+      after: BONUS_DAY_NAMES[dayIndex],
+    },
+  ]);
   await editOriginalResponse(interaction.token, { content: `Bonus day set to ${BONUS_DAY_NAMES[dayIndex]} (12am–12am Pacific).` });
 }
 
@@ -1372,7 +1409,10 @@ async function processSetGuildId(interaction: DiscordInteraction, actorId: strin
     return;
   }
 
+  const oldValue = await getConfigValue("discord_guild_id");
   await setConfigValue("discord_guild_id", guildId);
-  await logAdminAction(actorId, "set_guild_id", guildId, "guild ID configured");
+  await logAdminAction(actorId, "set_guild_id", guildId, undefined, [
+    { field: "discord_guild_id", before: oldValue, after: guildId },
+  ]);
   await editOriginalResponse(interaction.token, { content: `Guild ID set to ${guildId}. This will be used for auto-detection when the env var is not set.` });
 }

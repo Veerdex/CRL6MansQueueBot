@@ -80,6 +80,11 @@ async function processSetNotificationChannel(interaction: DiscordInteraction) {
       { onConflict: "channel_id" }
     );
 
+    const actorId = interactionUserId(interaction);
+    if (actorId) {
+      await logAdminAction(actorId, "set_notification_channel", `<#${channelId}>`, `message_id=${message.id}`);
+    }
+
     await editOriginalResponse(interaction.token, {
       content: `Notification preference message posted to <#${channelId}>.`,
     });
@@ -128,10 +133,23 @@ async function processSetNotificationRole(
   const queueType = queueTypeRaw as QueueType;
 
   try {
+    const { data: existing } = (await supabase
+      .from("crl6mansqueuebot_notification_roles")
+      .select("role_id")
+      .eq("queue_type", queueType)
+      .maybeSingle()) as any;
+
     await supabase.from("crl6mansqueuebot_notification_roles").upsert(
       { queue_type: queueType, role_id: roleId } as any,
       { onConflict: "queue_type" }
     );
+
+    const actorId = interactionUserId(interaction);
+    if (actorId) {
+      await logAdminAction(actorId, "set_notification_role", QUEUE_LABELS[queueType], undefined, [
+        { field: `${QUEUE_LABELS[queueType]} notification role`, before: existing?.role_id ? `<@&${existing.role_id}>` : null, after: `<@&${roleId}>` },
+      ]);
+    }
 
     await editOriginalResponse(interaction.token, {
       content: `${QUEUE_LABELS[queueType]} notification role set to <@&${roleId}>.`,

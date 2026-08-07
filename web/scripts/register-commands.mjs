@@ -107,6 +107,19 @@ const commands = [
     ],
   },
   {
+    name: "setlogchannel",
+    description: "Set the channel where admin change-log embeds are posted (infers current channel if omitted).",
+    type: 1,
+    options: [
+      {
+        name: "channel",
+        description: "The channel to post admin change-log embeds in.",
+        type: 7,
+        required: false,
+      },
+    ],
+  },
+  {
     name: "setqueuementionrole",
     description: "Set the role to mention when first player joins a queue.",
     type: 1,

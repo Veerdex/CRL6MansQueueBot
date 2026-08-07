@@ -4,8 +4,8 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDirectMessage, editOriginalResponse, getGuildId, addMemberRole, removeMemberRole } from "./rest";
 import { getConfigNumber } from "./config";
-import { hasAdminAccess } from "./admin";
-import { type DiscordInteraction } from "./types";
+import { hasAdminAccess, logAdminAction } from "./admin";
+import { interactionUserId, type DiscordInteraction } from "./types";
 import type { Band, BandRoleKey } from "@/lib/supabase/types";
 
 const BAND_ORDER: Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
@@ -384,6 +384,18 @@ async function processSetBandRole(
     return;
   }
   const supabase = createAdminClient();
+  const { data: existing } = await supabase
+    .from("crl6mansqueuebot_band_roles")
+    .select("role_id")
+    .eq("band", bandRaw as BandRoleKey)
+    .maybeSingle();
   await supabase.from("crl6mansqueuebot_band_roles").upsert({ band: bandRaw as BandRoleKey, role_id: roleRaw });
+
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_band_role", bandRaw, undefined, [
+      { field: `${bandRaw} role`, before: existing?.role_id ? `<@&${existing.role_id}>` : null, after: `<@&${roleRaw}>` },
+    ]);
+  }
   await editOriginalResponse(interaction.token, { content: `${bandRaw} is now mapped to <@&${roleRaw}>.` });
 }

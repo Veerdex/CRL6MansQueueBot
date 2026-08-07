@@ -171,8 +171,16 @@ async function processSetMentionRole(interaction: DiscordInteraction, queueType:
     return;
   }
 
+  const { data: existing } = (await supabase
+    .from("crl6mansqueuebot_queue_mention_roles")
+    .select("role_id")
+    .eq("queue_type", queueType)
+    .maybeSingle()) as any;
+
   await supabase.from("crl6mansqueuebot_queue_mention_roles").upsert({ queue_type: queueType, role_id: roleId, set_by: actorId } as any);
-  await logAdminAction(actorId, "set_mention_role", `${queueType}_queue`, `role_id=${roleId}`);
+  await logAdminAction(actorId, "set_mention_role", `${queueType}_queue`, undefined, [
+    { field: `${queueType === "rank" ? "Rank" : "Universal"} Queue mention role`, before: existing?.role_id ? `<@&${existing.role_id}>` : null, after: `<@&${roleId}>` },
+  ]);
   await editOriginalResponse(interaction.token, {
     content: `<@&${roleId}> will be mentioned when the first player joins the ${queueType === "rank" ? "Rank" : "Universal"} Queue.`,
   });

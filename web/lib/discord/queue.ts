@@ -4,7 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
 import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
-import { getAdminRoleIds, hasAdminAccess } from "./admin";
+import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { startTeamFormation } from "./teamFormation";
@@ -793,7 +793,19 @@ async function processSetQueueChannel(
     await editOriginalResponse(interaction.token, { content: "Invalid queue_type or channel." });
     return;
   }
+  const supabase = createAdminClient();
+  const { data: existing } = await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .select("channel_id")
+    .eq("queue_type", queueTypeRaw)
+    .maybeSingle();
   await initQueueMessage(queueTypeRaw, channelId);
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_queue_channel", QUEUE_LABELS[queueTypeRaw], undefined, [
+      { field: `${QUEUE_LABELS[queueTypeRaw]} channel`, before: existing?.channel_id ? `<#${existing.channel_id}>` : null, after: `<#${channelId}>` },
+    ]);
+  }
   await editOriginalResponse(interaction.token, { content: `Queue message set up for ${QUEUE_LABELS[queueTypeRaw]}.` });
 }
 
@@ -836,7 +848,14 @@ async function processSet6mansCallCategory(interaction: DiscordInteraction, cate
   }
 
   const supabase = createAdminClient();
+  const { data: existing } = await supabase.from("crl6mansqueuebot_config").select("value").eq("key", "6mans_call_category_id").maybeSingle();
   await supabase.from("crl6mansqueuebot_config").upsert({ key: "6mans_call_category_id", value: categoryId });
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_6mans_call_category", undefined, undefined, [
+      { field: "6-mans call category", before: existing?.value ? `<#${existing.value}>` : null, after: `<#${categoryId}>` },
+    ]);
+  }
   await editOriginalResponse(interaction.token, { content: `6-mans call category set to <#${categoryId}>.` });
 }
 
@@ -868,8 +887,56 @@ async function processSetReportChannel(interaction: DiscordInteraction, channelI
   }
 
   const supabase = createAdminClient();
+  const { data: existing } = await supabase.from("crl6mansqueuebot_config").select("value").eq("key", "report_channel_id").maybeSingle();
   await supabase.from("crl6mansqueuebot_config").upsert({ key: "report_channel_id", value: channelId });
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_report_channel", undefined, undefined, [
+      { field: "Report channel", before: existing?.value ? `<#${existing.value}>` : null, after: `<#${channelId}>` },
+    ]);
+  }
   await editOriginalResponse(interaction.token, { content: `Report channel set to <#${channelId}>.` });
+}
+
+// ---------------------------------------------------------------------------
+// /setlogchannel — specify the Discord channel where admin change-log embeds are posted (who
+// ran a command, what it changed, before/after — see CLAUDE.md, "Admin change log"). Mirrors
+// /setreportchannel exactly. Logs itself after the upsert (not before) so the confirmation
+// embed for setting the log channel is the first thing to actually land in it.
+// ---------------------------------------------------------------------------
+
+export function handleSetLogChannelCommand(interaction: DiscordInteraction) {
+  const channelIdParam = interaction.data?.options?.find((o) => o.name === "channel")?.value;
+  after(() => processSetLogChannel(interaction, channelIdParam));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processSetLogChannel(interaction: DiscordInteraction, channelIdParamRaw: string | number | boolean | undefined) {
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+    return;
+  }
+
+  const channelId = channelIdParamRaw ? String(channelIdParamRaw) : interaction.channel_id;
+
+  if (!channelId) {
+    await editOriginalResponse(interaction.token, { content: "Could not determine channel. Run this in the channel you want to use as the log channel." });
+    return;
+  }
+
+  const supabase = createAdminClient();
+  const { data: existing } = await supabase.from("crl6mansqueuebot_config").select("value").eq("key", "log_channel_id").maybeSingle();
+  await supabase.from("crl6mansqueuebot_config").upsert({ key: "log_channel_id", value: channelId });
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_log_channel", undefined, undefined, [
+      { field: "Log channel", before: existing?.value ? `<#${existing.value}>` : null, after: `<#${channelId}>` },
+    ]);
+  }
+  await editOriginalResponse(interaction.token, { content: `Log channel set to <#${channelId}>. Admin change-log embeds will be posted there.` });
 }
 
 // ---------------------------------------------------------------------------
@@ -910,9 +977,20 @@ async function processSetQueueMentionRole(
 
   const supabase = createAdminClient();
   const queueType = queueTypeRaw as QueueType;
+  const { data: existing } = await supabase
+    .from("crl6mansqueuebot_queue_mention_roles")
+    .select("role_id")
+    .eq("queue_type", queueType)
+    .maybeSingle();
   await supabase.from("crl6mansqueuebot_queue_mention_roles").upsert(
     { queue_type: queueType, role_id: roleId } as any,
     { onConflict: "queue_type" }
   );
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_queue_mention_role", QUEUE_LABELS[queueType], undefined, [
+      { field: `${QUEUE_LABELS[queueType]} mention role`, before: (existing as any)?.role_id ? `<@&${(existing as any).role_id}>` : null, after: `<@&${roleId}>` },
+    ]);
+  }
   await editOriginalResponse(interaction.token, { content: `${QUEUE_LABELS[queueType]} mention role set to <@&${roleId}>.` });
 }
