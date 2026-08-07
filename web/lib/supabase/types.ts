@@ -144,6 +144,17 @@ export type AuditLogRow = {
   created_at: string;
 };
 
+export type TimeOfDayStatsRow = {
+  segment_index: number;
+  supercharged_count: number;
+  non_supercharged_count: number;
+};
+
+export type DayOfWeekStatsRow = {
+  day_of_week: number;
+  count: number;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -243,6 +254,18 @@ export type Database = {
         Update: Partial<AuditLogRow>;
         Relationships: [];
       };
+      crl6mansqueuebot_time_of_day_stats: {
+        Row: TimeOfDayStatsRow;
+        Insert: TimeOfDayStatsRow;
+        Update: Partial<TimeOfDayStatsRow>;
+        Relationships: [];
+      };
+      crl6mansqueuebot_day_of_week_stats: {
+        Row: DayOfWeekStatsRow;
+        Insert: DayOfWeekStatsRow;
+        Update: Partial<DayOfWeekStatsRow>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -253,6 +276,10 @@ export type Database = {
       crl6mansqueuebot_leave_queue: {
         Args: { p_queue_type: QueueType; p_player_id: string };
         Returns: { status: "not_queued" | "left"; queue_size: number }[];
+      };
+      crl6mansqueuebot_increment_match_time_stats: {
+        Args: { p_segment_index: number; p_day_of_week: number; p_is_supercharged: boolean };
+        Returns: undefined;
       };
     };
     Enums: Record<string, never>;

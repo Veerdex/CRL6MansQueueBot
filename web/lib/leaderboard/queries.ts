@@ -1,6 +1,6 @@
 import "server-only";
 import { createServerClient } from "../supabase/server";
-import type { Band, PlayerRow, QueueType, SeasonHistoryRow, SeasonRow, Team } from "../supabase/types";
+import type { Band, DayOfWeekStatsRow, PlayerRow, QueueType, SeasonHistoryRow, SeasonRow, Team, TimeOfDayStatsRow } from "../supabase/types";
 
 export interface CompletedGame {
   seriesId: string;
@@ -120,4 +120,17 @@ export async function getPlacedPlayerBandMMRs(): Promise<{ band: Band; mmr: numb
     .eq("is_test_data", false);
   if (error) throw error;
   return (data ?? []).filter((p): p is { band: Band; mmr: number } => p.band !== null);
+}
+
+// Powers the hidden match-time-stats page (see CLAUDE.md, "Match time stats") — just the two
+// aggregate-counter tables, ordered by their index so the caller can render straight through.
+export async function getMatchTimeStats(): Promise<{ timeOfDay: TimeOfDayStatsRow[]; dayOfWeek: DayOfWeekStatsRow[] }> {
+  const supabase = createServerClient();
+  const [timeOfDayResult, dayOfWeekResult] = await Promise.all([
+    supabase.from("crl6mansqueuebot_time_of_day_stats").select("*").order("segment_index", { ascending: true }),
+    supabase.from("crl6mansqueuebot_day_of_week_stats").select("*").order("day_of_week", { ascending: true }),
+  ]);
+  if (timeOfDayResult.error) throw timeOfDayResult.error;
+  if (dayOfWeekResult.error) throw dayOfWeekResult.error;
+  return { timeOfDay: timeOfDayResult.data ?? [], dayOfWeek: dayOfWeekResult.data ?? [] };
 }

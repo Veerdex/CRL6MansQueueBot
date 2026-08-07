@@ -7,7 +7,9 @@ export const BONUS_DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thu
 
 const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-function currentPacificDayOfWeek(): number {
+// Exported for matchTimeStats.ts, which needs the same Sun=0..Sat=6 Pacific-time day-of-week
+// index for the weekly graph's increment — reused rather than reimplemented.
+export function currentPacificDayOfWeek(): number {
   const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "short" }).format(new Date());
   return WEEKDAY_INDEX[weekday];
 }

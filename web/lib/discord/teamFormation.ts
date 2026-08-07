@@ -16,6 +16,7 @@ import { interactionUserId, interactionDisplayName, type DiscordInteraction } fr
 import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { getStreakIds, mention, type StreakIds } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
+import { recordMatchTimeStats } from "./matchTimeStats";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -957,12 +958,20 @@ async function finalizeTeams(
   const teamA = members.filter((m) => teamAssignments.get(m.id) === "A");
   const teamB = members.filter((m) => teamAssignments.get(m.id) === "B");
 
-  // Fetch match number for voice channel naming
-  const { data: seriesData } = await supabase.from("crl6mansqueuebot_series").select("match_number").eq("id", seriesId).single();
-  const matchNumber = (seriesData as any)?.match_number;
+  // Fetch match number for voice channel naming, plus the two fields matchTimeStats.ts needs.
+  const { data: seriesData } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("match_number, bonus_day_multiplier, is_test_data")
+    .eq("id", seriesId)
+    .single();
+  const fetchedSeriesData = seriesData as { match_number?: number; bonus_day_multiplier?: number; is_test_data?: boolean } | null;
+  const matchNumber = fetchedSeriesData?.match_number;
 
   // Create voice channels now that teams are finalized
   await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
+
+  // Match-time stats — see CLAUDE.md, "Match time stats". Best-effort, never blocks formation.
+  await recordMatchTimeStats(supabase, Boolean(fetchedSeriesData?.is_test_data), (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1);
 
   // DM each real player their private match credentials (see CLAUDE.md, "Team formation (on
   // pop)") — best-effort, same is_test_data guard as the draft-pick confirmation DM, since
