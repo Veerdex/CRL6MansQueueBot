@@ -530,6 +530,12 @@ const commands = [
         ],
       },
       {
+        name: "refresh-avatars",
+        description: "Manually trigger the daily avatar refresh.",
+        type: SUB_COMMAND,
+        options: [],
+      },
+      {
         name: "config",
         description: "Get or set an admin-tunable config value.",
         type: SUB_COMMAND_GROUP,

@@ -7,6 +7,7 @@ import { getConfigNumber, getConfigValue, KNOWN_CONFIG_DEFAULTS, setConfigValue 
 import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands } from "./bands";
+import { refreshPlayerAvatars } from "./avatars";
 import { refreshQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { claimSeriesVoid, closeMatchChannelsAfterDelay } from "./matchChannels";
 import { interactionUserId, interactionDisplayName, type CommandOption, type DiscordInteraction } from "./types";
@@ -136,6 +137,10 @@ async function dispatchAdminSubcommand(
     case "recompute-bands": {
       const force = getParamValue(params, "force");
       await processRecomputeBands(interaction, actorId, force === true);
+      return;
+    }
+    case "refresh-avatars": {
+      await processRefreshAvatars(interaction, actorId);
       return;
     }
     case "config": {
@@ -658,6 +663,21 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
   );
   await editOriginalResponse(interaction.token, {
     content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// /admin refresh-avatars — manual trigger for the same refreshPlayerAvatars() the daily
+// pg_cron job calls (avatars.ts). Mainly useful right after the avatar_url column/cron
+// migrations are first applied, so avatars don't sit blank for up to a day waiting on the
+// next scheduled run.
+// ---------------------------------------------------------------------------
+
+async function processRefreshAvatars(interaction: DiscordInteraction, actorId: string) {
+  const summary = await refreshPlayerAvatars();
+  await logAdminAction(actorId, "refresh_avatars", undefined, `updated=${summary.updated} skipped=${summary.skipped}`);
+  await editOriginalResponse(interaction.token, {
+    content: `Refreshed avatars — updated ${summary.updated}, skipped ${summary.skipped} (no guild member match).`,
   });
 }
 
