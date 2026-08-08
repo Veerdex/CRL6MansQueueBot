@@ -283,16 +283,21 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     }
   }
 
-  // Rank strictly by MMR first — the full placed pool, regardless of season games played — then
-  // take the top `prism_top_n` bracket, and only THEN require top10_min_games within that
-  // bracket. Meeting the games-played requirement must never let a lower-MMR player outside the
-  // bracket backfill into it; it only gates whether a player who already earned a top-N spot on
-  // MMR alone actually receives the role this cycle. A slot with no games-eligible occupant just
-  // goes unfilled — it doesn't fall through to whoever's next by MMR. Same tiebreak philosophy as
-  // the band percentile sort above: higher MMR first, ties broken by more (season) games played,
-  // then player id as a final deterministic tiebreak.
-  const placedByMmr = pool
-    .filter((p) => p.is_placed)
+  // Three ANDed requirements, applied as a funnel — each stage narrows the pool the next stage
+  // ranks/filters over, never backfilling a slot from a player who was excluded at an earlier
+  // stage: (1) already Sapphire band — the real band assignment above already ran this cycle, so
+  // `player.band` reflects it; this keeps a small community's Emerald/Garnet players out of
+  // Prism contention even if their raw MMR would otherwise land them in the top-N bracket, which
+  // is exactly what let non-Sapphire players occupy Prism slots before this was added. (2) top
+  // `prism_top_n` by MMR *among Sapphire players only* — not the top N of the whole placed pool,
+  // so a 6th- or 7th-place-overall Sapphire player can still take a slot a higher-MMR non-Sapphire
+  // player doesn't get to hold open. (3) top10_min_games this season, checked last, same as
+  // before — a top-N Sapphire player who hasn't played enough yet leaves their slot unfilled
+  // rather than losing it to the next-ranked player. Same tiebreak philosophy as the band
+  // percentile sort above: higher MMR first, ties broken by more (season) games played, then
+  // player id as a final deterministic tiebreak.
+  const sapphireByMmr = pool
+    .filter((p) => p.is_placed && p.band === "Sapphire")
     .slice()
     .sort(
       (a, b) =>
@@ -300,7 +305,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
         (seasonGamesById.get(b.id) ?? 0) - (seasonGamesById.get(a.id) ?? 0) ||
         a.id.localeCompare(b.id),
     );
-  const prismBracket = placedByMmr.slice(0, prismTopN);
+  const prismBracket = sapphireByMmr.slice(0, prismTopN);
   const newPrismIds = new Set(
     prismBracket.filter((p) => (seasonGamesById.get(p.id) ?? 0) >= top10MinGames).map((p) => p.id),
   );

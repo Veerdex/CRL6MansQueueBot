@@ -181,10 +181,12 @@ export default async function InfoPage() {
               Emerald ({bandPercentileLabel.Emerald}), Sapphire ({bandPercentileLabel.Sapphire}).
             </li>
             <li>
-              <strong>Prism</strong> is a live tier for whoever&apos;s currently{" "}
-              <strong>{prismTopN === 1 ? "the #1 player" : `in the top ${prismTopN} players`}</strong> by
-              MMR (with at least {top10MinGames} Rank Queue games played this season) — you gain and lose
-              it the instant your standing crosses that line, not just at season close.
+              <strong>Prism</strong> is a live tier for Sapphire players who are also currently{" "}
+              <strong>
+                {prismTopN === 1 ? "the #1 Sapphire player" : `in the top ${prismTopN} Sapphire players`}
+              </strong>{" "}
+              by MMR (with at least {top10MinGames} Rank Queue games played this season) — you gain and
+              lose it the instant your standing crosses that line, not just at season close.
             </li>
             <li>
               Your band is based on how your MMR compares to everyone else&apos;s, recalculated{" "}
