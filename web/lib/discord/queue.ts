@@ -632,14 +632,14 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
 // channel-inference as /q/l), rendered as the same one-player-per-line roster embed hybrid
 // mode's live roster message uses (rank emoji + mention + band + MMR) — regardless of the
 // channel's actual queue_message_mode, since this is a one-off lookup, not a persistent
-// tracked message. Replies ephemerally, matching /q/l's own confirmation/error replies.
+// tracked message. Replies publicly (unlike /q/l's ephemeral confirmations) since a roster
+// snapshot is useful for everyone in the channel to see, not just the caller.
 // ---------------------------------------------------------------------------
 
 export function handleStatusCommand(interaction: DiscordInteraction) {
   after(() => processStatusCommand(interaction));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-    data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
