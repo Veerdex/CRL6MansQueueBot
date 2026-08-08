@@ -179,7 +179,11 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     .slice()
     .sort((a, b) => a.mmr - b.mmr || a.total_games_played - b.total_games_played || a.id.localeCompare(b.id));
   const n = sorted.length;
-  const percentileById = new Map(sorted.map((p, i) => [p.id, ((i + 1) / n) * 100]));
+  // 0-indexed (lowest-MMR player = 0th percentile, not 1/n) so the ladder is symmetric around
+  // its cutoffs — (i+1)/n previously shifted every rung up by one step, which made the bottom
+  // cutoff harder to clear than the mirrored top cutoff at the same pool size (see CLAUDE.md,
+  // "Band percentile cutoffs").
+  const percentileById = new Map(sorted.map((p, i) => [p.id, (i / n) * 100]));
   const newlyPlacedIds = new Set(newlyPlaced.map((p) => p.id));
 
   const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
