@@ -23,7 +23,11 @@ export async function getConfigNumber(key: string, fallback: number): Promise<nu
 export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   k_factor: 32,
   s_scale: 400,
-  hysteresis_pct: 5,
+  // Fixed MMR-point buffer for the demotion hysteresis check — see CLAUDE.md, "Bands / ranks".
+  // Superseded the earlier percentile-based hysteresis_pct: a player only demotes once their raw
+  // MMR falls more than this many points below their current band's threshold MMR. Raw MMR space,
+  // not display-scaled (mmr_scale/mmr_shift never feed back into internal comparisons).
+  hysteresis_mmr: 7,
   grace_games: 3,
   // Grace-inactivity bypass — see CLAUDE.md, "Bands / ranks". Days since a player's last Rank
   // Queue game after which grace is treated as expired even if band_games_played hasn't reached

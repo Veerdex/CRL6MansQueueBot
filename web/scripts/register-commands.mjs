@@ -28,7 +28,7 @@ const SUB_COMMAND_GROUP = 2;
 const CONFIG_KEYS = [
   "k_factor",
   "s_scale",
-  "hysteresis_pct",
+  "hysteresis_mmr",
   "grace_games",
   "grace_inactivity_days",
   "provisional_games",

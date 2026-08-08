@@ -351,7 +351,7 @@ role is granted, only the server owner has admin access.
 
 ### Config values (tunable via `/admin config set`)
 
-`k_factor`, `s_scale`, `hysteresis_pct`, `grace_games`, `provisional_games`,
+`k_factor`, `s_scale`, `hysteresis_mmr`, `grace_games`, `provisional_games`,
 `provisional_k_multiplier`, `placement_games_required`, `decay_factor`, `top10_min_games`,
 `series_timeout_hours`, `vote_timeout_seconds`, `sub_request_timeout_minutes`,
 `band_cutoff_garnet_pctile`, `band_cutoff_emerald_pctile`, `band_cutoff_sapphire_pctile`,

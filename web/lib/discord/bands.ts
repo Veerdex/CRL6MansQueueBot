@@ -23,7 +23,10 @@ type ChangeAction = "placed" | "promoted" | "demoted";
 
 export type BandCutoffConfig = {
   graceGames: number;
-  hysteresisPct: number;
+  // Fixed MMR-point buffer for the demotion hysteresis check — replaces the old percentile-based
+  // hysteresisPct. See computeBandThresholdMmr and the hysteresis check inside computeBandChange
+  // below for how this is applied.
+  hysteresisMmr: number;
   garnetCutoff: number;
   emeraldCutoff: number;
   sapphireCutoff: number;
@@ -85,11 +88,51 @@ export function computeBandPercentiles(
   return new Map(sorted.map((p, i) => [p.id, (i / n) * 100]));
 }
 
+// Converts a cutoff percentile into a concrete threshold MMR value, for the fixed-MMR-buffer
+// demotion hysteresis check in computeBandChange below (see CLAUDE.md, "Bands / ranks" — this
+// replaced the earlier percentile-based hysteresisPct buffer). Mirrors computeBandPercentiles's
+// two band_calc_mode formulas, inverted to solve for "the MMR value at this cutoff" instead of
+// "the percentile of this MMR value":
+//   - "mmr": linear interpolation within the pool's MMR range — min + cutoffPercent/100 * (max - min).
+//   - "position": the MMR of the player who sits exactly at the cutoff rank. Expressed here as a
+//     rank-from-top (floor(n * (1 - cutoffPercent/100))) rather than computeBandPercentiles's
+//     ascending index, but the two are provably equivalent: solving (i/n)*100 >= cutoffPercent for
+//     the smallest ascending index gives i_min = ceil(cutoff*n/100), and floor(n-x) = n-ceil(x), so
+//     "floor rank-from-top, then convert to ascending index" lands on the exact same player. Floor
+//     (rather than round-half-up) was chosen specifically so this stays consistent with that
+//     already-shipped ascending-index rule instead of introducing a second rounding convention.
+//     Out-of-range ranks (extreme cutoffs or a tiny pool) fall back to the top or bottom player.
+export function computeBandThresholdMmr(
+  pool: { id: string; mmr: number; total_games_played: number }[],
+  cutoffPercent: number,
+  mode: BandCalcMode,
+): number {
+  const sorted = pool
+    .slice()
+    .sort((a, b) => a.mmr - b.mmr || a.total_games_played - b.total_games_played || a.id.localeCompare(b.id));
+  const n = sorted.length;
+  const min = sorted[0].mmr;
+  const max = sorted[n - 1].mmr;
+
+  if (mode === "mmr") {
+    return min + (cutoffPercent / 100) * (max - min);
+  }
+
+  let rankFromTop = Math.floor(n * (1 - cutoffPercent / 100));
+  if (rankFromTop < 1) rankFromTop = 1; // fall back to the top player
+  if (rankFromTop > n) rankFromTop = n; // fall back to the bottom player
+  const ascendingIndex = n - rankFromTop;
+  return sorted[ascendingIndex].mmr;
+}
+
 export function computeBandChange(
-  player: { band: Band | null; band_games_played: number; is_placed: boolean; last_rank_game_at?: string | null },
+  player: { band: Band | null; band_games_played: number; is_placed: boolean; last_rank_game_at?: string | null; mmr: number },
   pctile: number,
   isNewlyPlaced: boolean,
   config: BandCutoffConfig,
+  // Threshold MMR per band (Garnet/Emerald/Sapphire), from computeBandThresholdMmr — the value the
+  // fixed hysteresisMmr buffer below is subtracted from.
+  thresholdMmrByBand: Partial<Record<Band, number>>,
   // `force`: bypasses grace + hysteresis entirely, demoting straight to whatever the true
   // current percentile says. Used only by the admin one-time reseat (see /admin recompute-bands
   // force:true) to correct players whose band got locked in against a tiny early-placement pool
@@ -132,16 +175,13 @@ export function computeBandChange(
         config.graceInactivityDays * 24 * 60 * 60 * 1000;
 
     if (gracePassedByGames || gracePassedByInactivity) {
-      // Grace checked first (above), then hysteresis: only demote if more than hysteresisPct
-      // percentile points below the promotion-in threshold for their *current* band, not just
-      // below the raw target-band cutoff.
-      const promotionThreshold: Partial<Record<Band, number>> = {
-        Garnet: config.garnetCutoff,
-        Emerald: config.emeraldCutoff,
-        Sapphire: config.sapphireCutoff,
-      };
-      const threshold = promotionThreshold[currentBand];
-      if (threshold !== undefined && pctile < threshold - config.hysteresisPct) {
+      // Grace checked first (above), then hysteresis: only demote if the player's raw MMR has
+      // fallen more than hysteresisMmr points below the promotion-in threshold MMR for their
+      // *current* band, not just below the raw target-band cutoff. Fixed MMR points, not a
+      // percentile — deliberately doesn't scale with mmr_scale (display-only, see config.ts's
+      // getDisplayMMR) so this always means the same real MMR gap regardless of display settings.
+      const thresholdMmr = thresholdMmrByBand[currentBand];
+      if (thresholdMmr !== undefined && player.mmr < thresholdMmr - config.hysteresisMmr) {
         return { action: "demoted", targetBand };
       }
     }
@@ -178,7 +218,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   const [
     placementGamesRequired,
     graceGames,
-    hysteresisPct,
+    hysteresisMmr,
     garnetCutoff,
     emeraldCutoff,
     sapphireCutoff,
@@ -189,7 +229,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   ] = await Promise.all([
     getConfigNumber("placement_games_required", 10),
     getConfigNumber("grace_games", 3),
-    getConfigNumber("hysteresis_pct", 5),
+    getConfigNumber("hysteresis_mmr", 7),
     getConfigNumber("band_cutoff_garnet_pctile", 40),
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
@@ -199,7 +239,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     getConfigValue("band_calc_mode"),
   ]);
   const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
-  const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
+  const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisMmr, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
 
   const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0 };
 
@@ -220,6 +260,13 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   if (pool.length === 0) return summary;
 
   const percentileById = computeBandPercentiles(pool, bandCalcMode);
+  // Computed once per run, off the pre-loop pool snapshot — see computeBandThresholdMmr, and the
+  // fixed hysteresisMmr buffer check inside computeBandChange that consumes this.
+  const thresholdMmrByBand: Partial<Record<Band, number>> = {
+    Garnet: computeBandThresholdMmr(pool, garnetCutoff, bandCalcMode),
+    Emerald: computeBandThresholdMmr(pool, emeraldCutoff, bandCalcMode),
+    Sapphire: computeBandThresholdMmr(pool, sapphireCutoff, bandCalcMode),
+  };
   const newlyPlacedIds = new Set(newlyPlaced.map((p) => p.id));
 
   const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
@@ -236,7 +283,9 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 
   for (const player of pool) {
     const pctile = percentileById.get(player.id)!;
-    const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig, { force: options?.force });
+    const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig, thresholdMmrByBand, {
+      force: options?.force,
+    });
 
     if (!change) {
       summary.unchanged += 1;

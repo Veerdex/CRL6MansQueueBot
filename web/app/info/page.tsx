@@ -64,18 +64,26 @@ export default async function InfoPage() {
     getPlacedPlayerBandMMRs(),
   ]);
 
-  const bandDisplayRanges = new Map<Band, { min: number; max: number; count: number }>();
+  // Single-value simplification (this session) of the old current-members min–max range: each
+  // band's card now shows the floor MMR (lowest among players currently holding that band) instead
+  // of a full range. Deliberately still grouped by real, current band membership — not a
+  // re-derivation of bands.ts's percentile-threshold math, which would manufacture fake-looking
+  // single-point numbers for sparsely- or un-populated bands at this project's small player counts
+  // (see CLAUDE.md, "Website implementation notes").
+  const bandFloorMmr = new Map<Band, number>();
   for (const { band, mmr } of placedBandMMRs) {
     const displayMmr = Math.round(mmr * mmrScale + mmrShift);
-    const existing = bandDisplayRanges.get(band);
-    if (!existing) {
-      bandDisplayRanges.set(band, { min: displayMmr, max: displayMmr, count: 1 });
-    } else {
-      existing.min = Math.min(existing.min, displayMmr);
-      existing.max = Math.max(existing.max, displayMmr);
-      existing.count += 1;
+    const existing = bandFloorMmr.get(band);
+    if (existing === undefined || displayMmr < existing) {
+      bandFloorMmr.set(band, displayMmr);
     }
   }
+  const sapphireMaxMmr = placedBandMMRs
+    .filter((p) => p.band === "Sapphire")
+    .reduce<number | undefined>((max, p) => {
+      const displayMmr = Math.round(p.mmr * mmrScale + mmrShift);
+      return max === undefined || displayMmr > max ? displayMmr : max;
+    }, undefined);
 
   const bandPercentileLabel: Record<Band, string> = {
     Iron: `bottom ${garnetCutoff}%`,
@@ -207,7 +215,7 @@ export default async function InfoPage() {
 
           <ul className="mt-4 space-y-3">
             {BAND_ORDER.map((band) => {
-              const range = bandDisplayRanges.get(band);
+              const floorMmr = bandFloorMmr.get(band);
               return (
                 <li key={band} className="flex items-center gap-3 rounded-lg bg-surface-2/40 px-3 py-2.5">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -215,36 +223,27 @@ export default async function InfoPage() {
                   <div className="min-w-0">
                     <div className="font-semibold text-foreground">{band}</div>
                     <div className="text-xs text-muted">
-                      {!range
-                        ? "No players currently placed in this band"
-                        : range.min === range.max
-                          ? `Currently ${range.min} MMR (1 player placed)`
-                          : `Currently ${range.min}–${range.max} MMR`}
+                      {floorMmr === undefined ? "No players currently placed in this band" : `Currently ${floorMmr} MMR`}
                     </div>
                   </div>
                 </li>
               );
             })}
-            {(() => {
-              const sapphireRange = bandDisplayRanges.get("Sapphire");
-              return (
-                <li className="flex items-center gap-3 rounded-lg bg-surface-2/40 px-3 py-2.5">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={PRISM_IMAGE} alt="Prism" className="h-10 w-10 shrink-0 object-contain" />
-                  <div className="min-w-0">
-                    <div className="font-semibold text-foreground">Prism</div>
-                    <div className="text-xs text-muted">
-                      {sapphireRange ? `Currently >${sapphireRange.max} MMR` : "No players currently placed"} •{" "}
-                      {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
-                      this season
-                    </div>
-                  </div>
-                </li>
-              );
-            })()}
+            <li className="flex items-center gap-3 rounded-lg bg-surface-2/40 px-3 py-2.5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={PRISM_IMAGE} alt="Prism" className="h-10 w-10 shrink-0 object-contain" />
+              <div className="min-w-0">
+                <div className="font-semibold text-foreground">Prism</div>
+                <div className="text-xs text-muted">
+                  {sapphireMaxMmr === undefined ? "No players currently placed" : `Currently >${sapphireMaxMmr} MMR`} •{" "}
+                  {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
+                  this season
+                </div>
+              </div>
+            </li>
           </ul>
           <p className="text-xs text-muted">
-            Ranges reflect current standings and shift as players climb, drop, and place — treat them as
+            Values reflect current standings and shift as players climb, drop, and place — treat them as
             approximate, not fixed thresholds.
           </p>
         </Section>
