@@ -576,7 +576,11 @@ async function processRanksCommand(interaction: DiscordInteraction) {
     .filter((p) => p.band === "Sapphire")
     .slice()
     .sort((a, b) => b.mmr - a.mmr || b.total_games_played - a.total_games_played || a.id.localeCompare(b.id));
-  const prismCutoffMmr = sapphireByMmr[prismTopN - 1]?.mmr;
+  // Clamp to however many Sapphire players actually exist: if prism_top_n (an admin-tunable
+  // config value — see CLAUDE.md's "DB-override-shadows-code-default" caveat) is larger than the
+  // current Sapphire pool, indexing straight at prismTopN - 1 runs off the end and reports "N/A"
+  // even though a real cut line exists — the lowest-MMR Sapphire player currently in the bracket.
+  const prismCutoffMmr = sapphireByMmr[Math.min(prismTopN, sapphireByMmr.length) - 1]?.mmr;
   const prismCount = pool.filter((p) => p.is_prism).length;
   const prismEmoji = await getRankEmoji("Prism");
   lines.push(
