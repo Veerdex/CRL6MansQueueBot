@@ -362,9 +362,17 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
 // message the moment the next cycle's first join lands. Re-homes its tracking out of
 // crl6mansqueuebot_queue_messages (the single-row-per-queue_type table every refresh reads and
 // deletes from) into crl6mansqueuebot_queue_channel_messages' existing keep_permanently
-// mechanism (the same one finalizeTeams's "Teams formed!" message uses in teamFormation.ts),
-// then clears the queue_type's row entirely so the next cycle's first join starts fresh via
-// postFreshQueueMessage's oldMessageId===null path instead of trying to delete this message.
+// mechanism (the same one finalizeTeams's "Teams formed!" message uses in teamFormation.ts).
+//
+// The queue_type's row is then immediately re-created (not just left deleted) via
+// postFreshQueueMessage's oldMessageId===null path, posting a fresh 0-member status message.
+// This used to just delete the row and stop, on the assumption that "the next cycle's first
+// join" would recreate it — but processQueueCommand (/q, /l) resolves a channel's queue_type by
+// looking up this exact table, with no fallback for a missing row, so that left the channel
+// entirely unable to process /q/l ("this channel isn't set up as a queue channel") from the
+// instant a queue popped until an admin manually reran /setqueuechannel. Posting a fresh
+// 0-member message here instead keeps the mapping continuously intact, and is accurate besides —
+// the queue really is empty the instant it pops.
 async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueType) {
   const { data: msgRow } = await supabase
     .from("crl6mansqueuebot_queue_messages")
@@ -380,6 +388,8 @@ async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueT
     message_type: "status",
     keep_permanently: true,
   } as any);
+
+  await postFreshQueueMessage(supabase, queueType, msgRow.channel_id, null, []);
 }
 
 export async function initQueueMessage(queueType: QueueType, channelId: string) {

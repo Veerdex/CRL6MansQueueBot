@@ -59,7 +59,7 @@ export default async function InfoPage() {
     getConfigNumber("grace_games", 3),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
-    getConfigNumber("prism_top_n", 5),
+    getConfigNumber("prism_top_n", 1),
     getConfigNumber("top10_min_games", 8),
     getPlacedPlayerBandMMRs(),
   ]);
@@ -181,10 +181,10 @@ export default async function InfoPage() {
               Emerald ({bandPercentileLabel.Emerald}), Sapphire ({bandPercentileLabel.Sapphire}).
             </li>
             <li>
-              <strong>Prism</strong> is a live tier for whoever&apos;s currently in the{" "}
-              <strong>top {prismTopN} players</strong> by MMR (with at least {top10MinGames} Rank Queue
-              games played this season) — you gain and lose it the instant your standing crosses that
-              line, not just at season close.
+              <strong>Prism</strong> is a live tier for whoever&apos;s currently{" "}
+              <strong>{prismTopN === 1 ? "the #1 player" : `in the top ${prismTopN} players`}</strong> by
+              MMR (with at least {top10MinGames} Rank Queue games played this season) — you gain and lose
+              it the instant your standing crosses that line, not just at season close.
             </li>
             <li>
               Your band is based on how your MMR compares to everyone else&apos;s, recalculated{" "}
@@ -232,8 +232,9 @@ export default async function InfoPage() {
                   <div className="min-w-0">
                     <div className="font-semibold text-foreground">Prism</div>
                     <div className="text-xs text-muted">
-                      {sapphireRange ? `Currently >${sapphireRange.max} MMR` : "No players currently placed"} • Live
-                      top {prismTopN} cut, min {top10MinGames} games this season
+                      {sapphireRange ? `Currently >${sapphireRange.max} MMR` : "No players currently placed"} •{" "}
+                      {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
+                      this season
                     </div>
                   </div>
                 </li>

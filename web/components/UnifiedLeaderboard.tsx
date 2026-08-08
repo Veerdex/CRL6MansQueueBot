@@ -176,7 +176,9 @@ export default function UnifiedLeaderboard({
                       className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
                       style={rowGlow ? { backgroundImage: rowGlow } : undefined}
                     >
-                      <div className="min-w-fit text-sm font-semibold text-muted">#{row.position}</div>
+                      <div className={`min-w-fit text-sm font-semibold ${row.isPrism ? "text-gold" : "text-muted"}`}>
+                        #{row.position}
+                      </div>
                       <div className="flex-1 min-w-0">
                         <div className="text-lg font-bold text-foreground truncate">
                           <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
@@ -188,11 +190,11 @@ export default function UnifiedLeaderboard({
                           src={getRankIconPath(displayBand)}
                           alt={getRankLabel(displayBand)}
                           title={getRankLabel(displayBand)}
-                          className="h-6 w-6"
+                          className="h-6 w-6 object-contain"
                         />
                       </div>
                       <div className="text-right min-w-fit">
-                        <div className="text-sm font-semibold text-foreground">
+                        <div className={`text-sm font-semibold ${row.isPrism ? "text-gold" : "text-foreground"}`}>
                           {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))} MMR
                         </div>
                       </div>

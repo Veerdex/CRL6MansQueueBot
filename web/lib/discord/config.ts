@@ -34,7 +34,9 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   placement_games_required: 10,
   decay_factor: 0.25,
   top10_min_games: 8,
-  prism_top_n: 5,
+  // Restricted to the single top-ranked player, not a wider top-N — with a small community, a
+  // top-5 cut let a majority of active players hold an ostensibly exclusive tier at once.
+  prism_top_n: 1,
   series_timeout_hours: 2,
   vote_timeout_seconds: 180,
   sub_request_timeout_minutes: 10,

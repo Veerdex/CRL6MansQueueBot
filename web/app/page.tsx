@@ -16,7 +16,7 @@ export default async function HomePage() {
     getAllPlayersWithGames(),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
-    getConfigNumber("prism_top_n", 5),
+    getConfigNumber("prism_top_n", 1),
   ]);
 
   const previousSeason = activeSeason ? await getPreviousSeason(activeSeason.season_number) : null;

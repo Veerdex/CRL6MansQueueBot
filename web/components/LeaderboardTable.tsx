@@ -141,7 +141,7 @@ export default function LeaderboardTable({
                     } ${isHighlighted ? "highlight-pulse" : ""}`}
                     style={{ backgroundImage: backgroundGradient }}
                   >
-                    <td className="py-2 pr-3 pl-4">{position}</td>
+                    <td className={`py-2 pr-3 pl-4 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{position}</td>
                     <td className="py-2 pr-3 font-medium">
                       <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
                       {row.displayName}
@@ -161,13 +161,17 @@ export default function LeaderboardTable({
                         src={getRankIconPath(displayBand)}
                         alt={getRankLabel(displayBand)}
                         title={getRankLabel(displayBand)}
-                        className="h-6 w-6"
+                        className="h-6 w-6 object-contain"
                       />
                     </td>
-                    <td className="py-2 pr-3">{Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))}</td>
-                    <td className="py-2 pr-3">{row.wins}</td>
-                    <td className="py-2 pr-3">{row.losses}</td>
-                    <td className="py-2 pr-3">{formatWinRate(row.winRate)}</td>
+                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>
+                      {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))}
+                    </td>
+                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{row.wins}</td>
+                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{row.losses}</td>
+                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>
+                      {formatWinRate(row.winRate)}
+                    </td>
                   </tr>
                 );
               })

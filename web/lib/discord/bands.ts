@@ -150,7 +150,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
     getConfigNumber("grace_inactivity_days", 7),
-    getConfigNumber("prism_top_n", 5),
+    getConfigNumber("prism_top_n", 1),
     getConfigNumber("top10_min_games", 8),
   ]);
   const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };

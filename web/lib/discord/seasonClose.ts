@@ -54,7 +54,7 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   const [decayFactor, top10MinGames, prismTopN] = await Promise.all([
     getConfigNumber("decay_factor", 0.25),
     getConfigNumber("top10_min_games", 8),
-    getConfigNumber("prism_top_n", 5),
+    getConfigNumber("prism_top_n", 1),
   ]);
 
   // ---- Season standings: season_rank for every participant (>=1 reported game that season,
