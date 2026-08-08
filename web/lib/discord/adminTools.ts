@@ -502,6 +502,10 @@ async function processCancelSeries(interaction: DiscordInteraction, actorId: str
     await editOriginalResponse(interaction.token, { content: "This match has already been settled." });
     return;
   }
+  // See teamFormation.ts's registerCancelVoteAndMaybeVoid for why this is needed — the queue
+  // status message is left un-refreshed at pop time and stays stale (pre-pop roster shown as
+  // "currently queued") through however the series ends unless explicitly refreshed here.
+  await refreshQueueMessage(supabase, series.queue_type);
 
   await logAdminAction(actorId, "cancel_series", series.id);
   await editOriginalResponse(interaction.token, { content: `Cancelled series ${series.id}.` });
@@ -528,15 +532,21 @@ async function processCancelMatches(interaction: DiscordInteraction, actorId: st
 
   const seriesList = activeSeries as SeriesRow[];
   let cancelledCount = 0;
+  const affectedQueueTypes = new Set<SeriesRow["queue_type"]>();
 
   // Cancel each series
   for (const series of seriesList) {
     const ok = await claimSeriesVoid(supabase, series, "**All matches cancelled by an admin.** No MMR change.");
     if (ok) {
       cancelledCount++;
+      affectedQueueTypes.add(series.queue_type);
       await closeMatchChannelsAfterDelay(supabase, series);
     }
   }
+
+  // One refresh per distinct queue type rather than once per series — see
+  // registerCancelVoteAndMaybeVoid in teamFormation.ts for why this is needed at all.
+  await Promise.all([...affectedQueueTypes].map((qt) => refreshQueueMessage(supabase, qt)));
 
   await logAdminAction(actorId, "cancel_matches", "all", `cancelled=${cancelledCount}`);
   await editOriginalResponse(interaction.token, { content: `Cancelled ${cancelledCount} active/forming match${cancelledCount === 1 ? "" : "es"}.` });

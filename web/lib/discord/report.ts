@@ -4,7 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, AMBER_COLOR, SUPERCHARGED_COLOR, getRankEmoji } from "./rest";
 import { getConfigNumber, getDisplayMMR } from "./config";
-import { getOrCreatePlayer } from "./queue";
+import { getOrCreatePlayer, refreshQueueMessage } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { recomputeBands } from "./bands";
 import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
@@ -133,6 +133,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   await supabase.from("crl6mansqueuebot_series").update({ match_number: matchNumber } as any).eq("id", series.id);
 
   await clearPendingSeriesState(supabase, series.id);
+  // The queue status message is deliberately left un-refreshed at pop time (see handlePop's
+  // comment in queue.ts) — without this it keeps showing the pre-pop 6/6 roster as "currently
+  // queued" for as long as it takes some unrelated future /q or /l to replace it.
+  await refreshQueueMessage(supabase, series.queue_type);
 
   const { data: players } = await supabase
     .from("crl6mansqueuebot_players")

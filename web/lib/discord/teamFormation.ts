@@ -13,7 +13,7 @@ import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
-import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
+import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer, refreshQueueMessage } from "./queue";
 import { getStreakIds, mention, type StreakIds } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { recordMatchTimeStats } from "./matchTimeStats";
@@ -256,6 +256,13 @@ async function registerCancelVoteAndMaybeVoid(
       }),
     }).catch(() => {});
   }
+
+  // The 6 popped players are freed the instant this settles, but the queue channel's tracked
+  // status message was deliberately left un-refreshed at pop time (see handlePop's comment in
+  // queue.ts) and nothing since has touched it — without this call it would keep showing the
+  // stale pre-pop 6/6 roster as "currently queued" until some unrelated future /q or /l happened
+  // to replace it, which reads to players as the queue randomly "resetting."
+  await refreshQueueMessage(supabase, series.queue_type);
 
   // Same 30s closing-warning window /report and /abandon use before the actual voice-channel
   // teardown — no-op for a still-'forming' void, since voice channels don't exist yet.
