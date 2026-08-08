@@ -8,7 +8,7 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, SeriesRow, Team, VoteChoice } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -31,10 +31,19 @@ const CANCEL_VOTE_THRESHOLD = 4;
 // See CLAUDE.md, "Team formation (on pop)" / "Team formation, in the match channel".
 // ---------------------------------------------------------------------------
 
-function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds: number) {
+// Whether the given series popped during a supercharged (Bonus Day) window — reads the snapshot
+// written once at pop time (queue.ts), not a live re-check, so a series that popped inside the
+// window keeps its purple theming even if reported after the window has since closed. See
+// CLAUDE.md, "Weekly bonus day".
+async function isSuperchargedSeries(supabase: AdminClient, seriesId: string): Promise<boolean> {
+  const { data } = await supabase.from("crl6mansqueuebot_series").select("bonus_day_multiplier").eq("id", seriesId).maybeSingle();
+  return ((data as { bonus_day_multiplier?: number } | null)?.bonus_day_multiplier ?? 1) > 1;
+}
+
+function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds: number, supercharged: boolean) {
   const minutes = Math.round(timeoutSeconds / 60);
   return {
-    color: BRAND_COLOR,
+    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
     description:
       `**You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote. Vote by clicking the buttons below.**\n` +
       `This message needs **3 player interactions** to proceed! An exact 3-3 tie resolves to Captains.\n` +
@@ -86,9 +95,10 @@ export async function startTeamFormation(supabase: AdminClient, guildId: string,
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
   const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
+  const supercharged = await isSuperchargedSeries(supabase, seriesId);
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds)], components: voteButtons(seriesId) }),
+    body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds, supercharged)], components: voteButtons(seriesId) }),
   })) as { id: string };
 
   await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
@@ -124,9 +134,10 @@ export async function castVote(
 
   if (!winner) {
     const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+    const supercharged = await isSuperchargedSeries(supabase, seriesId);
     await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds)], components: voteButtons(seriesId) }),
+      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds, supercharged)], components: voteButtons(seriesId) }),
     });
     return;
   }
@@ -501,10 +512,10 @@ function expectedPickCount(turnCaptain: Team, remainingCount: number): number {
   return turnCaptain === "B" ? Math.max(1, remainingCount - 1) : 1;
 }
 
-function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, streaks: StreakIds) {
+function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, streaks: StreakIds, supercharged: boolean) {
   const turnName = turnCaptain === "A" ? "Captain A" : "Captain B";
   return {
-    color: BRAND_COLOR,
+    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
     title: "Captains Draft",
     fields: [
       { name: "Captain A", value: mention(captainA.discord_id, { onFire: streaks.onFireIds.has(captainA.id), cold: streaks.coldIds.has(captainA.id) }), inline: true },
@@ -536,6 +547,7 @@ async function sendDraftPickPrompt(
   const supabase = createAdminClient();
   const streaks = await getStreakIds(supabase, [captainA.id, captainB.id, ...remaining.map((p) => p.id)]);
   const turnPlayerDecoration = { onFire: streaks.onFireIds.has(turnPlayer.id), cold: streaks.coldIds.has(turnPlayer.id) };
+  const supercharged = await isSuperchargedSeries(supabase, seriesId);
 
   if (turnPlayer.is_test_data) {
     const statusText = `Waiting on ${mention(turnPlayer.discord_id, turnPlayerDecoration)} (test bot)...`;
@@ -543,7 +555,7 @@ async function sendDraftPickPrompt(
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks, supercharged)],
         components: [],
       }),
     });
@@ -601,7 +613,7 @@ async function sendDraftPickPrompt(
 
   const embed = {
     title: pickCount > 1 ? `Choose ${pickCount} Players` : "Choose a Player",
-    color: BRAND_COLOR,
+    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
     fields: embedFields,
   };
 
@@ -615,7 +627,7 @@ async function sendDraftPickPrompt(
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks, supercharged)],
         components: [],
       }),
     });
@@ -625,7 +637,7 @@ async function sendDraftPickPrompt(
       method: "PATCH",
       body: JSON.stringify({
         content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks)],
+        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks, supercharged)],
         components: componentRows,
       }),
     });
@@ -966,6 +978,8 @@ async function finalizeTeams(
     .single();
   const fetchedSeriesData = seriesData as { match_number?: number; bonus_day_multiplier?: number; is_test_data?: boolean } | null;
   const matchNumber = fetchedSeriesData?.match_number;
+  const supercharged = (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1;
+  const formationColor = supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR;
 
   // Create voice channels now that teams are finalized
   await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
@@ -982,7 +996,7 @@ async function finalizeTeams(
       .map((m) =>
         sendDirectMessage(m.discord_id, "Your teams are formed — join the private match with the credentials below.", undefined, [
           {
-            color: BRAND_COLOR,
+            color: formationColor,
             title: "Private Match Credentials",
             fields: [
               { name: "Name", value: "crlw6m", inline: true },
@@ -1028,7 +1042,7 @@ async function finalizeTeams(
       content: `${allMentions} — teams are formed!`,
       embeds: [
         {
-          color: BRAND_COLOR,
+          color: formationColor,
           title: "Teams formed!",
           fields: [
             { name: "Team Blue", value: teamALine, inline: true },

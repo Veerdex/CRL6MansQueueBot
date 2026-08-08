@@ -30,3 +30,11 @@ export async function computeBonusDayMultiplier(): Promise<number> {
   const bonusPct = await getConfigNumber("bonus_day_bonus_pct", 50);
   return 1 + bonusPct / 100;
 }
+
+// Live "is today currently the supercharged day" check, for call sites with no series row to read
+// a stored bonus_day_multiplier snapshot from yet (e.g. the first-queue-join ping embed). Series-
+// tied embeds (vote, draft, teams-formed, report) should keep checking their own series'
+// bonus_day_multiplier > 1 instead — see CLAUDE.md, "Weekly bonus day".
+export async function isSuperchargedDayLive(): Promise<boolean> {
+  return (await computeBonusDayMultiplier()) > 1;
+}

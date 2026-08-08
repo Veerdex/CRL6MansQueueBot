@@ -11,6 +11,13 @@ export const BRAND_COLOR = 0x57f287;
 // Win-streak announcement embed color — see CLAUDE.md, "MMR / Elo" (streak bonus).
 export const AMBER_COLOR = 0xffbf00;
 
+// Supercharged (Bonus Day) colors — see CLAUDE.md, "Weekly bonus day". SUPERCHARGED_ANNOUNCE_COLOR
+// is the bright-purple border on the standalone "today is supercharged" embed posted alongside the
+// first-queue-join ping; SUPERCHARGED_COLOR is the lighter purple every normally-BRAND_COLOR
+// (green) gameplay embed swaps to for the duration of a supercharged day.
+export const SUPERCHARGED_ANNOUNCE_COLOR = 0x9b30ff;
+export const SUPERCHARGED_COLOR = 0xc9a0ff;
+
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.

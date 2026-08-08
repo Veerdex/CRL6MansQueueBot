@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, AMBER_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, editOriginalResponse, deleteOriginalResponse, BRAND_COLOR, AMBER_COLOR, SUPERCHARGED_COLOR, getRankEmoji } from "./rest";
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { hasAdminAccess } from "./admin";
@@ -380,10 +380,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
 function reportResultEmbed(winner: Team, matchId: string, winnerLines: string[], loserLines: string[], bonusDayActive: boolean) {
   return {
-    color: BRAND_COLOR,
+    color: bonusDayActive ? SUPERCHARGED_COLOR : BRAND_COLOR,
     title: `Match Reported — Team ${winner} Wins!`,
     description:
-      `**Match #${matchId}**${bonusDayActive ? " 🔥 Bonus Day" : ""}\n\n` +
+      `**Match #${matchId}**${bonusDayActive ? " 🔥 Supercharged!" : ""}\n\n` +
       `**Winners**\n${winnerLines.join("\n")}\n\n` +
       `**Losers**\n${loserLines.join("\n")}`,
   };

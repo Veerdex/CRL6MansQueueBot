@@ -3,12 +3,12 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { startTeamFormation } from "./teamFormation";
-import { computeBonusDayMultiplier } from "./bonusDay";
+import { computeBonusDayMultiplier, isSuperchargedDayLive } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber, getConfigValue } from "./config";
 import { getStreakIds, mention, type StreakIds } from "./streaks";
@@ -31,14 +31,15 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 // place (the old button-driven behavior) or letting messages pile up.
 // ---------------------------------------------------------------------------
 
-function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds, headline?: string) {
+async function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds, headline?: string) {
   const label = QUEUE_LABELS[queueType];
   const mentionLine = members.length
     ? members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ")
     : "_Empty_";
   const headlineBlock = headline ? `**${headline}**\n\n` : "";
+  const color = (await isSuperchargedDayLive()) ? SUPERCHARGED_COLOR : BRAND_COLOR;
   return {
-    color: BRAND_COLOR,
+    color,
     description: `${headlineBlock}**Current Queue Members: ${members.length}**\n${mentionLine}`,
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
   };
@@ -65,8 +66,9 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
         }),
       )
     : ["_Empty_"];
+  const color = (await isSuperchargedDayLive()) ? SUPERCHARGED_COLOR : BRAND_COLOR;
   return {
-    color: BRAND_COLOR,
+    color,
     description: `**Current Queue Members: ${members.length}**\n${lines.join("\n")}`,
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
   };
@@ -83,7 +85,7 @@ async function queueMessageBody(mode: QueueMessageMode, queueType: QueueType, me
   }
   return {
     content: ping ?? "",
-    embeds: [queueStatusEmbed(queueType, members, streaks, headline)],
+    embeds: [await queueStatusEmbed(queueType, members, streaks, headline)],
   };
 }
 
@@ -92,10 +94,29 @@ async function queueMessageBody(mode: QueueMessageMode, queueType: QueueType, me
 // activity, separate from the single live roster message (hybridRosterEmbed) below it. Carries
 // the first-join role ping in `content` (embeds don't notify — see queueMessageBody above).
 async function postHybridAnnouncement(channelId: string, headline: string, ping?: string) {
+  const color = (await isSuperchargedDayLive()) ? SUPERCHARGED_COLOR : BRAND_COLOR;
   await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: ping ?? "", embeds: [{ color: BRAND_COLOR, description: `**${headline}**` }] }),
+    body: JSON.stringify({ content: ping ?? "", embeds: [{ color, description: `**${headline}**` }] }),
   }).catch((err) => console.error(`Failed to post hybrid queue announcement in ${channelId}`, err));
+}
+
+// Posted once, alongside the first-join role ping (see the "first join" branch in the /q command
+// handler below) — a standalone bright-purple-bordered embed announcing that today is a
+// supercharged (Bonus Day) day, so it stands out from the ordinary green/purple queue-status
+// embeds around it.
+async function postSuperchargedAnnouncement(channelId: string) {
+  await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      embeds: [
+        {
+          color: SUPERCHARGED_ANNOUNCE_COLOR,
+          description: "⚡ **Today is a Supercharged Day!** Rank Queue MMR gains are boosted — queue up while it lasts.",
+        },
+      ],
+    }),
+  }).catch((err) => console.error(`Failed to post supercharged announcement in ${channelId}`, err));
 }
 
 async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
@@ -599,6 +620,9 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     }
 
     await refreshQueueMessage(supabase, queueType, headline, ping);
+    if (result.queue_size === 1 && (await isSuperchargedDayLive())) {
+      await postSuperchargedAnnouncement(channelId);
+    }
     await deleteOriginalResponse(interaction.token);
   }
 }
