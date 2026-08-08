@@ -283,10 +283,16 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     }
   }
 
-  // Same tiebreak philosophy as the band percentile sort above: higher MMR first, ties broken
-  // by more (season) games played, then player id as a final deterministic tiebreak.
-  const prismCandidates = pool
-    .filter((p) => p.is_placed && (seasonGamesById.get(p.id) ?? 0) >= top10MinGames)
+  // Rank strictly by MMR first — the full placed pool, regardless of season games played — then
+  // take the top `prism_top_n` bracket, and only THEN require top10_min_games within that
+  // bracket. Meeting the games-played requirement must never let a lower-MMR player outside the
+  // bracket backfill into it; it only gates whether a player who already earned a top-N spot on
+  // MMR alone actually receives the role this cycle. A slot with no games-eligible occupant just
+  // goes unfilled — it doesn't fall through to whoever's next by MMR. Same tiebreak philosophy as
+  // the band percentile sort above: higher MMR first, ties broken by more (season) games played,
+  // then player id as a final deterministic tiebreak.
+  const placedByMmr = pool
+    .filter((p) => p.is_placed)
     .slice()
     .sort(
       (a, b) =>
@@ -294,7 +300,10 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
         (seasonGamesById.get(b.id) ?? 0) - (seasonGamesById.get(a.id) ?? 0) ||
         a.id.localeCompare(b.id),
     );
-  const newPrismIds = new Set(prismCandidates.slice(0, prismTopN).map((p) => p.id));
+  const prismBracket = placedByMmr.slice(0, prismTopN);
+  const newPrismIds = new Set(
+    prismBracket.filter((p) => (seasonGamesById.get(p.id) ?? 0) >= top10MinGames).map((p) => p.id),
+  );
 
   for (const player of pool) {
     const willBePrism = newPrismIds.has(player.id);
