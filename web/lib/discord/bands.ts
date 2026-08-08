@@ -2,11 +2,12 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendDirectMessage, editOriginalResponse, getGuildId, addMemberRole, removeMemberRole } from "./rest";
+import { sendDirectMessage, editOriginalResponse, getGuildId, addMemberRole, removeMemberRole, getRankEmoji, BRAND_COLOR } from "./rest";
 import { getConfigNumber, getConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { interactionUserId, type DiscordInteraction } from "./types";
 import type { Band, BandRoleKey } from "@/lib/supabase/types";
+import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 
 const BAND_ORDER: Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
 const VALID_BAND_ROLE_KEYS: BandRoleKey[] = ["Iron", "Garnet", "Emerald", "Sapphire", "Unranked", "Prism"];
@@ -501,4 +502,95 @@ async function processSetBandRole(
     ]);
   }
   await editOriginalResponse(interaction.token, { content: `${bandRaw} is now mapped to <@&${roleRaw}>.` });
+}
+
+// ---------------------------------------------------------------------------
+// /ranks — public, no args, no admin gate, works from anywhere (not channel-inferred). Posts one
+// line per band showing how many players currently hold it, its emoji, its name, and its live
+// cutoff MMR — a Discord-native version of the Info page's Bands section. Unlike that page's
+// per-band "floor of current holders" display, this shows the actual computed cutoff MMR
+// (computeBandThresholdMmr, the same value the demotion hysteresis check consumes) since the user
+// asked specifically for "cutoffs," matching this codebase's own terminology
+// (band_cutoff_garnet_pctile etc.). Iron has no configured cutoff percentile (it's the bottom of
+// the ladder), so its line uses computeBandThresholdMmr(pool, 0, mode) — this resolves to the
+// pool's lowest MMR, a sensible floor value that keeps the format uniform across all four bands.
+// Prism gets a fifth line for the same reason the Info page includes it: it's a live top-N cut
+// among Sapphire players, and "the cutoffs for each rank" naturally includes it even though it
+// isn't one of the four BAND_ORDER percentile bands.
+// ---------------------------------------------------------------------------
+
+export function handleRanksCommand(interaction: DiscordInteraction) {
+  after(() => processRanksCommand(interaction));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+  };
+}
+
+async function processRanksCommand(interaction: DiscordInteraction) {
+  const supabase = createAdminClient();
+
+  const [garnetCutoff, emeraldCutoff, sapphireCutoff, prismTopN, mmrScale, mmrShift, bandCalcModeRaw] = await Promise.all([
+    getConfigNumber("band_cutoff_garnet_pctile", 40),
+    getConfigNumber("band_cutoff_emerald_pctile", 70),
+    getConfigNumber("band_cutoff_sapphire_pctile", 90),
+    getConfigNumber("prism_top_n", 1),
+    getConfigNumber("mmr_scale", 1),
+    getConfigNumber("mmr_shift", 0),
+    getConfigValue("band_calc_mode"),
+  ]);
+  const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
+
+  const { data: players } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("id, mmr, band, total_games_played, is_prism")
+    .eq("is_placed", true)
+    .eq("is_test_data", false);
+  const pool = players ?? [];
+
+  if (pool.length === 0) {
+    await editOriginalResponse(interaction.token, { content: "No players are currently placed yet." });
+    return;
+  }
+
+  const display = (mmr: number) => Math.round(mmr * mmrScale + mmrShift);
+
+  const thresholdMmrByBand: Record<Band, number> = {
+    Iron: computeBandThresholdMmr(pool, 0, bandCalcMode),
+    Garnet: computeBandThresholdMmr(pool, garnetCutoff, bandCalcMode),
+    Emerald: computeBandThresholdMmr(pool, emeraldCutoff, bandCalcMode),
+    Sapphire: computeBandThresholdMmr(pool, sapphireCutoff, bandCalcMode),
+  };
+
+  const lines: string[] = [];
+  for (const band of BAND_ORDER) {
+    const count = pool.filter((p) => p.band === band).length;
+    const emoji = await getRankEmoji(band);
+    lines.push(`${count} ${emoji} **${getRankLabel(band)}** — ${display(thresholdMmrByBand[band])} MMR`);
+  }
+
+  // Same top-N-among-Sapphire-players cut recomputeBands' live Prism pass uses (see above), minus
+  // the top10_min_games eligibility filter — that gates who currently *holds* Prism, not where the
+  // cut line itself sits, and this line is meant to answer "what MMR do I need" rather than "is
+  // this specific player eligible right now."
+  const sapphireByMmr = pool
+    .filter((p) => p.band === "Sapphire")
+    .slice()
+    .sort((a, b) => b.mmr - a.mmr || b.total_games_played - a.total_games_played || a.id.localeCompare(b.id));
+  const prismCutoffMmr = sapphireByMmr[prismTopN - 1]?.mmr;
+  const prismCount = pool.filter((p) => p.is_prism).length;
+  const prismEmoji = await getRankEmoji("Prism");
+  lines.push(
+    `${prismCount} ${prismEmoji} **Prism** — ${prismCutoffMmr === undefined ? "N/A" : `${display(prismCutoffMmr)} MMR`}`,
+  );
+
+  await editOriginalResponse(interaction.token, {
+    embeds: [
+      {
+        color: BRAND_COLOR,
+        title: "Rank Cutoffs",
+        description: lines.join("\n"),
+        footer: { text: "Live standings — cutoffs shift as players climb, drop, and place." },
+      },
+    ],
+  });
 }

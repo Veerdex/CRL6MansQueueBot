@@ -20,7 +20,7 @@ import { handleSubCommand, handleNominateCommand, handleSubAcceptButton } from "
 import { handleAbandonCommand } from "@/lib/discord/abandon";
 import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand } from "@/lib/discord/teamFormation";
 import type { VoteChoice } from "@/lib/supabase/types";
-import { handleSetBandRoleCommand } from "@/lib/discord/bands";
+import { handleSetBandRoleCommand, handleRanksCommand } from "@/lib/discord/bands";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
 
@@ -128,6 +128,10 @@ export async function POST(request: Request) {
 
     if (commandName === "status") {
       return NextResponse.json(handleStatusCommand(interaction));
+    }
+
+    if (commandName === "ranks") {
+      return NextResponse.json(handleRanksCommand(interaction));
     }
 
     if (commandName === "add-admin-role") {

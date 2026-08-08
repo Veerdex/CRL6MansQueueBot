@@ -197,6 +197,11 @@ const commands = [
     type: 1,
   },
   {
+    name: "ranks",
+    description: "Show the live player count, emoji, and MMR cutoff for each rank.",
+    type: 1,
+  },
+  {
     name: "add-admin-role",
     description: "Grant a Discord role admin access and match-channel visibility.",
     type: 1,
