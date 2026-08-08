@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import SearchBar from "./SearchBar";
+import PlayerAvatar from "./PlayerAvatar";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
 import type { Band } from "@/lib/supabase/types";
 
 export interface MainBoardRow {
   playerId: string;
   displayName: string;
+  avatarUrl: string | null;
   band: Band | null;
   // Live top-N overlay (see CLAUDE.md, "Bands / ranks") — a Prism player's `band` column still
   // holds their real underlying band (almost always Sapphire); this flag drives the gold
@@ -141,6 +143,7 @@ export default function LeaderboardTable({
                   >
                     <td className="py-2 pr-3 pl-4">{position}</td>
                     <td className="py-2 pr-3 font-medium">
+                      <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
                       {row.displayName}
                       {row.onFire && (
                         <span className="ml-1" title="3+ game win streak">

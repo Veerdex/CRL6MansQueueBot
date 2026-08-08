@@ -28,6 +28,7 @@ export default async function SeasonStatsPage() {
     .map(({ player, games }) => ({
       playerId: player.id,
       displayName: player.display_name,
+      avatarUrl: player.avatar_url,
       games,
     }));
 

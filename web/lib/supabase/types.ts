@@ -21,6 +21,7 @@ export type PlayerRow = {
   is_prism: boolean;
   is_test_data: boolean;
   vote_default: VoteChoice | null;
+  avatar_url: string | null;
   created_at: string;
 };
 

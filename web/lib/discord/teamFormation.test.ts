@@ -17,6 +17,7 @@ function player(id: string, mmr: number): PlayerRow {
     is_prism: false,
     is_test_data: false,
     vote_default: null,
+    avatar_url: null,
     created_at: "2026-01-01T00:00:00Z",
   };
 }

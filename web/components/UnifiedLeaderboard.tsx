@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
+import PlayerAvatar from "./PlayerAvatar";
 import { bandRank, computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
@@ -82,6 +83,7 @@ export default function UnifiedLeaderboard({
       .map((p, idx) => ({
         position: idx + 1,
         displayName: p.player.display_name,
+        avatarUrl: p.player.avatar_url,
         band: p.player.is_placed ? p.player.band : null,
         isPrism: p.player.is_prism,
         mmr: p.player.mmr,
@@ -98,6 +100,7 @@ export default function UnifiedLeaderboard({
         return {
           playerId: player.id,
           displayName: player.display_name,
+          avatarUrl: player.avatar_url,
           band: player.is_placed ? player.band : null,
           isPrism: player.is_prism,
           mmr: player.mmr,
@@ -116,6 +119,7 @@ export default function UnifiedLeaderboard({
     return eligiblePlayers.map(({ player, games }) => ({
       playerId: player.id,
       displayName: player.display_name,
+      avatarUrl: player.avatar_url,
       games,
     }));
   }, [eligiblePlayers]);
@@ -174,7 +178,10 @@ export default function UnifiedLeaderboard({
                     >
                       <div className="min-w-fit text-sm font-semibold text-muted">#{row.position}</div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-lg font-bold text-foreground truncate">{row.displayName}</div>
+                        <div className="text-lg font-bold text-foreground truncate">
+                          <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
+                          {row.displayName}
+                        </div>
                       </div>
                       <div className="text-right">
                         <img

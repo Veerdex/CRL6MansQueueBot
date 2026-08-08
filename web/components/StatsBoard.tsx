@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useMemo, useState } from "react";
 import SearchBar from "./SearchBar";
+import PlayerAvatar from "./PlayerAvatar";
 import type { CompletedGame } from "@/lib/leaderboard/queries";
 import { computeStats, filterGames } from "@/lib/leaderboard/stats";
 import { playTap } from "@/lib/sound";
@@ -10,6 +11,7 @@ import type { QueueType } from "@/lib/supabase/types";
 export interface StatsPlayer {
   playerId: string;
   displayName: string;
+  avatarUrl: string | null;
   games: CompletedGame[];
 }
 
@@ -68,7 +70,7 @@ export default function StatsBoard({
         queueType: queueFilter,
       });
       const stats = computeStats(scoped);
-      return { playerId: p.playerId, displayName: p.displayName, ...stats };
+      return { playerId: p.playerId, displayName: p.displayName, avatarUrl: p.avatarUrl, ...stats };
     });
   }, [players, queueFilter, selectedSeasonId, mode]);
 
@@ -228,7 +230,10 @@ export default function StatsBoard({
                       isHighlighted ? "highlight-pulse" : ""
                     }`}
                   >
-                    <td className="py-2 pr-3 pl-4 font-medium">{row.displayName}</td>
+                    <td className="py-2 pr-3 pl-4 font-medium">
+                      <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
+                      {row.displayName}
+                    </td>
                     <td className="py-2 pr-3">{row.gamesPlayed}</td>
                     <td className="py-2 pr-3">{row.wins}</td>
                     <td className="py-2 pr-3">{row.losses}</td>
