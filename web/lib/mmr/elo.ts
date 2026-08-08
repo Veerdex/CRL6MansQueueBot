@@ -67,10 +67,17 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
     let delta = (k * (score - expected)) / 3;
 
     if (dampenedSide !== 0) {
-      const onDampenedSide = Math.sign(p.mmr) === dampenedSide;
+      // The dampening curve is centered on the midpoint between the player's current MMR and
+      // where this game's raw (pre-dampening) delta would land them — not current MMR alone.
+      // A player sitting just above the dampened-side boundary who's about to be pushed across
+      // it would otherwise get zero protection (their pre-game sign doesn't match the dampened
+      // side yet, even though the outcome does); averaging in the outcome catches that case
+      // instead of only reacting a game late.
+      const midpointMmr = p.mmr + delta / 2;
+      const onDampenedSide = Math.sign(midpointMmr) === dampenedSide;
       const pushesFurtherOut = Math.sign(delta) === dampenedSide;
       if (onDampenedSide && pushesFurtherOut) {
-        const multiplier = Math.exp(-(p.mmr * p.mmr) / (2 * sigmaDampened * sigmaDampened));
+        const multiplier = Math.exp(-(midpointMmr * midpointMmr) / (2 * sigmaDampened * sigmaDampened));
         delta *= multiplier;
       }
     }
