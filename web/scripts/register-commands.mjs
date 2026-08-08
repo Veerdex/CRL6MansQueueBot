@@ -769,6 +769,23 @@ const commands = [
         ],
       },
       {
+        name: "band-calc-mode",
+        description: "Set how band percentile is computed: leaderboard position, or raw MMR distribution.",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "mode",
+            description: "position = evenly-spaced rank order (default); mmr = percentile follows actual MMR gaps/clusters.",
+            type: STRING_OPTION,
+            required: true,
+            choices: [
+              { name: "position", value: "position" },
+              { name: "mmr", value: "mmr" },
+            ],
+          },
+        ],
+      },
+      {
         name: "checklist",
         description: "Show which settings are configured and which still need setup.",
         type: SUB_COMMAND,

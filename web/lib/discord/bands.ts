@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDirectMessage, editOriginalResponse, getGuildId, addMemberRole, removeMemberRole } from "./rest";
-import { getConfigNumber } from "./config";
+import { getConfigNumber, getConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { interactionUserId, type DiscordInteraction } from "./types";
 import type { Band, BandRoleKey } from "@/lib/supabase/types";
@@ -40,6 +40,49 @@ export function targetBandForPercentile(pctile: number, config: BandCutoffConfig
   if (pctile >= config.emeraldCutoff) return "Emerald";
   if (pctile >= config.garnetCutoff) return "Garnet";
   return "Iron";
+}
+
+export type BandCalcMode = "position" | "mmr";
+
+// /admin band-calc-mode mode:<position|mmr> — see CLAUDE.md, "Bands / ranks". Two ways to turn
+// the placed pool's MMR ordering into a percentile for targetBandForPercentile above:
+//   - "position" (default, original behavior): purely rank-order — the lowest-MMR player in the
+//     pool sits at 0th percentile, the highest at (n-1)/n*100, evenly spaced regardless of how
+//     close or far apart players' actual MMR values are. A pack of players separated by single
+//     points spreads across percentiles exactly as if they were separated by hundreds.
+//   - "mmr": percentile instead reflects where a player's raw MMR falls within the pool's actual
+//     MMR range — (mmr - min) / (max - min) * 100 — so a tight cluster of similar MMRs stays
+//     clustered in percentile too, and a standout player's real lead shows up directly instead of
+//     being flattened to "one rank above the next player." Requested after a live 9-player
+//     leaderboard showed bands that didn't track actual MMR gaps under "position" mode.
+// Pure and exported so this can be unit tested the same way targetBandForPercentile/
+// computeBandChange are, without needing a DB pool.
+export function computeBandPercentiles(
+  pool: { id: string; mmr: number; total_games_played: number }[],
+  mode: BandCalcMode,
+): Map<string, number> {
+  // Tied MMR is broken by total_games_played (more games at the same rating = more established,
+  // ranks slightly higher), then player id as a final deterministic tiebreak — same ordering
+  // regardless of mode, since "mmr" mode still needs a stable sort for the min/max/tiebreak.
+  const sorted = pool
+    .slice()
+    .sort((a, b) => a.mmr - b.mmr || a.total_games_played - b.total_games_played || a.id.localeCompare(b.id));
+  const n = sorted.length;
+
+  if (mode === "mmr") {
+    const min = sorted[0].mmr;
+    const max = sorted[n - 1].mmr;
+    const range = max - min;
+    // Every player tied on MMR (range 0) has no real spread to measure — park them all at the
+    // midpoint rather than dividing by zero or arbitrarily favoring one end.
+    return new Map(sorted.map((p) => [p.id, range === 0 ? 50 : ((p.mmr - min) / range) * 100]));
+  }
+
+  // 0-indexed (lowest-MMR player = 0th percentile, not 1/n) so the ladder is symmetric around
+  // its cutoffs — (i+1)/n previously shifted every rung up by one step, which made the bottom
+  // cutoff harder to clear than the mirrored top cutoff at the same pool size (see CLAUDE.md,
+  // "Band percentile cutoffs").
+  return new Map(sorted.map((p, i) => [p.id, (i / n) * 100]));
 }
 
 export function computeBandChange(
@@ -142,6 +185,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     graceInactivityDays,
     prismTopN,
     top10MinGames,
+    bandCalcModeRaw,
   ] = await Promise.all([
     getConfigNumber("placement_games_required", 10),
     getConfigNumber("grace_games", 3),
@@ -152,7 +196,9 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     getConfigNumber("grace_inactivity_days", 7),
     getConfigNumber("prism_top_n", 1),
     getConfigNumber("top10_min_games", 8),
+    getConfigValue("band_calc_mode"),
   ]);
+  const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
   const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisPct, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
 
   const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0 };
@@ -173,17 +219,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   const pool = [...alreadyPlaced, ...newlyPlaced];
   if (pool.length === 0) return summary;
 
-  // Tied MMR is broken by total_games_played (more games at the same rating = more established,
-  // ranks slightly higher), then player id as a final deterministic tiebreak.
-  const sorted = pool
-    .slice()
-    .sort((a, b) => a.mmr - b.mmr || a.total_games_played - b.total_games_played || a.id.localeCompare(b.id));
-  const n = sorted.length;
-  // 0-indexed (lowest-MMR player = 0th percentile, not 1/n) so the ladder is symmetric around
-  // its cutoffs — (i+1)/n previously shifted every rung up by one step, which made the bottom
-  // cutoff harder to clear than the mirrored top cutoff at the same pool size (see CLAUDE.md,
-  // "Band percentile cutoffs").
-  const percentileById = new Map(sorted.map((p, i) => [p.id, (i / n) * 100]));
+  const percentileById = computeBandPercentiles(pool, bandCalcMode);
   const newlyPlacedIds = new Set(newlyPlaced.map((p) => p.id));
 
   const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");

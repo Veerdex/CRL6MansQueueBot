@@ -6,7 +6,7 @@ import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, sendFo
 import { getConfigNumber, getConfigValue, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
 import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
-import { recomputeBands } from "./bands";
+import { recomputeBands, type BandCalcMode } from "./bands";
 import { refreshPlayerAvatars } from "./avatars";
 import { refreshQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { claimSeriesVoid, closeMatchChannelsAfterDelay } from "./matchChannels";
@@ -219,6 +219,11 @@ async function dispatchAdminSubcommand(
     case "streak-bonus": {
       const enabled = getParamValue(params, "enabled");
       await processStreakBonusToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+      return;
+    }
+    case "band-calc-mode": {
+      const mode = getParamValue(params, "mode");
+      await processBandCalcModeSet(interaction, actorId, typeof mode === "string" ? mode : undefined);
       return;
     }
     case "setguildid": {
@@ -1348,6 +1353,43 @@ async function processQueueMessageModeSet(interaction: DiscordInteraction, actor
     { field: "queue_message_mode", before: oldValue ?? "simplified (default)", after: mode },
   ]);
   await editOriginalResponse(interaction.token, { content: QUEUE_MESSAGE_MODE_DESCRIPTIONS[mode] });
+}
+
+// ---------------------------------------------------------------------------
+// /admin band-calc-mode mode:<position|mmr> — controls how the placed pool's MMR ordering turns
+// into a percentile for band cutoffs. See bands.ts's computeBandPercentiles() for the full
+// description of each mode; takes effect on the next recompute (daily cron, next Rank Queue
+// report, or an immediate /admin recompute-bands run).
+// ---------------------------------------------------------------------------
+
+// Switching modes changes the scoring rule, but ordinary demotions still route through grace/
+// hysteresis — a straight `/admin recompute-bands` right after a switch will only partially reflect
+// the new percentiles (some players blocked by grace, others held inside the hysteresis buffer),
+// which reads as broken even though it's working as designed. `force:true` bypasses both for one run,
+// so it's the right one-time follow-up here — same remedy CLAUDE.md already documents for players
+// stuck at an inflated band from before a cutoff fix.
+const BAND_CALC_MODE_FOLLOWUP = " Run `/admin recompute-bands force:true` once now to apply the new percentiles immediately — otherwise grace/hysteresis will only let the change through gradually, game by game.";
+
+const BAND_CALC_MODE_DESCRIPTIONS: Record<BandCalcMode, string> = {
+  position: `Band calc mode set to position — percentile is purely rank-order in the placed pool, evenly spaced regardless of actual MMR gaps.${BAND_CALC_MODE_FOLLOWUP}`,
+  mmr: `Band calc mode set to mmr — percentile reflects where a player's raw MMR falls within the pool's MMR range, so real point gaps (and clusters) show up directly.${BAND_CALC_MODE_FOLLOWUP}`,
+};
+
+async function processBandCalcModeSet(interaction: DiscordInteraction, actorId: string, mode: string | undefined) {
+  if (mode !== "position" && mode !== "mmr") {
+    await editOriginalResponse(interaction.token, { content: "mode must be position or mmr." });
+    return;
+  }
+  const oldValue = await getConfigValue("band_calc_mode");
+  if (oldValue === mode) {
+    await editOriginalResponse(interaction.token, { content: `Band calc mode is already ${mode}.` });
+    return;
+  }
+  await setConfigValue("band_calc_mode", mode);
+  await logAdminAction(actorId, "band_calc_mode_set", undefined, undefined, [
+    { field: "band_calc_mode", before: oldValue ?? "position (default)", after: mode },
+  ]);
+  await editOriginalResponse(interaction.token, { content: BAND_CALC_MODE_DESCRIPTIONS[mode] });
 }
 
 // ---------------------------------------------------------------------------
