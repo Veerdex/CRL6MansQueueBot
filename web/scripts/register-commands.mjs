@@ -203,7 +203,7 @@ const commands = [
   },
   {
     name: "chances",
-    description: "Show your team's live win chance for your current match.",
+    description: "Show a team's live win chance for a match. Admin only.",
     type: 1,
     options: [
       {

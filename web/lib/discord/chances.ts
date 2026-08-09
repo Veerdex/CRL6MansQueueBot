@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { editOriginalResponse } from "./rest";
 import { getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { getConfigNumber } from "./config";
+import { hasAdminAccess } from "./admin";
 import { calculateTeamStrength } from "@/lib/mmr/teamStrength";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team } from "@/lib/supabase/types";
@@ -12,18 +13,19 @@ import type { SeriesRow, Team } from "@/lib/supabase/types";
 type AdminClient = ReturnType<typeof createAdminClient>;
 
 // ---------------------------------------------------------------------------
-// /chances [id:] — with no id:, purely membership-based (like /report result:) — shows the
-// caller's own team's live win probability for whichever active match they're locked into.
-// `id:` is an optional override, open to everyone (unlike /report/sub/nominate/abandon/
-// cancel's id: overrides, which are admin-gated since they trigger an action — this is
-// read-only, so there's no action to gate), for checking any match's chances from outside it.
-// Since an id:-override caller isn't necessarily a participant, that path shows both teams'
-// percentages instead of picking a "your team" side (falls back to the participant/single-
-// percentage view if the caller happens to actually be one of the 6). Uses the same
-// calculateTeamStrength()/s_scale pair that actually governs Elo deltas at report time
-// (report.ts), rather than the separate legacy plain-average prediction-logging formula in
-// report.ts's game-prediction feature — this keeps "chances" consistent with what actually
-// determines the outcome's MMR swing. Ephemeral throughout, per explicit request.
+// /chances [id:] — admin-gated in full (revised — supersedes an earlier version where only
+// the id: override was admin-gated and the no-id: case was open to any player); the whole
+// command now requires admin access, checked once up front, the same way /admin's own
+// dispatcher gates its entire subtree. With no id:, resolved by the caller's own membership
+// (getLockedSeriesForPlayer, same helper /abandon/sub use) — an admin can check their own
+// match's chances the same way a report/dispute would need to. `id:` is an override to check
+// any match from outside it. Since an id:-override caller isn't necessarily a participant,
+// that path shows both teams' percentages instead of picking a "your team" side (falls back
+// to the participant/single-percentage view if the caller happens to actually be one of the
+// 6). Uses the same calculateTeamStrength()/s_scale pair that actually governs Elo deltas at
+// report time (report.ts), rather than the separate legacy plain-average prediction-logging
+// formula in report.ts's game-prediction feature — this keeps "chances" consistent with what
+// actually determines the outcome's MMR swing. Ephemeral throughout, per explicit request.
 // ---------------------------------------------------------------------------
 
 export function handleChancesCommand(interaction: DiscordInteraction) {
@@ -53,6 +55,11 @@ async function processChances(interaction: DiscordInteraction, seriesIdOverride:
   const discordId = interactionUserId(interaction);
   if (!discordId) {
     await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    return;
+  }
+
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
     return;
   }
 

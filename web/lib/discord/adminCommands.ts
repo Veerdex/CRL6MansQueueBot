@@ -117,7 +117,6 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement for yourself; they must accept via a button.",
     "`/nominate target:<@user> nominee:<@user>` — run inside your match channel to request a sub for any player in the match (disconnected, etc.), including yourself.",
     "`/abandon target:<@user>` — run inside your match channel to vote a player as abandoned. 3 votes cancels the series.",
-    "`/chances` — see your team's live win chance for your current match, once teams are formed. Ephemeral.",
     "`/help` — show this message.",
   ];
 
@@ -125,6 +124,7 @@ async function processHelp(interaction: DiscordInteraction) {
     lines.push(
       "",
       "**Admin commands**",
+      "`/chances [id:]` — see a team's live win chance for the current (or, with id:, any) active match. Ephemeral.",
       "`/setqueuechannel queue_type:<rank|universal>` — post the persistent queue message in the current channel.",
       "`/add-admin-role role:<@role>` — grant a role admin access and match-channel visibility.",
       "`/remove-admin-role role:<@role>` — revoke a role's admin access.",
