@@ -134,6 +134,16 @@ export function computeBandChange(
   // Threshold MMR per band (Garnet/Emerald/Sapphire), from computeBandThresholdMmr — the value the
   // fixed hysteresisMmr buffer below is subtracted from.
   thresholdMmrByBand: Partial<Record<Band, number>>,
+  // True if some other player in the pool has strictly higher MMR than this player while
+  // currently holding a strictly lower band (a stale-band ordering violation — see CLAUDE.md,
+  // "Bands / ranks", the "surpassed" bypass). Grace/hysteresis exist to absorb noise in a
+  // player's *own* MMR (e.g. one bad loss right after a promotion), not to indefinitely protect
+  // a static player while other players' independent improvement climbs past them — once someone
+  // with less band-rank than this player outranks them on raw MMR, that's a real, already-visible
+  // ordering bug (Iron showing a higher MMR floor than Garnet), so it bypasses grace/hysteresis
+  // the same way an admin `force:true` would, rather than waiting on this player's own next
+  // Rank Queue game or inactivity timer.
+  hasBeenSurpassed: boolean,
   // `force`: bypasses grace + hysteresis entirely, demoting straight to whatever the true
   // current percentile says. Used only by the admin one-time reseat (see /admin recompute-bands
   // force:true) to correct players whose band got locked in against a tiny early-placement pool
@@ -156,7 +166,7 @@ export function computeBandChange(
     return { action: "promoted", targetBand };
   }
 
-  if (targetIndex < currentIndex && options?.force) {
+  if (targetIndex < currentIndex && (options?.force || hasBeenSurpassed)) {
     return { action: "demoted", targetBand };
   }
 
@@ -270,6 +280,27 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   };
   const newlyPlacedIds = new Set(newlyPlaced.map((p) => p.id));
 
+  // "Surpassed" detection — see computeBandChange's hasBeenSurpassed param. Computed once, off a
+  // pre-loop snapshot of each player's currently-committed band (before this pass writes any new
+  // ones), so the result doesn't depend on iteration order or a player's own band getting updated
+  // mid-loop. A player counts as surpassed if some other already-placed player in the pool has
+  // strictly higher MMR while currently holding a strictly lower band — that combination is only
+  // possible when a band assignment has gone stale (grace/hysteresis blocked a demotion for too
+  // long while the pool moved), and is exactly the "the other players just surpassed him" case a
+  // live production example (Iron's MMR floor sitting above Garnet's) surfaced.
+  const bandIndexById = new Map(pool.map((p) => [p.id, p.band ? BAND_ORDER.indexOf(p.band as Band) : -1]));
+  const surpassedIds = new Set<string>();
+  for (const p of pool) {
+    const pIndex = bandIndexById.get(p.id)!;
+    if (pIndex < 0) continue; // not yet placed — no current band to be surpassed out of
+    const surpassed = pool.some((q) => {
+      if (q.id === p.id || q.mmr <= p.mmr) return false;
+      const qIndex = bandIndexById.get(q.id)!;
+      return qIndex >= 0 && qIndex < pIndex;
+    });
+    if (surpassed) surpassedIds.add(p.id);
+  }
+
   const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
   const roleIdByBand = new Map((bandRoleRows ?? []).map((r) => [r.band, r.role_id]));
 
@@ -284,9 +315,15 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 
   for (const player of pool) {
     const pctile = percentileById.get(player.id)!;
-    const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig, thresholdMmrByBand, {
-      force: options?.force,
-    });
+    const change = computeBandChange(
+      player,
+      pctile,
+      newlyPlacedIds.has(player.id),
+      cutoffConfig,
+      thresholdMmrByBand,
+      surpassedIds.has(player.id),
+      { force: options?.force },
+    );
 
     if (!change) {
       summary.unchanged += 1;
