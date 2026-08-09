@@ -51,6 +51,7 @@ export type SeriesRow = {
   bonus_day_multiplier: number;
   teams_formed_at: string | null;
   private_match_password: string | null;
+  match_number: number | null;
 };
 
 export type SeriesPlayerRow = {

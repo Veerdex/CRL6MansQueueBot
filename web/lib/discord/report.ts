@@ -123,14 +123,11 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     return;
   }
 
-  // Assign match number (based on count of previously reported series)
-  const { count: reportedCount } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "reported")
-    .lt("reported_at", new Date().toISOString());
-  const matchNumber = (reportedCount ?? 0) - 1; // -1 because we just added this series
-  await supabase.from("crl6mansqueuebot_series").update({ match_number: matchNumber } as any).eq("id", series.id);
+  // match_number is assigned once, atomically, at pop time (queue.ts's handlePop, via a
+  // sequence-backed column default — see migration 0030_fix_match_number_race.sql) — report
+  // time just reads that already-assigned value rather than maintaining a second, separately
+  // computed numbering scheme that used to collide with it on the same UNIQUE column.
+  const matchNumber = series.match_number ?? 0;
 
   await clearPendingSeriesState(supabase, series.id);
   // The queue status message is deliberately left un-refreshed at pop time (see handlePop's

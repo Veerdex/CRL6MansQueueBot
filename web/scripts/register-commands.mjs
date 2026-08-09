@@ -202,6 +202,19 @@ const commands = [
     type: 1,
   },
   {
+    name: "chances",
+    description: "Show your team's live win chance for your current match.",
+    type: 1,
+    options: [
+      {
+        name: "id",
+        description: "Series id override — check any match's chances from outside it.",
+        type: STRING_OPTION,
+        required: false,
+      },
+    ],
+  },
+  {
     name: "add-admin-role",
     description: "Grant a Discord role admin access and match-channel visibility.",
     type: 1,

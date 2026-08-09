@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
 import PlayerAvatar from "./PlayerAvatar";
-import { bandRank, computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
+import { computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
@@ -47,13 +47,13 @@ function applyMMRTransform(mmr: number, scale: number, shift: number): number {
   return mmr * scale + shift;
 }
 
-// Sorts on the same (band, MMR) values the rows actually display, so ranking can never
-// diverge from what's shown. MMR always breaks ties within a band — including among
-// unplaced players, who all tie on band (null).
+// Sorts purely on placement then MMR — band is not a ranking priority. All placed players
+// (any band) rank strictly by MMR against each other regardless of band; unplaced players
+// always group after every placed player (per CLAUDE.md: "the only separation is between
+// unbanded and banded players"), then MMR breaks ties within that group too.
 function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number {
-  const bandDiff =
-    bandRank(b.player.is_placed ? b.player.band : null) - bandRank(a.player.is_placed ? a.player.band : null);
-  if (bandDiff !== 0) return bandDiff;
+  const placedDiff = Number(b.player.is_placed) - Number(a.player.is_placed);
+  if (placedDiff !== 0) return placedDiff;
   const mmrDiff = b.player.mmr - a.player.mmr;
   if (mmrDiff !== 0) return mmrDiff;
   return a.player.id.localeCompare(b.player.id);

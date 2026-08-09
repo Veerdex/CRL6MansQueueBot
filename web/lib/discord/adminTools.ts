@@ -302,7 +302,7 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
   await supabase.from(predictionTable).delete().eq("series_id", series.id);
 
   await logAdminAction(actorId, "unreport", series.id, `queue_type=${series.queue_type} players=${players.length}`);
-  const matchNumber = (series as any).match_number;
+  const matchNumber = series.match_number;
   const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
   await editOriginalResponse(interaction.token, {
     content: `Unreported ${matchLabel} — MMR and game counts reversed for ${players.length} players.`,
@@ -461,7 +461,7 @@ async function processCorrectReport(
     `Changed winner from ${oldWinner} to ${winnerTeam} (queue_type=${series.queue_type})`,
   );
 
-  const matchNumber = (series as any).match_number;
+  const matchNumber = series.match_number;
   const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
   await editOriginalResponse(interaction.token, {
     content: `Corrected ${matchLabel} — winner changed from Team ${oldWinner} to Team ${winnerTeam}. MMR adjusted for ${seriesPlayers.length} players.`,

@@ -17,6 +17,7 @@ import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLoc
 import { getStreakIds, mention, type StreakIds } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { recordMatchTimeStats } from "./matchTimeStats";
+import { calculateTeamStrength } from "@/lib/mmr/teamStrength";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -331,7 +332,8 @@ async function processCancelCommand(interaction: DiscordInteraction, seriesIdOve
 }
 
 // ---------------------------------------------------------------------------
-// Balanced mode: brute-force all 10 unique 3v3 splits, pick the smallest MMR-average gap.
+// Balanced mode: brute-force all 10 unique 3v3 splits, pick the smallest team-strength gap
+// (calculateTeamStrength — see web/lib/mmr/teamStrength.ts, also used by the Elo engine).
 // ---------------------------------------------------------------------------
 
 export function bestBalancedSplit(members: PlayerRow[]): { teamA: PlayerRow[]; teamB: PlayerRow[] } {
@@ -352,9 +354,9 @@ export function bestBalancedSplit(members: PlayerRow[]): { teamA: PlayerRow[]; t
         if (seenSplits.has(splitKey)) continue;
         seenSplits.add(splitKey);
 
-        const avgA = teamA.reduce((sum, p) => sum + p.mmr, 0) / 3;
-        const avgB = teamB.reduce((sum, p) => sum + p.mmr, 0) / 3;
-        const diff = Math.abs(avgA - avgB);
+        const strengthA = calculateTeamStrength(teamA.map((p) => p.mmr));
+        const strengthB = calculateTeamStrength(teamB.map((p) => p.mmr));
+        const diff = Math.abs(strengthA - strengthB);
         if (!best || diff < best.diff) best = { teamA, teamB, diff };
       }
     }
@@ -383,10 +385,10 @@ async function resolveBalanced(supabase: AdminClient, guildId: string, seriesId:
 }
 
 // ---------------------------------------------------------------------------
-// Captains mode: top two players by MMR become captains. Draft order (Captain A picks 1,
-// Captain B picks 2, last remaining player auto-assigns to Captain A) is derived purely by
-// counting how many non-captain lobby rows already have a team — no separate turn column.
-// See CLAUDE.md, "Team formation (on pop)".
+// Captains mode: two of the top three players by MMR become captains, chosen at random (not
+// always strictly the top two) — see CLAUDE.md, "Team formation (on pop)". Draft order (Captain A
+// picks 1, Captain B picks 2, last remaining player auto-assigns to Captain A) is derived purely
+// by counting how many non-captain lobby rows already have a team — no separate turn column.
 // ---------------------------------------------------------------------------
 
 export function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null {
@@ -397,8 +399,16 @@ export function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null 
 
 async function beginCaptainsDraft(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, messageId: string, members: PlayerRow[]) {
   const sorted = [...members].sort((a, b) => b.mmr - a.mmr || a.discord_id.localeCompare(b.discord_id));
-  const captainA = sorted[0];
-  const captainB = sorted[1];
+  const topThree = sorted.slice(0, 3);
+  // Randomly exclude one of the top three rather than always taking the top two outright —
+  // the remaining two become captains. Equivalent to "pick 2 of the top 3 at random."
+  const excluded = topThree[Math.floor(Math.random() * topThree.length)];
+  const [pickedA, pickedB] = topThree.filter((p) => p.id !== excluded.id);
+  // Captain A is still the higher-MMR of the two chosen, matching the pre-existing convention
+  // that Captain A picks first (deriveTurnCaptain) — downstream logic doesn't require this, it
+  // just keeps "A" meaning the same thing it always did.
+  const captainA = pickedA.mmr >= pickedB.mmr ? pickedA : pickedB;
+  const captainB = captainA === pickedA ? pickedB : pickedA;
 
   await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A", is_captain: true }).eq("series_id", seriesId).eq("player_id", captainA.id);
   await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "B", is_captain: true }).eq("series_id", seriesId).eq("player_id", captainB.id);

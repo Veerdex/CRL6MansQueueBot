@@ -722,13 +722,12 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     return;
   }
 
-  // Assign match number based on count of reported series
-  const { count: reportedCount } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "reported");
-  const matchNumber = reportedCount ?? 0;
-  await supabase.from("crl6mansqueuebot_series").update({ match_number: matchNumber } as any).eq("id", series.id);
+  // match_number is assigned automatically by a DB column default (sequence-backed — see
+  // migration 0030_fix_match_number_race.sql) at the insert above, so no application-level
+  // read-count-then-write is needed here. The previous hand-rolled version computed a
+  // non-unique "count of reported series" value and wrote it with no error handling, which
+  // collided with the column's UNIQUE constraint (and silently failed) on nearly every pop,
+  // since multiple series are normally in-flight before any of them get reported.
 
   await supabase
     .from("crl6mansqueuebot_series_lobby")

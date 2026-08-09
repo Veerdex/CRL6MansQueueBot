@@ -1,11 +1,13 @@
 import type { Team } from "@/lib/supabase/types";
+import { calculateTeamStrength } from "./teamStrength";
 
 // Pure Elo engine — no Discord, no DB. See CLAUDE.md, "MMR / Elo": standard Elo, single
-// rating per player, team rating = average of the 3 teammates' MMR, points split evenly
-// across the team. Provisional K is applied per player (not blended into one team K) since
-// each player's own provisional status is what the spec's "elevated K for a player's first
-// N Rank Queue games" describes — teammates with different provisional status legitimately
-// gain/lose different amounts on the same result.
+// rating per player, team rating = calculateTeamStrength() of the 3 teammates' MMR (weighted
+// power mean of the top two, blended with the weakest — see teamStrength.ts), points split
+// evenly across the team. Provisional K is applied per player (not blended into one team K)
+// since each player's own provisional status is what the spec's "elevated K for a player's
+// first N Rank Queue games" describes — teammates with different provisional status
+// legitimately gain/lose different amounts on the same result.
 
 export type EloPlayerInput = {
   playerId: string;
@@ -36,7 +38,7 @@ export type EloResult = {
 
 function teamAverage(players: EloPlayerInput[], team: Team): number {
   const members = players.filter((p) => p.team === team);
-  return members.reduce((sum, p) => sum + p.mmr, 0) / members.length;
+  return calculateTeamStrength(members.map((p) => p.mmr));
 }
 
 // Reference spread scale for the skew dampening curve below — not admin-configurable, mirrors

@@ -21,6 +21,7 @@ import { handleAbandonCommand } from "@/lib/discord/abandon";
 import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand } from "@/lib/discord/teamFormation";
 import type { VoteChoice } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand, handleRanksCommand } from "@/lib/discord/bands";
+import { handleChancesCommand } from "@/lib/discord/chances";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
 
@@ -132,6 +133,10 @@ export async function POST(request: Request) {
 
     if (commandName === "ranks") {
       return NextResponse.json(handleRanksCommand(interaction));
+    }
+
+    if (commandName === "chances") {
+      return NextResponse.json(handleChancesCommand(interaction));
     }
 
     if (commandName === "add-admin-role") {
