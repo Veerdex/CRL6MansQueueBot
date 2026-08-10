@@ -35,7 +35,7 @@ export default async function RootLayout({
       <body className="min-h-full flex flex-col">
         <nav className="panel-nav sticky top-0 z-40">
           <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3 text-sm">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-6">
               <Link href="/" className="text-lg font-bold tracking-tight text-foreground hover:opacity-80 transition-opacity">
                 CRL <span className="text-accent-secondary">West</span> <span className="text-accent">6 Mans</span>
                 {activeSeason && (

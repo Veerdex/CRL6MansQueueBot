@@ -17,50 +17,32 @@ function PlayerRow({
   player,
   mmrScale,
   mmrShift,
-  align,
 }: {
   player: MatchHistoryPlayer;
   mmrScale: number;
   mmrShift: number;
-  align: "left" | "right";
 }) {
   const displayBand: DisplayBand | null = player.isPrism ? "Prism" : player.band;
   const displayMmr = Math.round(applyMMRTransform(player.mmr, mmrScale, mmrShift));
 
-  const bandBlock = (
-    <div className="flex w-12 shrink-0 flex-col items-center text-center">
-      <img
-        src={getRankIconPath(displayBand)}
-        alt={getRankLabel(displayBand)}
-        title={getRankLabel(displayBand)}
-        className="h-6 w-6 object-contain"
-      />
-      <span className="text-[11px] text-muted">{displayMmr}</span>
-    </div>
-  );
-
-  const nameBlock = (
-    <div className="flex min-w-0 items-center">
-      <PlayerAvatar avatarUrl={player.avatarUrl} alt={player.displayName} />
-      <span className="truncate text-sm font-medium text-foreground">{player.displayName}</span>
-    </div>
-  );
-
-  // Band/MMR always renders on the card's outer edge — the far-left column puts it first, the
-  // far-right column puts it last — with the avatar/name always staying nearest the "vs" middle.
+  // Avatar/name always renders first (flush against the row's own left edge) on both teams —
+  // same order regardless of side — so every row's avatar starts at a consistent x position
+  // instead of the name's left edge drifting per row with name-text width.
   return (
     <div className="flex items-center justify-between gap-2">
-      {align === "left" ? (
-        <>
-          {bandBlock}
-          {nameBlock}
-        </>
-      ) : (
-        <>
-          {nameBlock}
-          {bandBlock}
-        </>
-      )}
+      <div className="flex min-w-0 items-center">
+        <PlayerAvatar avatarUrl={player.avatarUrl} alt={player.displayName} />
+        <span className="truncate text-sm font-medium text-foreground">{player.displayName}</span>
+      </div>
+      <div className="flex w-12 shrink-0 flex-col items-center text-center">
+        <img
+          src={getRankIconPath(displayBand)}
+          alt={getRankLabel(displayBand)}
+          title={getRankLabel(displayBand)}
+          className="h-6 w-6 object-contain"
+        />
+        <span className="text-[11px] text-muted">{displayMmr}</span>
+      </div>
     </div>
   );
 }
@@ -113,13 +95,13 @@ export default function MatchHistoryCard({
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <div className={`space-y-2 rounded-lg border-2 p-2 ${leftWon ? "border-gold" : "border-transparent"}`}>
           {match.teamB.map((p) => (
-            <PlayerRow key={p.playerId} player={p} mmrScale={mmrScale} mmrShift={mmrShift} align="left" />
+            <PlayerRow key={p.playerId} player={p} mmrScale={mmrScale} mmrShift={mmrShift} />
           ))}
         </div>
         <div className="px-1 text-xs font-semibold text-muted">vs</div>
         <div className={`space-y-2 rounded-lg border-2 p-2 ${rightWon ? "border-gold" : "border-transparent"}`}>
           {match.teamA.map((p) => (
-            <PlayerRow key={p.playerId} player={p} mmrScale={mmrScale} mmrShift={mmrShift} align="right" />
+            <PlayerRow key={p.playerId} player={p} mmrScale={mmrScale} mmrShift={mmrShift} />
           ))}
         </div>
       </div>
