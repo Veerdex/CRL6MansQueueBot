@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import SearchBar from "./SearchBar";
 import PlayerAvatar from "./PlayerAvatar";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
+import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
 import type { Band } from "@/lib/supabase/types";
 
@@ -153,7 +154,7 @@ export default function LeaderboardTable({
                     <td className={`py-2 pr-3 pl-4 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{position}</td>
                     <td className="py-2 pr-3 font-medium">
                       <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
-                      {row.displayName}
+                      {formatDisplayName(row.displayName)}
                       {row.onFire && (
                         <span className="ml-1" title="3+ game win streak">
                           🔥

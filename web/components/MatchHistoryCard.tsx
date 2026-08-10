@@ -1,5 +1,6 @@
 import PlayerAvatar from "./PlayerAvatar";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
+import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import type { MatchHistoryEntry, MatchHistoryPlayer } from "@/lib/leaderboard/history";
 
 // Team A = the "Team Blue" voice channel, Team B = "Team Orange" (createVoiceChannels, see
@@ -32,7 +33,7 @@ function PlayerRow({
     <div className="flex items-center justify-between gap-2">
       <div className="flex min-w-0 items-center">
         <PlayerAvatar avatarUrl={player.avatarUrl} alt={player.displayName} />
-        <span className="truncate text-sm font-medium text-foreground">{player.displayName}</span>
+        <span className="truncate text-sm font-medium text-foreground">{formatDisplayName(player.displayName)}</span>
       </div>
       <div className="flex w-12 shrink-0 flex-col items-center text-center">
         <img

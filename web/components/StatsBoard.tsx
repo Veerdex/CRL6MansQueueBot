@@ -5,6 +5,7 @@ import SearchBar from "./SearchBar";
 import PlayerAvatar from "./PlayerAvatar";
 import type { CompletedGame } from "@/lib/leaderboard/queries";
 import { computeStats, filterGames } from "@/lib/leaderboard/stats";
+import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
 import type { QueueType } from "@/lib/supabase/types";
 
@@ -255,7 +256,7 @@ export default function StatsBoard({
                   >
                     <td className="py-2 pr-3 pl-4 font-medium">
                       <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
-                      {row.displayName}
+                      {formatDisplayName(row.displayName)}
                     </td>
                     <td className="py-2 pr-3">{row.gamesPlayed}</td>
                     <td className="py-2 pr-3">{row.wins}</td>

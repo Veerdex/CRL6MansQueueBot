@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import SearchBar from "./SearchBar";
 import PlayerAvatar from "./PlayerAvatar";
+import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
 import type { QueueType } from "@/lib/supabase/types";
 import type { HeadToHeadGame, HeadToHeadPlayerInfo } from "@/lib/leaderboard/headToHead";
@@ -148,7 +149,7 @@ export default function HeadToHeadBoard({
     <div>
       <div className="mb-4 flex items-center gap-1.5">
         <PlayerAvatar avatarUrl={target.avatarUrl} alt={target.displayName} />
-        <h2 className="text-lg font-bold text-foreground">{target.displayName}</h2>
+        <h2 className="text-lg font-bold text-foreground">{formatDisplayName(target.displayName)}</h2>
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-4 text-sm">
@@ -221,7 +222,7 @@ export default function HeadToHeadBoard({
                   >
                     <td className="py-2 pr-3 pl-4 font-medium">
                       <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
-                      {row.displayName}
+                      {formatDisplayName(row.displayName)}
                     </td>
                     <td className="py-2 pr-3">{row.gamesPlayed}</td>
                     <td

@@ -6,6 +6,7 @@ import StatsBoard, { type StatsPlayer } from "./StatsBoard";
 import PlayerAvatar from "./PlayerAvatar";
 import { computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
+import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
 import type { SeasonHistoryRow } from "@/lib/supabase/types";
@@ -182,7 +183,7 @@ export default function UnifiedLeaderboard({
                       <div className="flex-1 min-w-0">
                         <div className="text-lg font-bold text-foreground truncate">
                           <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
-                          {row.displayName}
+                          {formatDisplayName(row.displayName)}
                         </div>
                       </div>
                       <div className="text-right">
