@@ -334,9 +334,15 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 
     const oldBand = action === "placed" ? null : (player.band as Band);
 
+    // Peak MMR isn't tracked while unranked (see report.ts/adminTools.ts's write sites, which
+    // skip the bump for an unplaced player) — so the moment a player actually places, seed it
+    // from their current MMR rather than leaving it at whatever it was before (typically 0),
+    // which would otherwise show a Peak below their real current MMR.
+    const placementPeakUpdate: { peak_mmr?: number } = action === "placed" ? { peak_mmr: Math.max(player.peak_mmr, player.mmr) } : {};
+
     await supabase
       .from("crl6mansqueuebot_players")
-      .update({ band: targetBand, is_placed: true, band_games_played: 0 })
+      .update({ band: targetBand, is_placed: true, band_games_played: 0, ...placementPeakUpdate })
       .eq("id", player.id);
 
     if (guildId) {
@@ -365,6 +371,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     // pre-recompute snapshot fetched at the top of this function.
     player.band = targetBand;
     player.is_placed = true;
+    if (action === "placed") player.peak_mmr = placementPeakUpdate.peak_mmr!;
 
     summary[action] += 1;
   }

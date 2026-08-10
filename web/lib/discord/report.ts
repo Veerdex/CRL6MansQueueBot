@@ -264,7 +264,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
           .from("crl6mansqueuebot_players")
           .update({
             mmr: r.newMmr,
-            peak_mmr: Math.max(p.peak_mmr, r.newMmr),
+            // Not tracked while unranked — an unplaced player's MMR is still bouncing around
+            // during placement games, not a meaningful "peak" yet. recomputeBands() below
+            // initializes peak_mmr to their placement-game MMR the moment they actually place.
+            peak_mmr: p.is_placed ? Math.max(p.peak_mmr, r.newMmr) : p.peak_mmr,
             total_games_played: p.total_games_played + 1,
             rank_games_played: p.rank_games_played + 1,
             band_games_played: p.band_games_played + 1,

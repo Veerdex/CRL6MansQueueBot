@@ -422,7 +422,8 @@ async function processCorrectReport(
           .from("crl6mansqueuebot_players")
           .update({
             mmr: correctedMmr,
-            peak_mmr: Math.max(p.peak_mmr, correctedMmr),
+            // Same "not tracked while unranked" rule as report.ts's own write — see there.
+            peak_mmr: p.is_placed ? Math.max(p.peak_mmr, correctedMmr) : p.peak_mmr,
           })
           .eq("id", p.id);
 
@@ -591,7 +592,10 @@ async function processAdjustMmr(
   const newMmr = hasAbsolute ? (mmr as number) : player.mmr + (delta as number);
   await supabase
     .from("crl6mansqueuebot_players")
-    .update({ mmr: newMmr, peak_mmr: Math.max(player.peak_mmr, newMmr) })
+    // Same "not tracked while unranked" rule as report.ts's own write — see there. Applies here
+    // too even though this override has no Rank Queue restriction of its own, since an unplaced
+    // player's peak is meaningless the same way regardless of what raised their MMR.
+    .update({ mmr: newMmr, peak_mmr: player.is_placed ? Math.max(player.peak_mmr, newMmr) : player.peak_mmr })
     .eq("id", player.id);
   await logAdminAction(actorId, "adjust_mmr", player.discord_id, undefined, [
     { field: "MMR", before: player.mmr.toFixed(1), after: newMmr.toFixed(1) },

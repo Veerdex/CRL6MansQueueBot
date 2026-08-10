@@ -160,7 +160,9 @@ export async function generateTestData(): Promise<{ playersAdded: number }> {
           discord_id: `test-${batchId}-${spec.suffix}`,
           display_name: `Test Player ${batchId}-${spec.suffix}`,
           mmr: spec.mmr ?? 0,
-          peak_mmr: Math.max(spec.mmr ?? 0, 0),
+          // Not tracked while unranked (see report.ts/adminTools.ts/bands.ts) — an unplaced
+          // synthetic player should show a Peak of 0, not a fake peak mirroring their seeded MMR.
+          peak_mmr: isPlaced ? Math.max(spec.mmr ?? 0, 0) : 0,
           band: isPlaced ? spec.band : null,
           is_placed: isPlaced,
           total_games_played: totalGames,
