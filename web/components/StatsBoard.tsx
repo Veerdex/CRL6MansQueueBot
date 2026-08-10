@@ -47,6 +47,13 @@ const COLUMNS: { key: SortKey; label: string }[] = [
 // control rather than adding new UI — the column simply isn't there under "All"/"Universal".
 const PEAK_COLUMN: { key: SortKey; label: string } = { key: "peakMmr", label: "Peak" };
 
+// peak_mmr only starts accumulating once a player claims their rank (crosses
+// placement_games_required raw Rank Queue games — currently 3 on the live server); before that
+// it's untouched at its raw default of 0. Raw MMR can end up fractionally off 0 from float math
+// elsewhere, so treat anything within this epsilon of 0 as "no peak yet" rather than exact
+// equality — matches how CLAUDE.md's peak_mmr backfill script itself reasons about the value.
+const NO_PEAK_EPSILON = 0.01;
+
 const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
 
 function applyMMRTransform(mmr: number, scale: number, shift: number): number {
@@ -284,7 +291,11 @@ export default function StatsBoard({
                       )}
                     </td>
                     {showPeakColumn && (
-                      <td className="py-2 pr-3">{Math.round(applyMMRTransform(row.peakMmr, mmrScale, mmrShift))}</td>
+                      <td className="py-2 pr-3">
+                        {Math.abs(row.peakMmr) <= NO_PEAK_EPSILON
+                          ? "NA"
+                          : Math.round(applyMMRTransform(row.peakMmr, mmrScale, mmrShift))}
+                      </td>
                     )}
                   </tr>
                 );
