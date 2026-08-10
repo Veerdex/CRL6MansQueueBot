@@ -10,12 +10,11 @@ import type { HeadToHeadGame, HeadToHeadPlayerInfo } from "@/lib/leaderboard/hea
 
 type QueueFilter = QueueType | "all";
 type Relation = "with" | "against";
-type SortKey = "gamesPlayed" | "wins" | "losses" | "winRate";
+type SortKey = "gamesPlayed" | "diff" | "winRate";
 
 const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "gamesPlayed", label: "Games" },
-  { key: "wins", label: "W" },
-  { key: "losses", label: "L" },
+  { key: "diff", label: "+/-" },
   { key: "winRate", label: "Win rate" },
 ];
 
@@ -63,8 +62,7 @@ export default function HeadToHeadBoard({
         displayName: info?.displayName ?? "Unknown Player",
         avatarUrl: info?.avatarUrl ?? null,
         gamesPlayed: stats.gamesPlayed,
-        wins: stats.wins,
-        losses: stats.losses,
+        diff: stats.wins - stats.losses,
         winRate: stats.gamesPlayed > 0 ? stats.wins / stats.gamesPlayed : null,
       };
     });
@@ -226,8 +224,13 @@ export default function HeadToHeadBoard({
                       {row.displayName}
                     </td>
                     <td className="py-2 pr-3">{row.gamesPlayed}</td>
-                    <td className="py-2 pr-3">{row.wins}</td>
-                    <td className="py-2 pr-3">{row.losses}</td>
+                    <td
+                      className={`py-2 pr-3 font-semibold ${
+                        row.diff > 0 ? "text-green-500" : row.diff < 0 ? "text-red-500" : "text-muted"
+                      }`}
+                    >
+                      {row.diff > 0 ? `+${row.diff}` : row.diff}
+                    </td>
                     <td className="py-2 pr-3">
                       {row.winRate === null ? "—" : `${Math.round(row.winRate * 100)}%`}
                     </td>
