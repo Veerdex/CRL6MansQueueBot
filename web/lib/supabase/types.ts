@@ -12,6 +12,7 @@ export type PlayerRow = {
   discord_id: string;
   display_name: string;
   mmr: number;
+  peak_mmr: number;
   band: Band | null;
   is_placed: boolean;
   total_games_played: number;

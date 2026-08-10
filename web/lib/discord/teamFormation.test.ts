@@ -8,6 +8,7 @@ function player(id: string, mmr: number, isPlaced = false): PlayerRow {
     discord_id: `discord-${id}`,
     display_name: id,
     mmr,
+    peak_mmr: mmr,
     band: null,
     is_placed: isPlaced,
     total_games_played: 0,

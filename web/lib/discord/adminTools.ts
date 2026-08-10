@@ -422,6 +422,7 @@ async function processCorrectReport(
           .from("crl6mansqueuebot_players")
           .update({
             mmr: correctedMmr,
+            peak_mmr: Math.max(p.peak_mmr, correctedMmr),
           })
           .eq("id", p.id);
 
@@ -588,7 +589,10 @@ async function processAdjustMmr(
   }
 
   const newMmr = hasAbsolute ? (mmr as number) : player.mmr + (delta as number);
-  await supabase.from("crl6mansqueuebot_players").update({ mmr: newMmr }).eq("id", player.id);
+  await supabase
+    .from("crl6mansqueuebot_players")
+    .update({ mmr: newMmr, peak_mmr: Math.max(player.peak_mmr, newMmr) })
+    .eq("id", player.id);
   await logAdminAction(actorId, "adjust_mmr", player.discord_id, undefined, [
     { field: "MMR", before: player.mmr.toFixed(1), after: newMmr.toFixed(1) },
   ]);
@@ -983,6 +987,7 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
       .from("crl6mansqueuebot_players")
       .update({
         mmr: 0,
+        peak_mmr: 0,
         is_placed: false,
         band: null,
         total_games_played: 0,

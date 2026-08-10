@@ -18,6 +18,7 @@ export default async function AllTimeStatsPage() {
       displayName: player.display_name,
       avatarUrl: player.avatar_url,
       games,
+      peakMmr: player.peak_mmr,
     }));
 
   return (

@@ -13,6 +13,7 @@ export interface StatsPlayer {
   displayName: string;
   avatarUrl: string | null;
   games: CompletedGame[];
+  peakMmr?: number;
 }
 
 export interface SeasonRef {
@@ -21,7 +22,14 @@ export interface SeasonRef {
 }
 
 type QueueFilter = QueueType | "all";
-type SortKey = "gamesPlayed" | "wins" | "losses" | "winRate" | "longestWinStreak" | "currentStreak";
+type SortKey =
+  | "gamesPlayed"
+  | "wins"
+  | "losses"
+  | "winRate"
+  | "longestWinStreak"
+  | "currentStreak"
+  | "peakMmr";
 
 const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "gamesPlayed", label: "Games" },
@@ -31,6 +39,12 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "longestWinStreak", label: "Longest streak" },
   { key: "currentStreak", label: "Current streak" },
 ];
+
+// Peak MMR only makes sense for Rank Queue (Universal Queue never moves MMR — see CLAUDE.md,
+// "Queueing"), and only on the All-Time board (a season-scoped "peak" would need a separate
+// per-season high-water mark this codebase doesn't track). Reuses the existing queue-filter
+// control rather than adding new UI — the column simply isn't there under "All"/"Universal".
+const PEAK_COLUMN: { key: SortKey; label: string } = { key: "peakMmr", label: "Peak" };
 
 const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
 
@@ -70,9 +84,18 @@ export default function StatsBoard({
         queueType: queueFilter,
       });
       const stats = computeStats(scoped);
-      return { playerId: p.playerId, displayName: p.displayName, avatarUrl: p.avatarUrl, ...stats };
+      return {
+        playerId: p.playerId,
+        displayName: p.displayName,
+        avatarUrl: p.avatarUrl,
+        peakMmr: p.peakMmr ?? 0,
+        ...stats,
+      };
     });
   }, [players, queueFilter, selectedSeasonId, mode]);
+
+  const showPeakColumn = mode === "all-time" && queueFilter === "rank";
+  const columns = showPeakColumn ? [...COLUMNS, PEAK_COLUMN] : COLUMNS;
 
   const sortedRows = useMemo(() => {
     const withSortValue = rows.map((row) => {
@@ -140,7 +163,7 @@ export default function StatsBoard({
   const header = (
     <tr className="bg-surface-2/60 text-left text-muted">
       <th className="py-2.5 pr-3 pl-4 font-semibold">Player</th>
-      {COLUMNS.map((col) => (
+      {columns.map((col) => (
         <th
           key={col.key}
           className="cursor-pointer select-none py-2.5 pr-3 font-semibold transition-colors hover:text-foreground"
@@ -208,7 +231,7 @@ export default function StatsBoard({
             <thead>{header}</thead>
             <tbody>
               <tr>
-                <td colSpan={COLUMNS.length + 1} className="py-10 text-center text-muted">
+                <td colSpan={columns.length + 1} className="py-10 text-center text-muted">
                   No players yet.
                 </td>
               </tr>
@@ -259,6 +282,9 @@ export default function StatsBoard({
                         "—"
                       )}
                     </td>
+                    {showPeakColumn && (
+                      <td className="py-2 pr-3">{Math.round(applyMMRTransform(row.peakMmr, mmrScale, mmrShift))}</td>
+                    )}
                   </tr>
                 );
               })}

@@ -249,6 +249,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
           .from("crl6mansqueuebot_players")
           .update({
             mmr: r.newMmr,
+            peak_mmr: Math.max(p.peak_mmr, r.newMmr),
             total_games_played: p.total_games_played + 1,
             rank_games_played: p.rank_games_played + 1,
             band_games_played: p.band_games_played + 1,
