@@ -24,9 +24,9 @@ export interface MatchHistoryEntry {
   teamA: MatchHistoryPlayer[];
   teamB: MatchHistoryPlayer[];
   // P(Team A wins), from the same calculateTeamStrength()/s_scale pair the /chances Discord
-  // command uses — computed off each player's CURRENT mmr, since no historical pre-match
-  // snapshot is persisted anywhere in the schema (series_players.mmr_delta is only the delta
-  // applied at report time, not a before/after snapshot).
+  // command uses — computed off each player's mmr_before snapshot (see
+  // migration 0032_series_players_mmr_before.sql), falling back to their current mmr for
+  // matches reported before that column existed.
   expectedA: number;
 }
 
@@ -51,7 +51,7 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
 
   const { data: rosterRows, error: rosterError } = await supabase
     .from("crl6mansqueuebot_series_players")
-    .select("series_id, player_id, team")
+    .select("series_id, player_id, team, mmr_before")
     .in(
       "series_id",
       series.map((s) => s.id),
@@ -70,9 +70,9 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
 
   const playerById = new Map((players ?? []).map((p) => [p.id, p]));
 
-  const rosterBySeries = new Map<string, { playerId: string; team: Team }[]>();
+  const rosterBySeries = new Map<string, { playerId: string; team: Team; mmrBefore: number | null }[]>();
   for (const row of rosterRows ?? []) {
-    const entry = { playerId: row.player_id, team: row.team };
+    const entry = { playerId: row.player_id, team: row.team, mmrBefore: row.mmr_before };
     const list = rosterBySeries.get(row.series_id);
     if (list) list.push(entry);
     else rosterBySeries.set(row.series_id, [entry]);
@@ -80,7 +80,11 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
 
   const sScale = await getConfigNumber("s_scale", 400);
 
-  const toHistoryPlayer = (playerId: string): MatchHistoryPlayer | null => {
+  // Prefers the mmr_before snapshot taken at report time (see migration
+  // 0032_series_players_mmr_before.sql) so this card reflects what the player's MMR actually
+  // was when the match was played; falls back to their current mmr for matches reported before
+  // that column existed, since no historical value exists to recover for those.
+  const toHistoryPlayer = (playerId: string, mmrBefore: number | null): MatchHistoryPlayer | null => {
     const p = playerById.get(playerId);
     if (!p) return null;
     return {
@@ -89,7 +93,7 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
       avatarUrl: p.avatar_url,
       band: p.band,
       isPrism: p.is_prism,
-      mmr: p.mmr,
+      mmr: mmrBefore ?? p.mmr,
     };
   };
 
@@ -98,11 +102,11 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
     const roster = rosterBySeries.get(s.id) ?? [];
     const teamA = roster
       .filter((r) => r.team === "A")
-      .map((r) => toHistoryPlayer(r.playerId))
+      .map((r) => toHistoryPlayer(r.playerId, r.mmrBefore))
       .filter((p): p is MatchHistoryPlayer => p !== null);
     const teamB = roster
       .filter((r) => r.team === "B")
-      .map((r) => toHistoryPlayer(r.playerId))
+      .map((r) => toHistoryPlayer(r.playerId, r.mmrBefore))
       .filter((p): p is MatchHistoryPlayer => p !== null);
     // Guards against a malformed/incomplete roster (shouldn't happen for a genuinely reported
     // series, but calculateTeamStrength expects exactly 3 ratings per team).

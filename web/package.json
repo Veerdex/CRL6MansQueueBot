@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "register-commands": "node --env-file=.env.local scripts/register-commands.mjs"
+    "register-commands": "node --env-file=.env.local scripts/register-commands.mjs",
+    "backfill-mmr-before": "tsx --env-file=.env.local scripts/backfill-mmr-before.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",
@@ -27,6 +28,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
+    "tsx": "^4.23.12",
     "typescript": "^5",
     "vitest": "^4.1.10"
   }

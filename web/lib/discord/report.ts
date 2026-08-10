@@ -141,6 +141,21 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     .in("id", allSeriesPlayers.map((sp) => sp.player_id));
   const playersById = new Map((players ?? []).map((p) => [p.id, p]));
 
+  // Per-match MMR snapshot (see CLAUDE.md, "Match History" and migration
+  // 0032_series_players_mmr_before.sql) — captures each player's mmr as it stood right before
+  // this report is applied, so History's win-odds bar/badges reflect what it actually looked
+  // like at match time instead of drifting with every later game. Written unconditionally
+  // (rank/universal/test) since it's just a snapshot, not stat-bearing.
+  await Promise.all(
+    allSeriesPlayers.map((sp) =>
+      supabase
+        .from("crl6mansqueuebot_series_players")
+        .update({ mmr_before: playersById.get(sp.player_id)!.mmr })
+        .eq("series_id", series!.id)
+        .eq("player_id", sp.player_id),
+    ),
+  );
+
   // Report summary is split by winning/losing team (not one flat list) — each line shows the
   // player's MMR delta and their resulting MMR/band, per CLAUDE.md's "Reporting & disputes".
   // For Rank Queue series, bands.ts's recomputeBands() runs right below against the full placed

@@ -150,27 +150,15 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 // Soft reset — every currently placed, non-test player (not just this season's participants,
 // see CLAUDE.md, "Seasons"), applied after standings are already written.
 //
-// Two-piece formula, continuous at mmr = 0 (both pieces equal 0 there, so no jump):
-//   mmr >= 0: new = (mmr * median) / (median + decay_factor * mmr)
-//     A hyperbolic (Michaelis-Menten style) decay toward 0, scaled by the pool median. Always
-//     strictly decreasing for mmr > 0 and asymptotically safe — it can never cross below 0 for
-//     a non-negative input, unlike a plain linear `old - (old - median) * decay_factor`, which
-//     would push below-median players' MMR *up*. Every positive-MMR player loses something,
-//     with players near the median losing proportionally more than players already near 0.
-//   mmr < 0: new = mmr / 3
-//     Negative MMR (no floor during normal play — see CLAUDE.md, "MMR / Elo") recovers toward
-//     0 at a fixed 3x-closer rate each season, independent of the median.
-// Both pieces are strictly increasing in `mmr` and agree at the boundary, so the combined
-// function is strictly increasing across the whole domain — it never reorders players by MMR,
-// so no band recompute is needed here; the next daily cron tick handles band drift exactly as
-// it would on any other day (see bands.ts).
+// decayMmr/computeSafeMedian live in ../mmr/seasonDecay.ts (a plain, dependency-free module)
+// rather than here, so web/scripts/backfill-mmr-before.ts — a tsx script that can't rely on
+// Next.js's "react-server" resolution condition to no-op the "server-only" guard this file
+// carries — can import them directly. Re-exported below so every existing import site/test that
+// pulls them from "./seasonClose" keeps working unchanged.
 // ---------------------------------------------------------------------------
 
-function decayMmr(mmr: number, median: number, decayFactor: number): number {
-  if (mmr < 0) return mmr / 3;
-  if (mmr === 0) return 0;
-  return (mmr * median) / (median + decayFactor * mmr);
-}
+export { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
+import { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
 
 async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Promise<number> {
   const pool = await fetchAllPages((from, to) =>
@@ -184,9 +172,7 @@ async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Prom
   );
   if (pool.length === 0) return 0;
 
-  const sortedMmr = pool.map((p) => p.mmr).sort((a, b) => a - b);
-  const mid = Math.floor(sortedMmr.length / 2);
-  const median = sortedMmr.length % 2 === 0 ? (sortedMmr[mid - 1] + sortedMmr[mid]) / 2 : sortedMmr[mid];
+  const median = computeSafeMedian(pool.map((p) => p.mmr));
 
   await Promise.all(
     pool.map((p) => supabase.from("crl6mansqueuebot_players").update({ mmr: decayMmr(p.mmr, median, decayFactor) }).eq("id", p.id)),

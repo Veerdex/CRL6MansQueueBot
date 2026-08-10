@@ -60,6 +60,10 @@ export type SeriesPlayerRow = {
   player_id: string;
   team: Team;
   mmr_delta: number;
+  // Player's raw mmr immediately before this series was reported — see migration
+  // 0032_series_players_mmr_before.sql. Null for series reported before that migration, and
+  // callers must fall back to the player's current mmr in that case.
+  mmr_before: number | null;
 };
 
 export type SeasonHistoryRow = {
