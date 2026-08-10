@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "register-commands": "node --env-file=.env.local scripts/register-commands.mjs",
-    "backfill-mmr-before": "tsx --env-file=.env.local scripts/backfill-mmr-before.ts"
+    "backfill-mmr-before": "tsx --env-file=.env.local scripts/backfill-mmr-before.ts",
+    "backfill-peak-mmr": "tsx --env-file=.env.local scripts/backfill-peak-mmr.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",

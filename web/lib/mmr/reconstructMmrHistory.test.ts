@@ -282,4 +282,78 @@ describe("reconstructMmrHistory", () => {
     // delta, not another fresh 1000 baseline.
     expect(toDisplay(result.mmrBeforeBySeries.get("m2")!.get("Veerdex")!)).toBe(toDisplay(32));
   });
+
+  it("tracks no peak at all for a player who never reaches placementGamesRequired", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: Array.from({ length: 5 }, (_, i) => ({
+        seriesId: `s${i}`,
+        seasonId: "season1",
+        reportedAt: `2026-01-01T00:0${i}:00Z`,
+        isRank: true,
+        players: [{ playerId: "p1", mmrDelta: 50 }],
+      })),
+      adminAdjustments: [],
+      seasons: [],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 10,
+    });
+
+    expect(result.peakMmrByPlayer.has("p1")).toBe(false);
+  });
+
+  it("seeds peak at the mmr held the instant a player crosses placementGamesRequired, then only rises on later gains", () => {
+    // Games 1-2 push p1 to 200 (not yet placed at placementGamesRequired=3). Game 3 places them
+    // at 150 (a loss just before crossing the line) — peak must seed at 150, not the earlier 200
+    // high, since peak isn't tracked pre-placement. Game 4 rises to 300 (new peak). Game 5 drops
+    // to 100 (peak must stay at 300, not fall).
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: [
+        { seriesId: "s1", seasonId: "season1", reportedAt: "2026-01-01T00:00:00Z", isRank: true, players: [{ playerId: "p1", mmrDelta: 150 }] },
+        { seriesId: "s2", seasonId: "season1", reportedAt: "2026-01-01T00:01:00Z", isRank: true, players: [{ playerId: "p1", mmrDelta: 50 }] },
+        { seriesId: "s3", seasonId: "season1", reportedAt: "2026-01-01T00:02:00Z", isRank: true, players: [{ playerId: "p1", mmrDelta: -50 }] },
+        { seriesId: "s4", seasonId: "season1", reportedAt: "2026-01-01T00:03:00Z", isRank: true, players: [{ playerId: "p1", mmrDelta: 150 }] },
+        { seriesId: "s5", seasonId: "season1", reportedAt: "2026-01-01T00:04:00Z", isRank: true, players: [{ playerId: "p1", mmrDelta: -200 }] },
+      ],
+      adminAdjustments: [],
+      seasons: [],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 3,
+    });
+
+    expect(result.finalMmrByPlayer.get("p1")).toBe(100);
+    expect(result.peakMmrByPlayer.get("p1")).toBe(300);
+  });
+
+  it("an admin adjust-mmr event before placement does not seed a peak on its own", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: [],
+      adminAdjustments: [{ playerId: "p1", at: "2026-01-01T00:00:00Z", newMmr: 999 }],
+      seasons: [],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 1,
+    });
+
+    expect(result.peakMmrByPlayer.has("p1")).toBe(false);
+  });
+
+  it("bumps peak from an admin adjust-mmr event once the player is already placed", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: [{ seriesId: "s1", seasonId: "season1", reportedAt: "2026-01-01T00:00:00Z", isRank: true, players: [{ playerId: "p1", mmrDelta: 50 }] }],
+      adminAdjustments: [{ playerId: "p1", at: "2026-01-02T00:00:00Z", newMmr: 800 }],
+      seasons: [],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 1,
+    });
+
+    // Placed by s1 at mmr 50 (peak seeds at 50), then the later admin override to 800 raises it.
+    expect(result.peakMmrByPlayer.get("p1")).toBe(800);
+  });
 });

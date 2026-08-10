@@ -68,6 +68,12 @@ export interface ReconstructMmrHistoryResult {
   // seriesId -> playerId -> reconstructed mmr_before value.
   mmrBeforeBySeries: Map<string, Map<string, number>>;
   finalMmrByPlayer: Map<string, number>;
+  // Running high-water mark of each player's mmr, tracked only from the moment they cross
+  // placementGamesRequired onward — mirrors bands.ts's recomputeBands() seeding peak_mmr at the
+  // instant a player places, and report.ts/adminTools.ts only bumping it while is_placed. A
+  // player who never reaches placement within this timeline has no entry (peak is meaningless
+  // while unranked — see CLAUDE.md's "Peak MMR" section).
+  peakMmrByPlayer: Map<string, number>;
   // Divergences between the simulation and season_history's recorded ground truth at a season
   // close — the simulation snaps to the recorded value when this happens (see runDecayForSeason
   // below), so drift never compounds past one season boundary, but it's surfaced here as a
@@ -145,6 +151,22 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
   const rankGamesPlayed = new Map<string, number>(input.playerIds.map((id) => [id, 0]));
   const mmrBeforeBySeries = new Map<string, Map<string, number>>();
   const driftWarnings: DriftWarning[] = [];
+  const placed = new Set<string>();
+  const peakMmr = new Map<string, number>();
+
+  // Placement transition, or an already-placed player's mmr moving — mirrors bands.ts seeding
+  // peak_mmr at the instant of placement (Math.max against a 0 default) and report.ts/
+  // adminTools.ts only bumping it thereafter while is_placed.
+  const touchPeak = (playerId: string) => {
+    const current = mmr.get(playerId) ?? 0;
+    if (!placed.has(playerId)) {
+      if ((rankGamesPlayed.get(playerId) ?? 0) < input.placementGamesRequired) return;
+      placed.add(playerId);
+      peakMmr.set(playerId, Math.max(current, 0));
+    } else {
+      peakMmr.set(playerId, Math.max(peakMmr.get(playerId) ?? 0, current));
+    }
+  };
 
   const checkpointByKey = new Map<string, number>();
   for (const c of input.seasonHistoryCheckpoints) {
@@ -193,14 +215,16 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
       for (const p of e.players) {
         mmr.set(p.playerId, (mmr.get(p.playerId) ?? 0) + p.mmrDelta);
         if (e.isRank) rankGamesPlayed.set(p.playerId, (rankGamesPlayed.get(p.playerId) ?? 0) + 1);
+        touchPeak(p.playerId);
       }
     } else {
       mmr.set(e.playerId, e.newMmr);
+      touchPeak(e.playerId);
     }
 
     const seasonIds = decaysByIndex.get(i);
     if (seasonIds) for (const seasonId of seasonIds) runDecayForSeason(seasonId);
   });
 
-  return { mmrBeforeBySeries, finalMmrByPlayer: mmr, driftWarnings };
+  return { mmrBeforeBySeries, finalMmrByPlayer: mmr, peakMmrByPlayer: peakMmr, driftWarnings };
 }
