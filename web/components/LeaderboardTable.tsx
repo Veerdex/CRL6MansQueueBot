@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import SearchBar from "./SearchBar";
 import PlayerAvatar from "./PlayerAvatar";
 import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
+import { playTap } from "@/lib/sound";
 import type { Band } from "@/lib/supabase/types";
 
 export interface MainBoardRow {
@@ -63,9 +65,15 @@ export default function LeaderboardTable({
   mmrScale: number;
   mmrShift: number;
 }) {
+  const router = useRouter();
   const [page, setPage] = useState(0);
   const [highlightedPlayerId, setHighlightedPlayerId] = useState<string | null>(null);
   const highlightRef = useRef<HTMLTableRowElement>(null);
+
+  function goToPlayer(playerId: string) {
+    playTap();
+    router.push(`/head-to-head/${playerId}`);
+  }
 
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages - 1);
@@ -136,10 +144,11 @@ export default function LeaderboardTable({
                   <tr
                     key={row.playerId}
                     ref={isHighlighted ? highlightRef : null}
-                    className={`row-hover border-b border-border text-foreground last:border-b-0 ${
+                    className={`row-hover cursor-pointer border-b border-border text-foreground last:border-b-0 ${
                       row.isPrism ? "top-cut" : ""
                     } ${isHighlighted ? "highlight-pulse" : ""}`}
                     style={{ backgroundImage: backgroundGradient }}
+                    onClick={() => goToPlayer(row.playerId)}
                   >
                     <td className={`py-2 pr-3 pl-4 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{position}</td>
                     <td className="py-2 pr-3 font-medium">
