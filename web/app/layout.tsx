@@ -50,6 +50,9 @@ export default async function RootLayout({
               <Link href="/match-times" className="text-muted hover:text-foreground transition-opacity hover:opacity-80">
                 Match Times
               </Link>
+              <Link href="/history" className="text-muted hover:text-foreground transition-opacity hover:opacity-80">
+                History
+              </Link>
             </div>
             <SoundToggle />
           </div>
