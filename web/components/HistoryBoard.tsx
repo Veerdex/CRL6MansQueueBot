@@ -48,7 +48,7 @@ export default function HistoryBoard({
           No reported matches{selectedPlayerId ? " for this player" : ""} yet.
         </div>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(480px,1fr))] gap-4">
           {pageMatches.map((match) => (
             <MatchHistoryCard key={match.seriesId} match={match} mmrScale={mmrScale} mmrShift={mmrShift} />
           ))}
