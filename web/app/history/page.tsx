@@ -18,7 +18,7 @@ export default async function HistoryPage() {
   ]);
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-10">
+    <div className="mx-auto w-full max-w-[1600px] px-4 py-10">
       <Link
         href="/"
         className="animate-in mb-6 inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"

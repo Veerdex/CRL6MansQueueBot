@@ -5,7 +5,7 @@ import HistoryPlayerFilter from "./HistoryPlayerFilter";
 import MatchHistoryCard from "./MatchHistoryCard";
 import type { MatchHistoryEntry } from "@/lib/leaderboard/history";
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 12;
 
 export default function HistoryBoard({
   matches,
@@ -48,7 +48,7 @@ export default function HistoryBoard({
           No reported matches{selectedPlayerId ? " for this player" : ""} yet.
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
           {pageMatches.map((match) => (
             <MatchHistoryCard key={match.seriesId} match={match} mmrScale={mmrScale} mmrShift={mmrShift} />
           ))}
