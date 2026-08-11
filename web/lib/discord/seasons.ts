@@ -18,8 +18,9 @@ function deferredEphemeral(run: () => Promise<void>) {
 
 // ---------------------------------------------------------------------------
 // /newseason — owner-or-admin-role gated. Closes any current season (median-compression MMR
-// soft reset, season_history standings — see seasonClose.ts and CLAUDE.md, "Seasons") and opens
-// the next one, then runs recomputeBands() (bands.ts) once against the freshly-opened season —
+// soft reset, season_history standings, every placed player reset back to Unranked — see
+// seasonClose.ts and CLAUDE.md, "Seasons") and opens the next one, then runs recomputeBands()
+// (bands.ts) once against the freshly-opened season —
 // Prism is a live top-N overlay gated on *this season's* Rank Queue games played, so without an
 // explicit recompute here, last season's Prism holders would stay Prism until their own next
 // report happens to re-trigger it, even though the new season's games-played count just reset
@@ -63,8 +64,10 @@ async function processNewSeason(interaction: DiscordInteraction, confirmation: s
     .select("id, season_number");
   const current = closedRows?.[0] ?? null;
 
+  let playersReset = 0;
   if (current) {
-    await closeSeason(current);
+    const summary = await closeSeason(current);
+    playersReset = summary.playersReset;
   }
 
   const { data: latest } = await supabase
@@ -90,7 +93,7 @@ async function processNewSeason(interaction: DiscordInteraction, confirmation: s
   await logAdminAction(actorId, "new_season", created.id, `season_number=${nextNumber}`);
   await editOriginalResponse(interaction.token, {
     content: current
-      ? `Closed season ${current.season_number} (standings recorded, MMR soft-reset) and started season ${nextNumber} (Prism cut refreshed for the new season).`
+      ? `Closed season ${current.season_number} (standings recorded, MMR soft-reset, ${playersReset} player(s) reset to Unranked) and started season ${nextNumber} (Prism cut refreshed for the new season).`
       : `Started season ${nextNumber} (no prior active season).`,
   });
 }

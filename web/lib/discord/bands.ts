@@ -483,6 +483,87 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 // can't be resolved — a missing role sync here shouldn't block a player from joining a queue.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// /newseason's "everyone starts over" reset (see CLAUDE.md, "Seasons") — called from
+// seasonClose.ts's closeSeason(), AFTER the MMR soft-reset decay has already run. That decay
+// pass (applyMmrDecay) queries its pool with `is_placed = true`, so this reset must not flip
+// is_placed until decay has already read/written against it, or the decay pool would come back
+// empty.
+//
+// Every currently-placed, non-test player is sent back through placement from scratch, per two
+// explicit user decisions (see CLAUDE.md):
+//   - rank_games_played resets to 0. This is the same lifetime counter that also gates
+//     provisional/elevated K-factor eligibility (provisional_games), so resetting it to force
+//     re-placement also re-elevates provisional K for a player's first placement_games_required
+//     games of the new season — a deliberate, confirmed tradeoff rather than adding a second,
+//     season-scoped placement counter.
+//   - band_games_played and last_rank_game_at also reset (to 0 / null) — both only ever gate the
+//     demotion grace/hysteresis checks for an already-placed player, so a stale value from last
+//     season (e.g. "hasn't played in 5 days") has no meaning once someone's back to Unranked.
+// band/is_placed are cleared. peak_mmr and total_games_played are deliberately left untouched:
+// peak_mmr is a lifetime high-water mark that's never lowered by anything else either (including
+// season decay itself), and total_games_played is a lifetime counter with no placement meaning.
+//
+// Discord role sync swaps each affected player's current band role for Unranked, the mirror
+// image of the swap recomputeBands() already does the moment a player first places.
+// ---------------------------------------------------------------------------
+
+export async function resetAllPlacementsToUnranked(): Promise<number> {
+  const supabase = createAdminClient();
+
+  const { data: placed } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("id, discord_id, band")
+    .eq("is_placed", true)
+    .eq("is_test_data", false);
+  const players = placed ?? [];
+  if (players.length === 0) return 0;
+
+  await supabase
+    .from("crl6mansqueuebot_players")
+    .update({
+      is_placed: false,
+      band: null,
+      rank_games_played: 0,
+      band_games_played: 0,
+      last_rank_game_at: null,
+    })
+    .in(
+      "id",
+      players.map((p) => p.id),
+    );
+
+  const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
+  const roleIdByBand = new Map((bandRoleRows ?? []).map((r) => [r.band, r.role_id]));
+  const unrankedRoleId = roleIdByBand.get("Unranked");
+
+  if (roleIdByBand.size > 0) {
+    let guildId: string | null = null;
+    try {
+      guildId = await getGuildId();
+    } catch (err) {
+      console.error("Season placement reset: failed to resolve guild id, skipping role sync", err);
+    }
+
+    if (guildId) {
+      const resolvedGuildId = guildId;
+      await Promise.all(
+        players.map(async (p) => {
+          try {
+            const oldRoleId = p.band ? roleIdByBand.get(p.band as Band) : undefined;
+            if (oldRoleId) await removeMemberRole(resolvedGuildId, p.discord_id, oldRoleId);
+            if (unrankedRoleId) await addMemberRole(resolvedGuildId, p.discord_id, unrankedRoleId);
+          } catch (err) {
+            console.error(`Season placement reset: failed to sync Discord role for ${p.discord_id}`, err);
+          }
+        }),
+      );
+    }
+  }
+
+  return players.length;
+}
+
 export async function grantUnrankedRoleToNewPlayer(discordId: string): Promise<void> {
   const supabase = createAdminClient();
   const { data: roleRow } = await supabase

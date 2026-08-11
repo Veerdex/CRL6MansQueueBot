@@ -1,9 +1,10 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getConfigNumber } from "./config";
+import { resetAllPlacementsToUnranked } from "./bands";
 import type { SeasonRow } from "@/lib/supabase/types";
 
-type CloseSummary = { participants: number; top10: number; playersDecayed: number };
+type CloseSummary = { participants: number; top10: number; playersDecayed: number; playersReset: number };
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -46,6 +47,11 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 // by bands.ts's recomputeBands() (daily cron, every Rank Queue report, admin actions), not a
 // season-close-only event. The `made_top10`/season_history write below is purely an archival
 // record of that season's standings, decoupled from the actual `is_prism` role state.
+//
+// After decay, every currently-placed player is reset back to Unranked (bands.ts's
+// resetAllPlacementsToUnranked — see CLAUDE.md, "Seasons") so a new season starts with everyone
+// re-earning their band from scratch. This must run AFTER applyMmrDecay, since that function's
+// own pool query filters on is_placed = true — reset first and decay would find nobody to decay.
 // ---------------------------------------------------------------------------
 
 export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<CloseSummary> {
@@ -93,7 +99,9 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 
   const participantIds = [...gamesPlayedByPlayerId.keys()];
   if (participantIds.length === 0) {
-    return { participants: 0, top10: 0, playersDecayed: await applyMmrDecay(supabase, decayFactor) };
+    const playersDecayed = await applyMmrDecay(supabase, decayFactor);
+    const playersReset = await resetAllPlacementsToUnranked();
+    return { participants: 0, top10: 0, playersDecayed, playersReset };
   }
 
   const players = (
@@ -142,8 +150,9 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   // qualifies, rather than waiting for their next report.
 
   const playersDecayed = await applyMmrDecay(supabase, decayFactor);
+  const playersReset = await resetAllPlacementsToUnranked();
 
-  return { participants: ranked.length, top10: top10Ids.size, playersDecayed };
+  return { participants: ranked.length, top10: top10Ids.size, playersDecayed, playersReset };
 }
 
 // ---------------------------------------------------------------------------
