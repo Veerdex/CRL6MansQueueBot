@@ -122,6 +122,7 @@ export default function UnifiedLeaderboard({
       displayName: player.display_name,
       avatarUrl: player.avatar_url,
       games,
+      peakMmr: player.peak_mmr,
     }));
   }, [eligiblePlayers]);
 

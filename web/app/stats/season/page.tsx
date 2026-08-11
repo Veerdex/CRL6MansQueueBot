@@ -30,6 +30,7 @@ export default async function SeasonStatsPage() {
       displayName: player.display_name,
       avatarUrl: player.avatar_url,
       games,
+      peakMmr: player.peak_mmr,
     }));
 
   return (

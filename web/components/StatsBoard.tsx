@@ -14,7 +14,11 @@ export interface StatsPlayer {
   displayName: string;
   avatarUrl: string | null;
   games: CompletedGame[];
-  peakMmr?: number;
+  // Required, not optional — an optional field here silently defaulted to 0 at the one call site
+  // that forgot it (UnifiedLeaderboard's home-page All-Time tab), which rendered as "NA" for every
+  // player while the standalone /stats/all-time route was correct. Keep it mandatory so a missing
+  // peak is a compile error rather than a plausible-looking wrong number.
+  peakMmr: number;
 }
 
 export interface SeasonRef {
@@ -96,7 +100,7 @@ export default function StatsBoard({
         playerId: p.playerId,
         displayName: p.displayName,
         avatarUrl: p.avatarUrl,
-        peakMmr: p.peakMmr ?? 0,
+        peakMmr: p.peakMmr,
         ...stats,
       };
     });
