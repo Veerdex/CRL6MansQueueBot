@@ -81,6 +81,11 @@ export async function setConfigValue(key: string, value: string): Promise<void> 
   await supabase.from("crl6mansqueuebot_config").upsert({ key, value });
 }
 
+export async function deleteConfigValue(key: string): Promise<void> {
+  const supabase = createAdminClient();
+  await supabase.from("crl6mansqueuebot_config").delete().eq("key", key);
+}
+
 // Apply MMR display transformation: displayed_mmr = (actual_mmr * scale) + shift
 export async function getDisplayMMR(actualMMR: number): Promise<number> {
   const scale = await getConfigNumber("mmr_scale", 1);

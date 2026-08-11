@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { discordFetch, sendDirectMessage } from "@/lib/discord/rest";
-import { getConfigNumber } from "@/lib/discord/config";
+import { discordFetch, sendDirectMessage, GOLD_COLOR } from "@/lib/discord/rest";
+import { getConfigNumber, getConfigValue, deleteConfigValue } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
 import { postTrackedQueueMessage, refreshQueueMessage } from "@/lib/discord/queue";
+import { performSeasonReset } from "@/lib/discord/seasons";
+import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
@@ -219,7 +221,57 @@ export async function POST(request: Request) {
     subRequestsExpired += 1;
   }
 
-  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired });
+  // Scheduled season reset (/schedule-reset — see CLAUDE.md, "Seasons"): scheduled_season_reset_at
+  // is a plain ISO timestamp in the generic config table. Delete it BEFORE running the reset
+  // (not after) so a slow performSeasonReset() that overruns into the next minute's sweep tick
+  // can't fire twice — the same "claim first, then act" ordering used everywhere else in this
+  // route, just via delete-the-key instead of an atomic status UPDATE, since there's no series
+  // row here to claim against.
+  let scheduledResetFired = false;
+  const scheduledResetAt = await getConfigValue(SCHEDULED_RESET_CONFIG_KEY);
+  if (scheduledResetAt && new Date(scheduledResetAt).getTime() <= Date.now()) {
+    await deleteConfigValue(SCHEDULED_RESET_CONFIG_KEY);
+    try {
+      const summary = await performSeasonReset();
+      scheduledResetFired = true;
+
+      // No real Discord actor to attribute this to — bypasses logAdminAction (which always
+      // renders an `Actor: <@id>` field) in favor of a dedicated announcement embed, but still
+      // records a raw audit_log row for traceability. actor_discord_id is NOT NULL with no
+      // "system" sentinel convention elsewhere in the schema; "system" here renders as a
+      // harmless unresolved <@system> mention in /admin audit-log's plain-text listing only
+      // (not a live notification).
+      await supabase.from("crl6mansqueuebot_audit_log").insert({
+        actor_discord_id: "system",
+        action: "scheduled_reset_fire",
+        details: summary.closedSeasonNumber
+          ? `Closed season ${summary.closedSeasonNumber}, started season ${summary.newSeasonNumber}, ${summary.playersReset} player(s) reset to Unranked`
+          : `Started season ${summary.newSeasonNumber} (no prior active season)`,
+      });
+
+      const logChannelId = await getConfigValue("log_channel_id");
+      if (logChannelId) {
+        await discordFetch(`/channels/${logChannelId}/messages`, {
+          method: "POST",
+          body: JSON.stringify({
+            embeds: [
+              {
+                color: GOLD_COLOR,
+                title: "Scheduled Season Reset",
+                description: summary.closedSeasonNumber
+                  ? `Closed season ${summary.closedSeasonNumber} and started season ${summary.newSeasonNumber}. ${summary.playersReset} player(s) reset to Unranked.`
+                  : `Started season ${summary.newSeasonNumber} (no prior active season).`,
+              },
+            ],
+          }),
+        }).catch((err) => console.error("Sweep: failed to post scheduled-reset announcement embed", err));
+      }
+    } catch (err) {
+      console.error("Sweep: scheduled season reset failed", err);
+    }
+  }
+
+  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired, scheduledResetFired });
 }
 
 async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, message: string) {

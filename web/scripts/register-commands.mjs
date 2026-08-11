@@ -275,6 +275,48 @@ const commands = [
     ],
   },
   {
+    name: "schedule-reset",
+    description: "Schedule or clear an automatic future season reset.",
+    type: 1,
+    options: [
+      {
+        name: "set",
+        description: "Schedule a season reset for 12:00am Pacific the day after the given date.",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "year",
+            description: "Year, e.g. 2026.",
+            type: INTEGER_OPTION,
+            required: true,
+          },
+          {
+            name: "month",
+            description: "Month (1-12).",
+            type: INTEGER_OPTION,
+            required: true,
+            min_value: 1,
+            max_value: 12,
+          },
+          {
+            name: "day",
+            description: "Day of month (1-31).",
+            type: INTEGER_OPTION,
+            required: true,
+            min_value: 1,
+            max_value: 31,
+          },
+        ],
+      },
+      {
+        name: "clear",
+        description: "Cancel the currently scheduled season reset, if any.",
+        type: SUB_COMMAND,
+        options: [],
+      },
+    ],
+  },
+  {
     name: "vote-default",
     description: "Set or clear your default team-formation vote.",
     type: 1,

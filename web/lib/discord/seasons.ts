@@ -6,6 +6,7 @@ import { editOriginalResponse } from "./rest";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { closeSeason } from "./seasonClose";
 import { recomputeBands } from "./bands";
+import { deleteConfigValue } from "./config";
 import { interactionUserId, type DiscordInteraction } from "./types";
 
 function deferredEphemeral(run: () => Promise<void>) {
@@ -14,6 +15,63 @@ function deferredEphemeral(run: () => Promise<void>) {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
+}
+
+export type SeasonResetSummary = {
+  closedSeasonNumber: number | null;
+  newSeasonNumber: number;
+  playersReset: number;
+};
+
+// Shared by the manual /newseason command and the automatic scheduled-reset sweep trigger
+// (see scheduledReset.ts) — atomically closes any currently active season (standings, MMR
+// soft reset, everyone back to Unranked — see seasonClose.ts and CLAUDE.md, "Seasons") and
+// opens the next one, then runs recomputeBands() once against the freshly-opened season so a
+// stale Prism holder from last season's now-reset games-played count is cleared immediately
+// rather than waiting for their own next report.
+export async function performSeasonReset(): Promise<SeasonResetSummary> {
+  const supabase = createAdminClient();
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Atomic claim: same UPDATE...WHERE-status pattern as report.ts/teamFormation.ts. A double
+  // fire (Discord retry, an admin re-clicking because the deferred ACK gave no instant
+  // feedback, or a sweep tick racing a manual /newseason) must not run the soft reset twice —
+  // a double-decay would compress every player's MMR toward the median twice over, silently
+  // corrupting ratings. Only the first caller sees a matching row; a retry sees 0 rows back
+  // and skips straight to opening the next season with no `current` to report.
+  const { data: closedRows } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .update({ is_active: false, end_date: today })
+    .eq("is_active", true)
+    .select("id, season_number");
+  const current = closedRows?.[0] ?? null;
+
+  let playersReset = 0;
+  if (current) {
+    const summary = await closeSeason(current);
+    playersReset = summary.playersReset;
+  }
+
+  const { data: latest } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .select("season_number")
+    .order("season_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextNumber = (latest?.season_number ?? 0) + 1;
+
+  const { error } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .insert({ season_number: nextNumber, start_date: today, is_active: true })
+    .select("id")
+    .single();
+  if (error) {
+    throw new Error("Failed to create the new season");
+  }
+
+  await recomputeBands();
+
+  return { closedSeasonNumber: current?.season_number ?? null, newSeasonNumber: nextNumber, playersReset };
 }
 
 // ---------------------------------------------------------------------------
@@ -48,52 +106,22 @@ async function processNewSeason(interaction: DiscordInteraction, confirmation: s
     return;
   }
 
-  const supabase = createAdminClient();
-  const today = new Date().toISOString().slice(0, 10);
-
-  // Atomic claim: same UPDATE...WHERE-status pattern as report.ts/teamFormation.ts. A double
-  // fire (Discord retry, an admin re-clicking because the deferred ACK gave no instant
-  // feedback) must not run the soft reset twice — a double-decay would compress every
-  // player's MMR toward the median twice over, silently corrupting ratings. Only the first
-  // caller sees a matching row; a retry sees 0 rows back and skips straight to opening the
-  // next season with no `current` to report.
-  const { data: closedRows } = await supabase
-    .from("crl6mansqueuebot_seasons")
-    .update({ is_active: false, end_date: today })
-    .eq("is_active", true)
-    .select("id, season_number");
-  const current = closedRows?.[0] ?? null;
-
-  let playersReset = 0;
-  if (current) {
-    const summary = await closeSeason(current);
-    playersReset = summary.playersReset;
-  }
-
-  const { data: latest } = await supabase
-    .from("crl6mansqueuebot_seasons")
-    .select("season_number")
-    .order("season_number", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const nextNumber = (latest?.season_number ?? 0) + 1;
-
-  const { data: created, error } = await supabase
-    .from("crl6mansqueuebot_seasons")
-    .insert({ season_number: nextNumber, start_date: today, is_active: true })
-    .select("id")
-    .single();
-  if (error || !created) {
+  let summary: SeasonResetSummary;
+  try {
+    summary = await performSeasonReset();
+  } catch {
     await editOriginalResponse(interaction.token, { content: "Failed to create the new season — check logs." });
     return;
   }
 
-  await recomputeBands();
+  // A manual reset supersedes any pending scheduled one — leaving it in place would just fire
+  // a second, redundant close/reopen at the scheduled time.
+  await deleteConfigValue("scheduled_season_reset_at");
 
-  await logAdminAction(actorId, "new_season", created.id, `season_number=${nextNumber}`);
+  await logAdminAction(actorId, "new_season", undefined, `season_number=${summary.newSeasonNumber}`);
   await editOriginalResponse(interaction.token, {
-    content: current
-      ? `Closed season ${current.season_number} (standings recorded, MMR soft-reset, ${playersReset} player(s) reset to Unranked) and started season ${nextNumber} (Prism cut refreshed for the new season).`
-      : `Started season ${nextNumber} (no prior active season).`,
+    content: summary.closedSeasonNumber
+      ? `Closed season ${summary.closedSeasonNumber} (standings recorded, MMR soft-reset, ${summary.playersReset} player(s) reset to Unranked) and started season ${summary.newSeasonNumber} (Prism cut refreshed for the new season).`
+      : `Started season ${summary.newSeasonNumber} (no prior active season).`,
   });
 }

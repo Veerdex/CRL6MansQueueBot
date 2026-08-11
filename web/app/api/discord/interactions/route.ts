@@ -14,6 +14,7 @@ import {
   handleSiteCommand,
 } from "@/lib/discord/adminCommands";
 import { handleNewSeasonCommand } from "@/lib/discord/seasons";
+import { handleScheduleResetCommand } from "@/lib/discord/scheduledReset";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleNominateCommand, handleSubAcceptButton } from "@/lib/discord/sub";
@@ -165,6 +166,10 @@ export async function POST(request: Request) {
 
     if (commandName === "newseason") {
       return NextResponse.json(handleNewSeasonCommand(interaction));
+    }
+
+    if (commandName === "schedule-reset") {
+      return NextResponse.json(handleScheduleResetCommand(interaction));
     }
 
     if (commandName === "vote-default") {

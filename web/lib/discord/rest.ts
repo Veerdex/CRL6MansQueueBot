@@ -18,6 +18,9 @@ export const AMBER_COLOR = 0xffbf00;
 export const SUPERCHARGED_ANNOUNCE_COLOR = 0x9b30ff;
 export const SUPERCHARGED_COLOR = 0xc9a0ff;
 
+// Scheduled-season-reset auto-fire announcement embed — see CLAUDE.md, "Seasons".
+export const GOLD_COLOR = 0xffd700;
+
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.
