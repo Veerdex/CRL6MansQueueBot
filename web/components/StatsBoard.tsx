@@ -124,6 +124,19 @@ export default function StatsBoard({
                 ? -row.currentStreak.count
                 : 0;
           break;
+        case "peakMmr":
+          // A "no peak yet" player has raw peakMmr === 0, which is a real, sortable MMR value —
+          // sorting on it directly let them land ahead of placed players with a negative raw peak,
+          // and displayed as a misleadingly large transformed number (e.g. 1000 at the live
+          // mmr_shift). Force them to sort last regardless of direction instead: ±Infinity always
+          // loses the desc/asc comparison against a real (finite) peak.
+          value =
+            Math.abs(row.peakMmr) <= NO_PEAK_EPSILON
+              ? sortDir === "desc"
+                ? -Infinity
+                : Infinity
+              : row.peakMmr;
+          break;
         default:
           value = row[sortKey];
       }
