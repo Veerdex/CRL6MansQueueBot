@@ -1,8 +1,8 @@
-// Custom base-36 match ID encoding using: 0-9, a-z
-// Game 0 = "0", Game 10 = "a", Game 35 = "z", Game 36 = "10"
+// Match ID encoding using plain decimal digits: 0-9
+// Game 0 = "0", Game 10 = "10", Game 36 = "36"
 
-const CHARSET = "0123456789abcdefghijklmnopqrstuvwxyz";
-const BASE = CHARSET.length; // 36
+const CHARSET = "0123456789";
+const BASE = CHARSET.length; // 10
 
 export function encodeMatchId(matchNumber: number): string {
   if (matchNumber < 0) return "0";

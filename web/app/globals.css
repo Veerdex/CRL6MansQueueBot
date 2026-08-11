@@ -9,6 +9,9 @@
   --accent: #ff8238;
   --accent-secondary: #004ba4;
   --gold: #d4af37;
+  --silver: #c0c0c8;
+  --bronze: #cd7f32;
+  --slot-grey: #8b8b93;
   --border: rgba(255, 255, 255, 0.08);
 }
 
@@ -21,6 +24,9 @@
   --color-accent: var(--accent);
   --color-accent-secondary: var(--accent-secondary);
   --color-gold: var(--gold);
+  --color-silver: var(--silver);
+  --color-bronze: var(--bronze);
+  --color-slot-grey: var(--slot-grey);
   --color-border: var(--border);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);

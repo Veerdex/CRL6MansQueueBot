@@ -59,6 +59,9 @@ export default async function RootLayout({
                 <Link href="/history" className="text-muted hover:text-foreground transition-opacity hover:opacity-80">
                   History
                 </Link>
+                <Link href="/hall-of-fame" className="text-muted hover:text-foreground transition-opacity hover:opacity-80">
+                  Hall of Fame
+                </Link>
               </div>
               <SoundToggle />
             </div>

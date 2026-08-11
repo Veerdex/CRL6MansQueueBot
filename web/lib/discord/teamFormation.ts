@@ -329,6 +329,18 @@ async function processCancelCommand(interaction: DiscordInteraction, seriesIdOve
       ? "Series cancelled — enough players voted to cancel."
       : `Vote recorded — ${cancelCount}/${CANCEL_VOTE_THRESHOLD} needed to cancel this match.`,
   });
+
+  // Public announcement so the other players actually see the vote happening, not just the
+  // caller's own ephemeral confirmation above — the settled "Series cancelled" message already
+  // posts publicly on its own (registerCancelVoteAndMaybeVoid), so this only fires pre-threshold.
+  if (!voided && series.queue_channel_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [{ description: `<@${discordId}> wants to cancel ${cancelCount}/${CANCEL_VOTE_THRESHOLD}`, color: BRAND_COLOR }],
+      }),
+    }).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------

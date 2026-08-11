@@ -27,6 +27,16 @@ export async function getActiveSeason(): Promise<SeasonRow | null> {
   return data;
 }
 
+export async function getAllSeasons(): Promise<SeasonRow[]> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .select("*")
+    .order("season_number", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function getPreviousSeason(currentSeasonNumber: number): Promise<SeasonRow | null> {
   const supabase = createServerClient();
   const { data, error } = await supabase
