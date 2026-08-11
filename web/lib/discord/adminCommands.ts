@@ -126,6 +126,7 @@ async function processHelp(interaction: DiscordInteraction) {
       "**Admin commands**",
       "`/chances [id:]` — see a team's live win chance for the current (or, with id:, any) active match. Ephemeral.",
       "`/setqueuechannel queue_type:<rank|universal>` — post the persistent queue message in the current channel.",
+      "`/setlobbychannel channel:<#voice>` — move players into this voice channel when their match ends, instead of dropping them out of voice.",
       "`/add-admin-role role:<@role>` — grant a role admin access and match-channel visibility.",
       "`/remove-admin-role role:<@role>` — revoke a role's admin access.",
       "`/list-admin-roles` — list roles with admin access.",

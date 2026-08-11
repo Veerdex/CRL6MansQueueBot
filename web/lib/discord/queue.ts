@@ -1019,6 +1019,51 @@ async function processSetLogChannel(interaction: DiscordInteraction, channelIdPa
 }
 
 // ---------------------------------------------------------------------------
+// /setlobbychannel — specify the voice channel players are moved into when their match's team
+// voice channels are torn down, instead of being dropped out of voice entirely (see
+// moveTeamVoiceOccupantsToLobby in matchChannels.ts). Mirrors /setlogchannel; the `channel:`
+// option must be a voice channel, so unlike the text-channel setters there's no
+// infer-the-current-channel fallback — a slash command is almost never run from inside one.
+// ---------------------------------------------------------------------------
+
+export function handleSetLobbyChannelCommand(interaction: DiscordInteraction) {
+  const channelIdParam = interaction.data?.options?.find((o) => o.name === "channel")?.value;
+  after(() => processSetLobbyChannel(interaction, channelIdParam));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processSetLobbyChannel(interaction: DiscordInteraction, channelIdParamRaw: string | number | boolean | undefined) {
+  if (!(await hasAdminAccess(interaction))) {
+    await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
+    return;
+  }
+
+  const channelId = channelIdParamRaw ? String(channelIdParamRaw) : null;
+  if (!channelId) {
+    await editOriginalResponse(interaction.token, { content: "Pick the voice channel players should be moved to when a match ends." });
+    return;
+  }
+
+  const supabase = createAdminClient();
+  const { data: existing } = await supabase.from("crl6mansqueuebot_config").select("value").eq("key", "lobby_voice_channel_id").maybeSingle();
+  await supabase.from("crl6mansqueuebot_config").upsert({ key: "lobby_voice_channel_id", value: channelId });
+  const actorId = interactionUserId(interaction);
+  if (actorId) {
+    await logAdminAction(actorId, "set_lobby_channel", undefined, undefined, [
+      { field: "Lobby voice channel", before: existing?.value ? `<#${existing.value}>` : null, after: `<#${channelId}>` },
+    ]);
+  }
+  await editOriginalResponse(interaction.token, {
+    content:
+      `Lobby channel set to <#${channelId}>. When a match ends, players still sitting in that match's team voice channels are moved here instead of being disconnected — anyone in another call stays where they are.\n` +
+      `Make sure the bot has **Move Members** and that players can connect to <#${channelId}>.`,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // /setqueuementionrole — specify the Discord role to mention when the first
 // player joins a queue. Owner-or-admin-role gated.
 // ---------------------------------------------------------------------------

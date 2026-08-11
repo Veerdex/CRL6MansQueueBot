@@ -121,6 +121,22 @@ const commands = [
     ],
   },
   {
+    name: "setlobbychannel",
+    description: "Set the voice channel players are moved to when their match ends.",
+    type: 1,
+    options: [
+      {
+        name: "channel",
+        description: "The voice channel to move players into after a match.",
+        type: 7,
+        // 2 = GUILD_VOICE, 13 = GUILD_STAGE_VOICE — restricts the picker to channels a member
+        // can actually be moved into.
+        channel_types: [2, 13],
+        required: true,
+      },
+    ],
+  },
+  {
     name: "setqueuementionrole",
     description: "Set the role to mention when first player joins a queue.",
     type: 1,
