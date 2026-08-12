@@ -80,7 +80,7 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
   };
 }
 
-// Rich mode's per-join/per-leave announcement — an always-stacking, data-rich embed (H1 headline,
+// Rich mode's per-join/per-leave announcement — an always-stacking, data-rich embed (H3 headline,
 // inline Rank/MMR/Streak fields, a full-width queue-progress bar) distinct from the tracked
 // roster message below it (see queueMessageBody). Streak counts are the acting player's own live
 // numeric streak (not the boolean on-fire/cold flags used for mention decoration elsewhere),
@@ -122,7 +122,7 @@ async function richEventEmbed(
 
   return {
     color,
-    description: `# ${player.display_name} ${verb} the ${label}!`,
+    description: `### ${player.display_name} ${verb} the ${label}!`,
     fields,
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
   };
@@ -136,7 +136,7 @@ async function richMatchFoundEmbed(members: PlayerRow[], streaks: StreakIds): Pr
   const lines = await buildRosterLines(members, streaks);
   return {
     color: GOLD_COLOR,
-    description: `# Match Found!\n\n${lines.join("\n")}`,
+    description: `### Match Found!\n${lines.join("\n")}`,
     footer: { text: "Forming teams…" },
   };
 }
