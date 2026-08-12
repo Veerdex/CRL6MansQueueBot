@@ -1339,9 +1339,9 @@ async function processStart(interaction: DiscordInteraction, actorId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// /admin queue-message-mode mode:<simplified|default|hybrid> — controls how join/leave messages
-// behave in #rank-queue / #universal-queue. See queue.ts's getQueueMessageMode() for the full
-// description of each mode.
+// /admin queue-message-mode mode:<simplified|default|hybrid|rich> — controls how join/leave
+// messages behave in #rank-queue / #universal-queue. See queue.ts's getQueueMessageMode() for the
+// full description of each mode.
 // ---------------------------------------------------------------------------
 
 const QUEUE_MESSAGE_MODE_DESCRIPTIONS: Record<string, string> = {
@@ -1349,11 +1349,13 @@ const QUEUE_MESSAGE_MODE_DESCRIPTIONS: Record<string, string> = {
   default: "Queue messages set to default — every join/leave posts a new status message without deleting the last one.",
   hybrid:
     "Queue messages set to hybrid — every join/leave posts a small announcement (always kept) plus a one-player-per-line roster message (single live message, except the final roster at pop time is kept permanently).",
+  rich:
+    "Queue messages set to rich — every join/leave posts a data-rich announcement (rank, MMR, streak, queue-progress bar) plus a one-player-per-line roster message, and the 6th join posts a dedicated gold Match Found announcement instead of an ordinary join card.",
 };
 
 async function processQueueMessageModeSet(interaction: DiscordInteraction, actorId: string, mode: string | undefined) {
-  if (mode !== "simplified" && mode !== "default" && mode !== "hybrid") {
-    await editOriginalResponse(interaction.token, { content: "mode must be simplified, default, or hybrid." });
+  if (mode !== "simplified" && mode !== "default" && mode !== "hybrid" && mode !== "rich") {
+    await editOriginalResponse(interaction.token, { content: "mode must be simplified, default, hybrid, or rich." });
     return;
   }
   const oldValue = await getConfigValue("queue_message_mode");

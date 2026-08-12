@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -11,7 +11,7 @@ import { startTeamFormation } from "./teamFormation";
 import { computeBonusDayMultiplier, isSuperchargedDayLive } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber, getConfigValue } from "./config";
-import { getStreakIds, mention, type StreakIds } from "./streaks";
+import { getStreakIds, getPriorRankWinStreak, getPriorRankLossStreak, mention, FLAME_THRESHOLD, COLD_THRESHOLD, type StreakIds } from "./streaks";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -45,32 +45,99 @@ async function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], stre
   };
 }
 
-// Hybrid mode's roster message: one player per line (rank emoji + name + band + MMR) instead of
-// the flat @mention line above — the headline lives in its own separate, always-stacking
-// announcement message instead (see postHybridAnnouncement), so this embed is roster-only.
-async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds) {
-  const label = QUEUE_LABELS[queueType];
+// One-player-per-line roster format (rank emoji + name + band + MMR) — shared by hybrid mode's
+// roster message and rich mode's both roster message and "Match Found!" announcement, so the
+// three don't drift out of sync with three copies of the same rendering logic.
+async function buildRosterLines(members: PlayerRow[], streaks: StreakIds): Promise<string[]> {
+  if (!members.length) return ["_Empty_"];
   const scale = await getConfigNumber("mmr_scale", 1);
   const shift = await getConfigNumber("mmr_shift", 0);
-  const lines = members.length
-    ? await Promise.all(
-        members.map(async (m) => {
-          // Prism is a live top-N overlay (see CLAUDE.md, "Bands / ranks"), not a `band` column
-          // value — resolve it before rendering so a Prism player's roster line shows Prism
-          // rather than their underlying (almost always Sapphire) band.
-          const band = m.is_prism ? "Prism" : m.is_placed ? m.band : null;
-          const emoji = await getRankEmoji(band);
-          const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
-          const displayMmr = Math.round(m.mmr * scale + shift);
-          return `${emoji} ${who} — ${getRankLabel(band)} · ${displayMmr} MMR`;
-        }),
-      )
-    : ["_Empty_"];
+  return Promise.all(
+    members.map(async (m) => {
+      // Prism is a live top-N overlay (see CLAUDE.md, "Bands / ranks"), not a `band` column
+      // value — resolve it before rendering so a Prism player's roster line shows Prism rather
+      // than their underlying (almost always Sapphire) band.
+      const band = m.is_prism ? "Prism" : m.is_placed ? m.band : null;
+      const emoji = await getRankEmoji(band);
+      const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
+      const displayMmr = Math.round(m.mmr * scale + shift);
+      return `${emoji} ${who} — ${getRankLabel(band)} · ${displayMmr} MMR`;
+    }),
+  );
+}
+
+// Hybrid mode's roster message: one player per line instead of the flat @mention line above —
+// the headline lives in its own separate, always-stacking announcement message instead (see
+// postHybridAnnouncement), so this embed is roster-only.
+async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds) {
+  const label = QUEUE_LABELS[queueType];
+  const lines = await buildRosterLines(members, streaks);
   const color = (await isSuperchargedDayLive()) ? SUPERCHARGED_COLOR : BRAND_COLOR;
   return {
     color,
     description: `**Current Queue Members: ${members.length}**\n${lines.join("\n")}`,
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
+  };
+}
+
+// Rich mode's per-join/per-leave announcement — an always-stacking, data-rich embed (H1 headline,
+// inline Rank/MMR/Streak fields, a full-width queue-progress bar) distinct from the tracked
+// roster message below it (see queueMessageBody). Streak counts are the acting player's own live
+// numeric streak (not the boolean on-fire/cold flags used for mention decoration elsewhere),
+// since the field needs "4-Win Streak" text, not just a yes/no.
+async function richEventEmbed(
+  supabase: AdminClient,
+  action: "join" | "leave",
+  player: PlayerRow,
+  queueType: QueueType,
+  queueSize: number,
+): Promise<any> {
+  const label = QUEUE_LABELS[queueType];
+  const scale = await getConfigNumber("mmr_scale", 1);
+  const shift = await getConfigNumber("mmr_shift", 0);
+  const band = player.is_prism ? "Prism" : player.is_placed ? player.band : null;
+  const displayMmr = Math.round(player.mmr * scale + shift);
+
+  const [winStreak, lossStreak] = await Promise.all([
+    getPriorRankWinStreak(supabase, player.id),
+    getPriorRankLossStreak(supabase, player.id),
+  ]);
+
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+    { name: "Rank", value: getRankLabel(band), inline: true },
+    { name: "MMR", value: `${displayMmr}`, inline: true },
+  ];
+  if (winStreak >= FLAME_THRESHOLD) {
+    fields.push({ name: "Streak", value: `🔥 ${winStreak}-Win Streak`, inline: true });
+  } else if (lossStreak >= COLD_THRESHOLD) {
+    fields.push({ name: "Streak", value: `🥶 ${lossStreak}-Loss Streak`, inline: true });
+  }
+
+  const filled = Math.max(0, Math.min(6, queueSize));
+  fields.push({ name: "Queue Progress", value: `${"🟩".repeat(filled)}${"⬛".repeat(6 - filled)}  ${filled}/6`, inline: false });
+
+  const verb = action === "join" ? "joined" : "left";
+  const supercharged = await isSuperchargedDayLive();
+  const color = supercharged ? SUPERCHARGED_COLOR : action === "join" ? RICH_JOIN_COLOR : RICH_LEAVE_COLOR;
+
+  return {
+    color,
+    description: `# ${player.display_name} ${verb} the ${label}!`,
+    fields,
+    footer: { text: `Run /q to join the ${label} or /l to leave.` },
+  };
+}
+
+// Rich mode's pop-time announcement — replaces the ordinary per-player join card for the 6th
+// join specifically (see the pop branch in processQueueCommand), since a plain "X joined" card
+// would be immediately misleading once the queue clears for team formation. Reuses the same
+// roster-line format as the tracked roster message rather than re-deriving a new layout.
+async function richMatchFoundEmbed(members: PlayerRow[], streaks: StreakIds): Promise<any> {
+  const lines = await buildRosterLines(members, streaks);
+  return {
+    color: GOLD_COLOR,
+    description: `# Match Found!\n\n${lines.join("\n")}`,
+    footer: { text: "Forming teams…" },
   };
 }
 
@@ -80,7 +147,7 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
 // inside an embed, only ones in `content`, so the ping has to live outside the embed to actually
 // fire.
 async function queueMessageBody(mode: QueueMessageMode, queueType: QueueType, members: PlayerRow[], streaks: StreakIds, headline?: string, ping?: string) {
-  if (mode === "hybrid") {
+  if (mode === "hybrid" || mode === "rich") {
     return { content: "", embeds: [await hybridRosterEmbed(queueType, members, streaks)] };
   }
   return {
@@ -99,6 +166,37 @@ async function postHybridAnnouncement(channelId: string, headline: string, ping?
     method: "POST",
     body: JSON.stringify({ content: ping ?? "", embeds: [{ color, description: `**${headline}**` }] }),
   }).catch((err) => console.error(`Failed to post hybrid queue announcement in ${channelId}`, err));
+}
+
+// Rich mode's per-event announcement — same always-stacking, untracked posting pattern as
+// postHybridAnnouncement above, just backed by richEventEmbed's richer content instead of a
+// plain headline string.
+async function postRichAnnouncement(
+  supabase: AdminClient,
+  channelId: string,
+  action: "join" | "leave",
+  player: PlayerRow,
+  queueType: QueueType,
+  queueSize: number,
+  ping?: string,
+) {
+  const embed = await richEventEmbed(supabase, action, player, queueType, queueSize);
+  await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: ping ?? "", embeds: [embed] }),
+  }).catch((err) => console.error(`Failed to post rich queue announcement in ${channelId}`, err));
+}
+
+// Rich mode's pop-time announcement — @mentions all 6 players (same "must actually notify"
+// precedent as the "Teams formed!" summary and the first-join role ping — embed-only mentions
+// never notify) alongside the gold Match Found embed.
+async function postRichMatchFoundAnnouncement(channelId: string, members: PlayerRow[], streaks: StreakIds) {
+  const embed = await richMatchFoundEmbed(members, streaks);
+  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
+  await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: mentions, embeds: [embed] }),
+  }).catch((err) => console.error(`Failed to post rich match-found announcement in ${channelId}`, err));
 }
 
 // Posted once, alongside the first-join role ping (see the "first join" branch in the /q command
@@ -140,10 +238,10 @@ async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): P
   return playerIds.map((id) => byId.get(id)).filter((p): p is PlayerRow => Boolean(p));
 }
 
-export type QueueMessageMode = "simplified" | "default" | "hybrid";
+export type QueueMessageMode = "simplified" | "default" | "hybrid" | "rich";
 
-// /admin queue-message-mode mode:<simplified|default|hybrid> — see CLAUDE.md-style precedent of
-// bot_paused's stop/start and bonus_day_enabled's dedicated toggle in adminTools.ts.
+// /admin queue-message-mode mode:<simplified|default|hybrid|rich> — see CLAUDE.md-style precedent
+// of bot_paused's stop/start and bonus_day_enabled's dedicated toggle in adminTools.ts.
 //   - "simplified" (default): exactly one live queue-status message per channel — every
 //     join/leave deletes the previous one and posts a fresh combined headline+roster message.
 //   - "default": every join/leave posts a new combined headline+roster message without deleting
@@ -153,13 +251,22 @@ export type QueueMessageMode = "simplified" | "default" | "hybrid";
 //     "simplified" (single live message, delete-and-repost) EXCEPT the roster posted at the
 //     moment a queue pops (6th join) is frozen permanently instead — see
 //     freezeQueueRosterMessage — so it stays visible as a record of who played that match.
+//   - "rich": same two-message shape as "hybrid" (always-stacking announcement + a delete-and-
+//     repost tracked roster, frozen at pop), but the announcement is a data-rich embed
+//     (richEventEmbed: H1 headline, Rank/MMR/Streak fields, a queue-progress bar) instead of a
+//     plain headline line, and the 6th join's announcement is replaced entirely by a dedicated
+//     gold "Match Found!" embed (richMatchFoundEmbed/postRichMatchFoundAnnouncement) rather than
+//     an ordinary join card, since a plain "X joined" card would be immediately misleading once
+//     the queue clears for team formation. Applies uniformly to both queue types — a Universal
+//     player's Streak field simply never appears, since it's driven by Rank-Queue-only streak
+//     counts which are always 0 for them.
 //
 // Reads the new `queue_message_mode` string config first; falls back to the older
 // `queue_simplified_messages` boolean (pre-hybrid) so an admin who already toggled that keeps
 // their choice honored until they explicitly pick a mode via the new command.
 async function getQueueMessageMode(): Promise<QueueMessageMode> {
   const raw = await getConfigValue("queue_message_mode");
-  if (raw === "simplified" || raw === "default" || raw === "hybrid") return raw;
+  if (raw === "simplified" || raw === "default" || raw === "hybrid" || raw === "rich") return raw;
   const legacySimplified = (await getConfigNumber("queue_simplified_messages", 1)) !== 0;
   return legacySimplified ? "simplified" : "default";
 }
@@ -319,7 +426,13 @@ export async function postTrackedQueueMessage(
 // queue channel can't loop forever.
 const MAX_REFRESH_ATTEMPTS = 5;
 
-export async function refreshQueueMessage(supabase: AdminClient, queueType: QueueType, headline?: string, ping?: string) {
+export async function refreshQueueMessage(
+  supabase: AdminClient,
+  queueType: QueueType,
+  headline?: string,
+  ping?: string,
+  richContext?: { action: "join" | "leave"; player: PlayerRow; queueSize: number },
+) {
   const mode = await getQueueMessageMode();
   let announced = false;
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt++) {
@@ -330,11 +443,16 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
       .maybeSingle();
     if (!msgRow) return;
 
-    // Hybrid mode's headline-only announcement is a separate, always-stacking message — post it
-    // once (not on retries, which just re-attempt the roster message's own claim race) alongside
-    // the roster refresh below, which carries no headline/ping of its own in hybrid mode.
+    // Hybrid mode's headline-only announcement, and rich mode's data-rich announcement, are both
+    // separate, always-stacking messages — post it once (not on retries, which just re-attempt
+    // the roster message's own claim race) alongside the roster refresh below, which carries no
+    // headline/ping of its own in either mode.
     if (mode === "hybrid" && headline && !announced) {
       await postHybridAnnouncement(msgRow.channel_id, headline, ping);
+      announced = true;
+    }
+    if (mode === "rich" && richContext && !announced) {
+      await postRichAnnouncement(supabase, msgRow.channel_id, richContext.action, richContext.player, queueType, richContext.queueSize, ping);
       announced = true;
     }
 
@@ -347,9 +465,9 @@ export async function refreshQueueMessage(supabase: AdminClient, queueType: Queu
       msgRow.message_id,
       members,
       streaks,
-      mode === "hybrid" ? undefined : headline,
+      mode === "hybrid" || mode === "rich" ? undefined : headline,
       mode,
-      mode === "hybrid" ? undefined : ping,
+      mode === "hybrid" || mode === "rich" ? undefined : ping,
     );
     if (won) return;
   }
@@ -562,7 +680,13 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       await editOriginalResponse(interaction.token, { content: `You're not in the ${QUEUE_LABELS[queueType]}.` });
       return;
     }
-    await refreshQueueMessage(supabase, queueType, `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`);
+    await refreshQueueMessage(
+      supabase,
+      queueType,
+      `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`,
+      undefined,
+      { action: "leave", player, queueSize: result.queue_size },
+    );
     await deleteOriginalResponse(interaction.token);
     return;
   }
@@ -599,14 +723,27 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
 
   if (result?.status === "joined" && result.queue_size >= 6) {
     const guildId = interaction.guild_id ?? (await getGuildId());
-    // Show the queue at 6/6 (same "has joined" treatment as any other join) before handlePop
-    // clears crl6mansqueuebot_queue_members and the vote embed replaces this as the channel's
-    // newest message.
-    await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
-    // Hybrid mode: freeze the roster message just posted above (the final 6/6 state) so it's
-    // never deleted by a future queue cycle — see freezeQueueRosterMessage.
-    if ((await getQueueMessageMode()) === "hybrid") {
+    const mode = await getQueueMessageMode();
+    if (mode === "rich") {
+      // Rich mode: skip the ordinary per-join announcement in favor of a dedicated gold "Match
+      // Found!" embed once the roster is actually full — a plain "X joined" card would be
+      // immediately misleading once the queue clears for team formation. Still silently refresh
+      // the tracked roster message to its final 6/6 state first.
+      await refreshQueueMessage(supabase, queueType);
+      const members = await fetchQueueMembers(supabase, queueType);
+      const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+      await postRichMatchFoundAnnouncement(channelId, members, streaks);
       await freezeQueueRosterMessage(supabase, queueType);
+    } else {
+      // Show the queue at 6/6 (same "has joined" treatment as any other join) before handlePop
+      // clears crl6mansqueuebot_queue_members and the vote embed replaces this as the channel's
+      // newest message.
+      await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
+      // Hybrid mode: freeze the roster message just posted above (the final 6/6 state) so it's
+      // never deleted by a future queue cycle — see freezeQueueRosterMessage.
+      if (mode === "hybrid") {
+        await freezeQueueRosterMessage(supabase, queueType);
+      }
     }
     await handlePop(supabase, queueType, guildId, channelId);
     // Pop succeeded — delete the deferred response so it auto-dismisses
@@ -629,7 +766,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       }
     }
 
-    await refreshQueueMessage(supabase, queueType, headline, ping);
+    await refreshQueueMessage(supabase, queueType, headline, ping, { action: "join", player, queueSize: result.queue_size });
     if (result.queue_size === 1 && (await isSuperchargedDayLive())) {
       await postSuperchargedAnnouncement(channelId);
     }

@@ -21,6 +21,12 @@ export const SUPERCHARGED_COLOR = 0xc9a0ff;
 // Scheduled-season-reset auto-fire announcement embed — see CLAUDE.md, "Seasons".
 export const GOLD_COLOR = 0xffd700;
 
+// "Rich" queue-message mode's per-event announcement colors — Discord-native green/red for a
+// join vs. a leave (see CLAUDE.md, "Queue channels"). Overridden by SUPERCHARGED_COLOR on a
+// bonus day, same precedent every other queue-status embed already follows.
+export const RICH_JOIN_COLOR = 0x3ba55d;
+export const RICH_LEAVE_COLOR = 0xed4245;
+
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.

@@ -815,18 +815,19 @@ const commands = [
       },
       {
         name: "queue-message-mode",
-        description: "Set how join/leave queue messages behave: simplified, default, or hybrid.",
+        description: "Set how join/leave queue messages behave: simplified, default, hybrid, or rich.",
         type: SUB_COMMAND,
         options: [
           {
             name: "mode",
-            description: "simplified = one live message; default = messages stack; hybrid = announcement + roster messages.",
+            description: "simplified = one live message; default = messages stack; hybrid = announcement + roster; rich = data-rich announcement + roster.",
             type: STRING_OPTION,
             required: true,
             choices: [
               { name: "simplified", value: "simplified" },
               { name: "default", value: "default" },
               { name: "hybrid", value: "hybrid" },
+              { name: "rich", value: "rich" },
             ],
           },
         ],
