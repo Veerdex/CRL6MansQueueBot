@@ -24,7 +24,12 @@ const SUB_COMMAND_GROUP = 2;
 
 // Mirrors config.ts's KNOWN_CONFIG_DEFAULTS keys (and CLAUDE.md's "Config values" table) —
 // duplicated here the same way setbandrole's band choices duplicate bands.ts's band list,
-// since this script can't import the TS module directly.
+// since this script can't import the TS module directly. No longer wired into the /admin
+// config get/set key: option as Discord `choices` (STRING_OPTION choices are capped at 25,
+// and this list grew past that) — the key: option is plain free-text now, validated
+// server-side against KNOWN_CONFIG_DEFAULTS in adminTools.ts regardless. Kept here anyway as
+// the documented list of which keys are meant to be settable through the generic
+// /admin config set, since config.ts's own comments (KNOWN_CONFIG_DEFAULTS) point back at it.
 const CONFIG_KEYS = [
   "k_factor",
   "s_scale",
@@ -53,7 +58,6 @@ const CONFIG_KEYS = [
   "mafia_grace_seconds",
   "mafia_timeout_seconds",
 ];
-const CONFIG_KEY_CHOICES = CONFIG_KEYS.map((k) => ({ name: k, value: k }));
 
 const commands = [
   {
@@ -625,10 +629,9 @@ const commands = [
             options: [
               {
                 name: "key",
-                description: "The config key to look up.",
+                description: "The config key to look up (see /admin config get with no key for the full list).",
                 type: STRING_OPTION,
                 required: false,
-                choices: CONFIG_KEY_CHOICES,
               },
             ],
           },
@@ -639,10 +642,9 @@ const commands = [
             options: [
               {
                 name: "key",
-                description: "The config key to set.",
+                description: "The config key to set (see /admin config get with no key for the full list).",
                 type: STRING_OPTION,
                 required: true,
-                choices: CONFIG_KEY_CHOICES,
               },
               {
                 name: "value",
