@@ -820,7 +820,7 @@ const commands = [
         options: [
           {
             name: "mode",
-            description: "simplified = one live message; default = messages stack; hybrid = announcement + roster; rich = data-rich announcement + roster.",
+            description: "simplified = 1 msg; default = stacks; hybrid = announce+roster; rich = rich announce+roster.",
             type: STRING_OPTION,
             required: true,
             choices: [
