@@ -6,6 +6,7 @@ import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matc
 import { postTrackedQueueMessage, refreshQueueMessage } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
+import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
@@ -221,6 +222,59 @@ export async function POST(request: Request) {
     subRequestsExpired += 1;
   }
 
+  // Mafia lobby timeout (/mafia — see CLAUDE.md, "Mafia"): a lobby that never fills within
+  // mafia_timeout_seconds auto-cancels. Only ever targets status='waiting' — a lobby mid-grace
+  // ('starting') is handled entirely in-process by the join call that triggered it, never here.
+  const mafiaTimeoutSeconds = await getConfigNumber("mafia_timeout_seconds", 120);
+  const mafiaCutoff = new Date(Date.now() - mafiaTimeoutSeconds * 1000).toISOString();
+
+  const { data: staleMafiaLobbies, error: mafiaError } = await supabase
+    .from("crl6mansqueuebot_mafia_games")
+    .select("*")
+    .eq("status", "waiting")
+    .lt("created_at", mafiaCutoff);
+
+  if (mafiaError) {
+    console.error("Sweep: failed to fetch stale mafia lobbies", mafiaError);
+  }
+
+  let mafiaLobbiesCancelled = 0;
+  for (const game of staleMafiaLobbies ?? []) {
+    const { data: claimed } = await supabase
+      .from("crl6mansqueuebot_mafia_games")
+      .update({ status: "cancelled" })
+      .eq("id", game.id)
+      .eq("status", "waiting")
+      .select("id");
+    if (!claimed || claimed.length === 0) continue;
+    await cancelStaleMafiaLobby(supabase, game);
+    mafiaLobbiesCancelled += 1;
+  }
+
+  // Crash-safety backstop: a lobby stuck in 'starting' well past when the 5-second grace +
+  // finalize sequence should ever take (e.g. the invocation running runMafiaFinalizeSequence
+  // got killed mid-flight) would otherwise block its channel's unique-active-lobby index
+  // forever with no player-facing recourse — mirrors this route's orphaned-voice-channel
+  // backstop elsewhere in this file.
+  const mafiaStartingCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const { data: stuckStartingLobbies } = await supabase
+    .from("crl6mansqueuebot_mafia_games")
+    .select("*")
+    .eq("status", "starting")
+    .lt("created_at", mafiaStartingCutoff);
+
+  for (const game of stuckStartingLobbies ?? []) {
+    const { data: claimed } = await supabase
+      .from("crl6mansqueuebot_mafia_games")
+      .update({ status: "cancelled" })
+      .eq("id", game.id)
+      .eq("status", "starting")
+      .select("id");
+    if (!claimed || claimed.length === 0) continue;
+    await cancelStaleMafiaLobby(supabase, game, "Something went wrong starting the game — lobby cancelled.");
+    mafiaLobbiesCancelled += 1;
+  }
+
   // Scheduled season reset (/schedule-reset — see CLAUDE.md, "Seasons"): scheduled_season_reset_at
   // is a plain ISO timestamp in the generic config table. Delete it BEFORE running the reset
   // (not after) so a slow performSeasonReset() that overruns into the next minute's sweep tick
@@ -271,7 +325,7 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired, scheduledResetFired });
+  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired, mafiaLobbiesCancelled, scheduledResetFired });
 }
 
 async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, message: string) {

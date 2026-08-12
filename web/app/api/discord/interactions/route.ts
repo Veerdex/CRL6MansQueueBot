@@ -25,6 +25,7 @@ import { handleSetBandRoleCommand, handleRanksCommand } from "@/lib/discord/band
 import { handleChancesCommand } from "@/lib/discord/chances";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
+import { handleMafiaCommand, handleMafiaJoinButton, handleMafiaJoinModalSubmit, handleMafiaLeaveButton } from "@/lib/discord/mafia";
 
 // /report posts a public result message, then sleeps 30s before deleting the match channels
 // (see CLAUDE.md, "Series end") — comfortably inside this, but well past the ~10s a plain
@@ -83,9 +84,31 @@ export async function POST(request: Request) {
       return NextResponse.json(handleNotificationButton(interaction, arg1));
     }
 
+    if (action === "mafia_join" && arg1) {
+      return NextResponse.json(await handleMafiaJoinButton(interaction, arg1));
+    }
+
+    if (action === "mafia_leave" && arg1) {
+      return NextResponse.json(handleMafiaLeaveButton(interaction, arg1));
+    }
+
     return NextResponse.json({
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: { content: "Unrecognized action.", flags: 64 },
+    });
+  }
+
+  if (interaction.type === InteractionType.MODAL_SUBMIT) {
+    const customId = interaction.data?.custom_id ?? "";
+    const [action, arg1] = customId.split(":");
+
+    if (action === "mafia_join_modal" && arg1) {
+      return NextResponse.json(handleMafiaJoinModalSubmit(interaction, arg1));
+    }
+
+    return NextResponse.json({
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: "Unrecognized submission.", flags: 64 },
     });
   }
 
@@ -218,6 +241,10 @@ export async function POST(request: Request) {
 
     if (commandName === "end-test") {
       return NextResponse.json(handleEndTestCommand(interaction));
+    }
+
+    if (commandName === "mafia") {
+      return NextResponse.json(handleMafiaCommand(interaction));
     }
 
     return NextResponse.json({

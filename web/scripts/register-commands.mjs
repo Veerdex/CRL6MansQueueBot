@@ -50,6 +50,8 @@ const CONFIG_KEYS = [
   "mmr_shift",
   "mmr_skew_factor",
   "mmr_min_delta",
+  "mafia_grace_seconds",
+  "mafia_timeout_seconds",
 ];
 const CONFIG_KEY_CHOICES = CONFIG_KEYS.map((k) => ({ name: k, value: k }));
 
@@ -883,6 +885,19 @@ const commands = [
     name: "end-test",
     description: "Admin: tear down the test match in this channel (channels + its test data).",
     type: 1,
+  },
+  {
+    name: "mafia",
+    description: "Start a game of Mafia — waits for 6 players to join, then secretly assigns one as the Mafia.",
+    type: 1,
+    options: [
+      {
+        name: "password",
+        description: "Optional lobby password — players must enter it to join.",
+        type: STRING_OPTION,
+        required: false,
+      },
+    ],
   },
 ];
 

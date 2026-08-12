@@ -117,6 +117,7 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement for yourself; they must accept via a button.",
     "`/nominate target:<@user> nominee:<@user>` — run inside your match channel to request a sub for any player in the match (disconnected, etc.), including yourself.",
     "`/abandon target:<@user>` — run inside your match channel to vote a player as abandoned. 3 votes cancels the series.",
+    "`/mafia [password:]` — start a game of Mafia in this channel; Join/Leave buttons fill a 6-player lobby, then one player is secretly picked as the Mafia. Set a password to require it on Join.",
     "`/help` — show this message.",
   ];
 

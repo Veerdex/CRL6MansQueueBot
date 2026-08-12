@@ -162,6 +162,32 @@ export type DayOfWeekStatsRow = {
   count: number;
 };
 
+// /mafia mini-game — see CLAUDE.md, "Mafia". Fully independent of PlayerRow: raw Discord ids/
+// display names/interaction tokens only, no crl6mansqueuebot_players join anywhere.
+export type MafiaGameStatus = "waiting" | "starting" | "started" | "cancelled";
+
+export type MafiaGameRow = {
+  id: string;
+  channel_id: string;
+  guild_id: string;
+  message_id: string | null;
+  host_discord_id: string;
+  status: MafiaGameStatus;
+  created_at: string;
+  started_at: string | null;
+  // Optional lobby access code, set once at creation (register-commands.mjs's password: option)
+  // — see migration 0036_mafia_password.sql. Null means the lobby is open to anyone.
+  password: string | null;
+};
+
+export type MafiaPlayerRow = {
+  game_id: string;
+  discord_id: string;
+  display_name: string;
+  interaction_token: string;
+  joined_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -273,6 +299,18 @@ export type Database = {
         Update: Partial<DayOfWeekStatsRow>;
         Relationships: [];
       };
+      crl6mansqueuebot_mafia_games: {
+        Row: MafiaGameRow;
+        Insert: Partial<MafiaGameRow> & Pick<MafiaGameRow, "channel_id" | "guild_id" | "host_discord_id">;
+        Update: Partial<MafiaGameRow>;
+        Relationships: [];
+      };
+      crl6mansqueuebot_mafia_players: {
+        Row: MafiaPlayerRow;
+        Insert: MafiaPlayerRow;
+        Update: Partial<MafiaPlayerRow>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -287,6 +325,20 @@ export type Database = {
       crl6mansqueuebot_increment_match_time_stats: {
         Args: { p_segment_index: number; p_day_of_week: number; p_is_supercharged: boolean };
         Returns: undefined;
+      };
+      crl6mansqueuebot_mafia_join: {
+        Args: {
+          p_game_id: string;
+          p_discord_id: string;
+          p_display_name: string;
+          p_interaction_token: string;
+          p_max_size?: number;
+        };
+        Returns: { status: "not_open" | "already_joined" | "full" | "joined"; player_count: number }[];
+      };
+      crl6mansqueuebot_mafia_leave: {
+        Args: { p_game_id: string; p_discord_id: string };
+        Returns: { status: "not_open" | "not_joined" | "left"; player_count: number }[];
       };
     };
     Enums: Record<string, never>;

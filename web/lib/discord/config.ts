@@ -74,6 +74,11 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // but deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set through its
   // own dedicated, boolean-validated /admin streak-bonus toggle command instead.
   streak_bonus_enabled: 1,
+  // /mafia mini-game — see CLAUDE.md, "Mafia". No dedicated subcommand exists for these (unlike
+  // bonus_day_*/streak_bonus_enabled above), so both are left in register-commands.mjs's
+  // CONFIG_KEYS and settable via the generic /admin config set.
+  mafia_grace_seconds: 5,
+  mafia_timeout_seconds: 120,
 };
 
 export async function setConfigValue(key: string, value: string): Promise<void> {
