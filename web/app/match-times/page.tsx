@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getMatchTimeStats, getMMRDistributionStats } from "@/lib/leaderboard/queries";
-import { getConfigNumber } from "@/lib/discord/config";
+import { getConfigNumber, getConfigValue } from "@/lib/discord/config";
+import { computeDayTrackingTotals } from "@/lib/discord/bonusDay";
 import LineChart from "@/components/LineChart";
 import MMRDistributionPanel from "@/components/MMRDistributionPanel";
 
@@ -21,22 +22,51 @@ function segmentLabel(index: number): string {
 }
 
 export default async function MatchTimesPage() {
-  const [{ timeOfDay, dayOfWeek }, distribution, mmrScale, mmrShift] = await Promise.all([
+  const [
+    { timeOfDay, dayOfWeek },
+    distribution,
+    mmrScale,
+    mmrShift,
+    statsStartedAtRaw,
+    bonusDayEnabled,
+    bonusDayStart,
+    bonusDayEnd,
+  ] = await Promise.all([
     getMatchTimeStats(),
     getMMRDistributionStats(),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
+    getConfigValue("match_time_stats_started_at"),
+    getConfigNumber("bonus_day_enabled", 1),
+    getConfigNumber("bonus_day_start", 6),
+    getConfigNumber("bonus_day_end", 6),
   ]);
 
-  const overall = timeOfDay.map((row) => row.supercharged_count + row.non_supercharged_count);
-  const supercharged = timeOfDay.map((row) => row.supercharged_count);
-  const nonSupercharged = timeOfDay.map((row) => row.non_supercharged_count);
+  const rawOverall = timeOfDay.map((row) => row.supercharged_count + row.non_supercharged_count);
+  const hasAnyMatches = rawOverall.some((v) => v > 0);
+
+  // Raw counts are cumulative since match_time_stats_started_at (see the migration that
+  // introduced it) with no notion of how many days that represents — dividing by how many of
+  // each day "kind" have actually elapsed since then is what makes segments/days proportional
+  // and comparable, rather than just reflecting how long the counters have been running.
+  const statsStartedAt = statsStartedAtRaw ? new Date(statsStartedAtRaw) : new Date();
+  const totals = computeDayTrackingTotals(statsStartedAt, new Date(), bonusDayEnabled === 1, bonusDayStart, bonusDayEnd);
+
+  const supercharged = timeOfDay.map((row) => (totals.superchargedDays > 0 ? row.supercharged_count / totals.superchargedDays : 0));
+  const nonSupercharged = timeOfDay.map((row) =>
+    totals.nonSuperchargedDays > 0 ? row.non_supercharged_count / totals.nonSuperchargedDays : 0,
+  );
+  // "Overall" is the sum of the two per-kind averages (not total count / total days) — an
+  // average day's expected match count in this segment, whether or not that particular day
+  // turns out to be supercharged.
+  const overall = supercharged.map((v, i) => v + nonSupercharged[i]);
   const segmentLabels = timeOfDay.map((row) => segmentLabel(row.segment_index));
 
   const weeklyLabels = dayOfWeek.map((row) => DAY_NAMES[row.day_of_week]);
-  const weeklyValues = dayOfWeek.map((row) => row.count);
-
-  const hasAnyMatches = overall.some((v) => v > 0);
+  const weeklyValues = dayOfWeek.map((row) => {
+    const occurrences = totals.daysOccurredByWeekday[row.day_of_week];
+    return occurrences > 0 ? row.count / occurrences : 0;
+  });
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-10">
@@ -52,7 +82,9 @@ export default async function MatchTimesPage() {
       <div className="panel animate-in-delay-1 mb-6 p-4 sm:p-6">
         <h2 className="mb-1 text-lg font-bold text-foreground">Time of Day</h2>
         <p className="mb-4 text-sm text-muted">
-          Matches formed per 30-minute segment (Pacific time), overall vs. Supercharged (Bonus Day) vs. non-Supercharged.
+          Average matches formed per 30-minute segment (Pacific time), overall vs. per Supercharged (Bonus Range) day vs.
+          per non-Supercharged day — based on {totals.totalDays} day{totals.totalDays === 1 ? "" : "s"} tracked (
+          {totals.superchargedDays} supercharged, {totals.nonSuperchargedDays} non-supercharged).
         </p>
         {!hasAnyMatches && <p className="mb-4 text-sm text-muted">No matches recorded yet.</p>}
         <LineChart
@@ -68,7 +100,10 @@ export default async function MatchTimesPage() {
 
       <div className="panel animate-in-delay-2 mb-6 p-4 sm:p-6">
         <h2 className="mb-1 text-lg font-bold text-foreground">Day of Week</h2>
-        <p className="mb-4 text-sm text-muted">Matches formed per day of week (Pacific time).</p>
+        <p className="mb-4 text-sm text-muted">
+          Average matches formed per day of week (Pacific time) — each day divided by how many of that weekday have
+          occurred since tracking began.
+        </p>
         <LineChart series={[{ label: "Overall", color: "#a3a3a3", values: weeklyValues }]} xLabels={weeklyLabels} />
       </div>
 

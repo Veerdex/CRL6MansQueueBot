@@ -56,3 +56,79 @@ export async function computeBonusDayMultiplier(): Promise<number> {
 export async function isSuperchargedDayLive(): Promise<boolean> {
   return (await computeBonusDayMultiplier()) > 1;
 }
+
+// Pacific calendar-date components (not an instant) — used below to do whole-day arithmetic
+// without DST tripping up a plain millisecond subtraction across a spring-forward/fall-back
+// boundary.
+function pacificDateParts(date: Date): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  return {
+    year: Number(parts.find((p) => p.type === "year")!.value),
+    month: Number(parts.find((p) => p.type === "month")!.value),
+    day: Number(parts.find((p) => p.type === "day")!.value),
+  };
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// A Pacific calendar date, anchored at UTC midnight purely so day-count arithmetic (subtracting/
+// adding whole days) is safe regardless of DST — only the Y/M/D components matter here, never a
+// real instant, so there's no timezone-conversion bug to worry about.
+function calendarDayToUtcDate({ year, month, day }: { year: number; month: number; day: number }): Date {
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+export interface DayTrackingTotals {
+  totalDays: number;
+  superchargedDays: number;
+  nonSuperchargedDays: number;
+  // Index 0=Sun..6=Sat, matching this file's existing convention — how many times each weekday
+  // has occurred (as a Pacific calendar date) between startedAt and now, inclusive of both ends.
+  daysOccurredByWeekday: number[];
+}
+
+// Powers the Match Times page's per-day averaging (see CLAUDE.md, "Match time stats") — the
+// denominator for "matches per day" is computed live from a single stored start timestamp rather
+// than a second set of incrementing counters, since it's pure calendar-date arithmetic against
+// the *current* bonus-day range config. That's a known approximation if the admin has changed the
+// bonus range since startedAt (there's no historical config log to consult, same precedent as
+// every other place in this codebase that reads current config against historical data) — an
+// accepted tradeoff for not needing a whole second daily-cron-driven counter system. Pure and
+// exported so it's unit-testable independent of config/DB access, same as isDayInRange.
+export function computeDayTrackingTotals(
+  startedAt: Date,
+  now: Date,
+  bonusDayEnabled: boolean,
+  bonusDayStart: number,
+  bonusDayEnd: number,
+): DayTrackingTotals {
+  const startUtc = calendarDayToUtcDate(pacificDateParts(startedAt));
+  const endUtc = calendarDayToUtcDate(pacificDateParts(now));
+  const totalDays = Math.max(1, Math.round((endUtc.getTime() - startUtc.getTime()) / MS_PER_DAY) + 1);
+
+  const daysOccurredByWeekday = [0, 0, 0, 0, 0, 0, 0];
+  let superchargedDays = 0;
+
+  for (let i = 0; i < totalDays; i++) {
+    // getUTCDay() on a date built from Date.UTC(y, m-1, d) gives that calendar date's real
+    // weekday (0=Sun..6=Sat) — safe here since calendarDayToUtcDate never carries a real time
+    // component that could shift the date across a UTC day boundary.
+    const weekday = new Date(startUtc.getTime() + i * MS_PER_DAY).getUTCDay();
+    daysOccurredByWeekday[weekday]++;
+    if (bonusDayEnabled && isDayInRange(weekday, bonusDayStart, bonusDayEnd)) {
+      superchargedDays++;
+    }
+  }
+
+  return {
+    totalDays,
+    superchargedDays,
+    nonSuperchargedDays: totalDays - superchargedDays,
+    daysOccurredByWeekday,
+  };
+}
