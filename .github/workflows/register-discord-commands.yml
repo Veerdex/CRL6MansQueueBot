@@ -4,6 +4,10 @@ name: Register Discord Commands
 # slash commands) from a runner with normal outbound network access — for use whenever the
 # command set changes and there's no local machine handy to run it from directly. Trigger from
 # the Actions tab -> this workflow -> "Run workflow" (works fine from GitHub's mobile web UI).
+#
+# IMPORTANT: always use "Run workflow" for a fresh dispatch, not "Re-run jobs" on a past run —
+# GitHub's re-run reuses that run's *original* commit SHA rather than the branch's current tip,
+# so a re-run can silently register a stale, outdated command set with no error at all.
 on:
   workflow_dispatch:
 
