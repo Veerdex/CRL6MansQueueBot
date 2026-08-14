@@ -63,5 +63,36 @@ if (!admin) {
 // anyone it doesn't apply to.
 const permRes = await fetch(`${api}/applications/${appId}/guilds/${guildId}/commands/permissions`, { headers: auth });
 console.log(`\nCommand permission overrides (HTTP ${permRes.status}):`);
-const permBody = await permRes.text();
-console.log(permBody.length > 4000 ? `${permBody.slice(0, 4000)}… (truncated)` : permBody);
+const perms = await permRes.json();
+
+// Decode ids into meanings rather than printing them raw — GitHub Actions masks any value
+// matching a repo secret (the application id in particular), which turns the most important
+// field in this payload into "***". Discord's sentinels: an override id equal to the
+// application id means "default for ALL commands"; within a permissions entry,
+// id == guild_id means the @everyone role and id == guild_id - 1 means "all channels".
+const nameByCommandId = new Map(cmds.map((c) => [c.id, c.name]));
+const allChannels = (BigInt(guildId) - 1n).toString();
+const TYPES = { 1: "ROLE", 2: "USER", 3: "CHANNEL" };
+
+if (!Array.isArray(perms) || perms.length === 0) {
+  console.log("  (none)");
+} else {
+  for (const entry of perms) {
+    const target =
+      entry.id === appId
+        ? "DEFAULT FOR ALL COMMANDS (app-wide)"
+        : nameByCommandId.has(entry.id)
+          ? `/${nameByCommandId.get(entry.id)}`
+          : `unknown command id (not in this guild's command list)`;
+    console.log(`  target: ${target}`);
+    for (const p of entry.permissions ?? []) {
+      const scope =
+        p.type === 3 && p.id === allChannels
+          ? "ALL CHANNELS"
+          : p.type === 1 && p.id === guildId
+            ? "@everyone role"
+            : `${TYPES[p.type] ?? p.type} id ending …${String(p.id).slice(-5)}`;
+      console.log(`      ${p.permission ? "ALLOW" : "DENY "}  ${scope}`);
+    }
+  }
+}
