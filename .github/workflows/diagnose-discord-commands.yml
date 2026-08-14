@@ -1,0 +1,24 @@
+name: Diagnose Discord Commands
+
+# Read-only companion to "Register Discord Commands" — dumps what Discord currently has stored
+# for this bot's guild commands, plus any command permission overrides, without writing
+# anything. For debugging "a command registered successfully but doesn't show up in Discord".
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/diagnose-discord-commands.mjs
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
+          DISCORD_GUILD_ID: ${{ secrets.DISCORD_GUILD_ID }}
