@@ -982,3 +982,15 @@ if (!res.ok) {
 
 const registered = await res.json();
 console.log(`Registered ${registered.length} commands:`, registered.map((c) => c.name).join(", "));
+
+// Discord's response only lists top-level commands — a subcommand's own name never appears
+// above, even when it registered correctly. Print the /admin subcommand tree specifically so a
+// stale-registration or nesting bug is visible in the log without a separate GET round trip.
+const adminCommand = registered.find((c) => c.name === "admin");
+if (adminCommand) {
+  const describe = (opt) =>
+    opt.options && opt.options.length > 0 && (opt.type === 1 || opt.type === 2)
+      ? `${opt.name}(${opt.options.map(describe).join(",")})`
+      : opt.name;
+  console.log(`/admin subcommand tree:`, (adminCommand.options ?? []).map(describe).join(", "));
+}
