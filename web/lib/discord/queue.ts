@@ -11,7 +11,7 @@ import { startTeamFormation } from "./teamFormation";
 import { computeBonusDayMultiplier, isSuperchargedDayLive } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber, getConfigValue } from "./config";
-import { getStreakIds, getPriorRankWinStreak, getPriorRankLossStreak, mention, FLAME_THRESHOLD, COLD_THRESHOLD, type StreakIds } from "./streaks";
+import { getStreakIds, getPriorRankWinStreak, getPriorRankLossStreak, mention, FLAME_THRESHOLD, COLD_THRESHOLD, ON_FIRE_EMOJI, COLD_EMOJI, type StreakIds } from "./streaks";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -97,7 +97,10 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
 // already uses) instead of the band's plain-text name, MMR, and an optional streak suffix, all in
 // the embed's `description` rather than separate `fields` blocks, so there's no per-field padding
 // between them. Queue Progress stays its own field, and its filled-segment emoji swaps to 🟪 on a
-// Bonus Range day (matching the embed's own SUPERCHARGED_COLOR border) instead of always 🟩.
+// Bonus Range day (matching the embed's own SUPERCHARGED_COLOR border) instead of always 🟩. The
+// streak suffix (`   |   +N Win Streak🔥` / `   |   N Loss Streak🥶`) reuses ON_FIRE_EMOJI/
+// COLD_EMOJI from streaks.ts rather than a hardcoded literal, so it's guaranteed to match the same
+// emoji used everywhere else in the bot (mention decoration, leaderboard) instead of drifting.
 async function richEventEmbed(
   supabase: AdminClient,
   action: "join" | "leave",
@@ -119,9 +122,9 @@ async function richEventEmbed(
 
   let statLine = `${rankEmoji} ${displayMmr} MMR`;
   if (winStreak >= FLAME_THRESHOLD) {
-    statLine += ` · 🔥 ${winStreak}-Win Streak`;
+    statLine += `   |   +${winStreak} Win Streak${ON_FIRE_EMOJI}`;
   } else if (lossStreak >= COLD_THRESHOLD) {
-    statLine += ` · 🥶 ${lossStreak}-Loss Streak`;
+    statLine += `   |   ${lossStreak} Loss Streak${COLD_EMOJI}`;
   }
 
   const verb = action === "join" ? "joined" : "left";
