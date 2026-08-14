@@ -81,13 +81,23 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
   };
 }
 
-// Rich mode's per-join/per-leave message — a single data-rich embed (H3 headline, inline
-// Rank/MMR/Streak fields, a full-width queue-progress bar), posted "default"-style (a new
-// message per event, nothing deleted — see the mode !== "default" && mode !== "rich" check in
-// tryPostAndClaimQueueMessage) since /status already covers "see the whole current roster" on
+// Rich mode's per-join/per-leave message — a single data-rich embed, posted "default"-style (a
+// new message per event, nothing deleted — see the mode !== "default" && mode !== "rich" check
+// in tryPostAndClaimQueueMessage) since /status already covers "see the whole current roster" on
 // demand, so a second, separately-tracked roster message is redundant. Streak counts are the
 // acting player's own live numeric streak (not the boolean on-fire/cold flags used for mention
-// decoration elsewhere), since the field needs "4-Win Streak" text, not just a yes/no.
+// decoration elsewhere), since the line needs "4-Win Streak" text, not just a yes/no.
+//
+// Revised this session: the headline used to be a Markdown `###` H3, and Rank/MMR/Streak were
+// three separate inline embed fields — Discord's client (especially mobile) both adds real top
+// margin above a heading-led description *and* stacks "inline" fields vertically once the embed
+// gets narrow, which combined into a lot of dead space and an unnecessarily spread-out card. The
+// headline is now plain **bold** text (no built-in heading margin), and Rank/MMR/Streak collapse
+// onto one line directly under it — a single rank emoji (getRankEmoji, same one every roster line
+// already uses) instead of the band's plain-text name, MMR, and an optional streak suffix, all in
+// the embed's `description` rather than separate `fields` blocks, so there's no per-field padding
+// between them. Queue Progress stays its own field, and its filled-segment emoji swaps to 🟪 on a
+// Bonus Range day (matching the embed's own SUPERCHARGED_COLOR border) instead of always 🟩.
 async function richEventEmbed(
   supabase: AdminClient,
   action: "join" | "leave",
@@ -100,33 +110,32 @@ async function richEventEmbed(
   const shift = await getConfigNumber("mmr_shift", 0);
   const band = player.is_prism ? "Prism" : player.is_placed ? player.band : null;
   const displayMmr = Math.round(player.mmr * scale + shift);
+  const rankEmoji = await getRankEmoji(band);
 
   const [winStreak, lossStreak] = await Promise.all([
     getPriorRankWinStreak(supabase, player.id),
     getPriorRankLossStreak(supabase, player.id),
   ]);
 
-  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-    { name: "Rank", value: getRankLabel(band), inline: true },
-    { name: "MMR", value: `${displayMmr}`, inline: true },
-  ];
+  let statLine = `${rankEmoji} ${displayMmr} MMR`;
   if (winStreak >= FLAME_THRESHOLD) {
-    fields.push({ name: "Streak", value: `🔥 ${winStreak}-Win Streak`, inline: true });
+    statLine += ` · 🔥 ${winStreak}-Win Streak`;
   } else if (lossStreak >= COLD_THRESHOLD) {
-    fields.push({ name: "Streak", value: `🥶 ${lossStreak}-Loss Streak`, inline: true });
+    statLine += ` · 🥶 ${lossStreak}-Loss Streak`;
   }
-
-  const filled = Math.max(0, Math.min(6, queueSize));
-  fields.push({ name: "Queue Progress", value: `${"🟩".repeat(filled)}${"⬛".repeat(6 - filled)}  ${filled}/6`, inline: false });
 
   const verb = action === "join" ? "joined" : "left";
   const supercharged = await isSuperchargedDayLive();
   const color = supercharged ? SUPERCHARGED_COLOR : action === "join" ? RICH_JOIN_COLOR : RICH_LEAVE_COLOR;
 
+  const filled = Math.max(0, Math.min(6, queueSize));
+  const filledEmoji = supercharged ? "🟪" : "🟩";
+  const progress = `${filledEmoji.repeat(filled)}${"⬛".repeat(6 - filled)}  ${filled}/6`;
+
   return {
     color,
-    description: `### ${player.display_name} ${verb} the ${label}!`,
-    fields,
+    description: `**${player.display_name} ${verb} the ${label}!**\n${statLine}`,
+    fields: [{ name: "Queue Progress", value: progress, inline: false }],
     footer: { text: `Run /q to join the ${label} or /l to leave.` },
   };
 }
