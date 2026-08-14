@@ -9,14 +9,16 @@
 -- incrementing counters — pure date math against the current bonus-day range config, consistent
 -- with this feature's existing "no raw timestamps, minimal stored state" design.
 --
--- This requires resetting the existing accumulated counts: they were recorded with no notion of
--- "how many days this represents," so dividing them by a freshly-started day count would produce
--- wildly inflated numbers until enough real time passes. Both counter tables reset to 0 here, and
--- match_time_stats_started_at is set to now() — a clean, honestly-averaged window starting today.
-
-update crl6mansqueuebot_time_of_day_stats set supercharged_count = 0, non_supercharged_count = 0;
-update crl6mansqueuebot_day_of_week_stats set count = 0;
+-- Anchored to the actual historical start of tracking rather than reset-to-now: as of this
+-- migration being written (2026-08-14), the existing accumulated counts represent exactly 7
+-- elapsed days (1 supercharged, 6 non-supercharged) — confirmed live rather than reset, per
+-- explicit request to keep the existing data instead of zeroing it out. 2026-08-08 (noon UTC,
+-- safely within that Pacific calendar date regardless of PDT/PST) is 6 days before that, so
+-- today - startedAt + 1 = 7, matching the real history the counts already reflect. This is a
+-- fixed calendar date, not `now()` — it must stay correct however long this migration sits
+-- before actually being applied to production, since the raw counters keep incrementing under
+-- already-deployed code in the meantime regardless of when this migration runs.
 
 insert into crl6mansqueuebot_config (key, value)
-values ('match_time_stats_started_at', now()::text)
+values ('match_time_stats_started_at', '2026-08-08T12:00:00Z')
 on conflict (key) do update set value = excluded.value;
