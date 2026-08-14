@@ -59,11 +59,16 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   mmr_min_delta: 2,
   // Weekly bonus day — see CLAUDE.md, "Weekly bonus day". Listed here so /admin config get can
   // display current values, but deliberately left out of register-commands.mjs's CONFIG_KEYS
-  // (same precedent as bot_paused) — these three are set through their own dedicated,
+  // (same precedent as bot_paused) — these four are set through their own dedicated,
   // validated /admin bonus-day subcommands instead of the generic /admin config set.
   bonus_day_enabled: 1,
   bonus_day_bonus_pct: 50,
-  bonus_day_of_week: 6, // Saturday (Sun=0..Sat=6)
+  // bonus_day_start/end together define an inclusive, wraparound-aware day range (Sun=0..Sat=6)
+  // — start==end is a single bonus day (default: Saturday only, matching the original
+  // bonus_day_of_week behavior it supersedes). Set independently via /admin bonus-day
+  // set-start-day / set-end-day.
+  bonus_day_start: 6,
+  bonus_day_end: 6,
   // Queue-status message behavior — see queue.ts's getQueueMessageMode(). Superseded by the
   // string-valued `queue_message_mode` config key (simplified|default|hybrid, set via /admin
   // queue-message-mode — not listed here since this map is number-only) but kept as a legacy

@@ -22,6 +22,19 @@ const ATTACHMENT_OPTION = 11;
 const SUB_COMMAND = 1;
 const SUB_COMMAND_GROUP = 2;
 
+// Sun=0..Sat=6, matching bonusDay.ts's BONUS_DAY_NAMES convention — duplicated here (this
+// script can't import the TS module directly, same precedent as CONFIG_KEYS above) and shared
+// by both bonus-day set-start-day/set-end-day options below so the two don't drift apart.
+const BONUS_DAY_CHOICES = [
+  { name: "Sunday", value: "0" },
+  { name: "Monday", value: "1" },
+  { name: "Tuesday", value: "2" },
+  { name: "Wednesday", value: "3" },
+  { name: "Thursday", value: "4" },
+  { name: "Friday", value: "5" },
+  { name: "Saturday", value: "6" },
+];
+
 // Mirrors config.ts's KNOWN_CONFIG_DEFAULTS keys (and CLAUDE.md's "Config values" table) —
 // duplicated here the same way setbandrole's band choices duplicate bands.ts's band list,
 // since this script can't import the TS module directly. No longer wired into the /admin
@@ -658,7 +671,7 @@ const commands = [
       },
       {
         name: "bonus-day",
-        description: "Configure the weekly bonus-MMR day.",
+        description: "Configure the weekly bonus-MMR day range.",
         type: SUB_COMMAND_GROUP,
         options: [
           {
@@ -688,24 +701,30 @@ const commands = [
             ],
           },
           {
-            name: "set-day",
-            description: "Set which day of the week the bonus applies to (12am-12am Pacific).",
+            name: "set-start-day",
+            description: "Set the first day of the bonus range (12am Pacific start).",
             type: SUB_COMMAND,
             options: [
               {
                 name: "day",
-                description: "The bonus day.",
+                description: "The bonus range's start day.",
                 type: STRING_OPTION,
                 required: true,
-                choices: [
-                  { name: "Sunday", value: "0" },
-                  { name: "Monday", value: "1" },
-                  { name: "Tuesday", value: "2" },
-                  { name: "Wednesday", value: "3" },
-                  { name: "Thursday", value: "4" },
-                  { name: "Friday", value: "5" },
-                  { name: "Saturday", value: "6" },
-                ],
+                choices: BONUS_DAY_CHOICES,
+              },
+            ],
+          },
+          {
+            name: "set-end-day",
+            description: "Set the last day of the bonus range (ends 12am Pacific the day after).",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "day",
+                description: "The bonus range's end day.",
+                type: STRING_OPTION,
+                required: true,
+                choices: BONUS_DAY_CHOICES,
               },
             ],
           },

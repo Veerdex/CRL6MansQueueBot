@@ -14,19 +14,31 @@ export function currentPacificDayOfWeek(): number {
   return WEEKDAY_INDEX[weekday];
 }
 
+// Range membership, wraparound-aware: when start <= end it's a normal inclusive range
+// (e.g. Mon(1)..Wed(3) -> Mon,Tue,Wed); when start > end it wraps through the week boundary
+// (e.g. Fri(5)..Sun(0) -> Fri,Sat,Sun) instead of matching nothing. Every start/end
+// combination is therefore meaningful — start==end is a single-day range (the original
+// bonus_day_of_week behavior), start=0/end=6 (or any full lap) covers every day. Exported
+// and pure so it's unit-testable independent of config/DB access.
+export function isDayInRange(day: number, start: number, end: number): boolean {
+  if (start <= end) return day >= start && day <= end;
+  return day >= start || day <= end;
+}
+
 // Evaluated once at series-pop time (not report time) — the resulting multiplier is stored on
 // the series row (`bonus_day_multiplier`) and reused unchanged whenever that series eventually
 // settles. This is deliberate: eligibility is "the queue completed before the start of the next
-// day," not "the match happened to be reported during the window" — a series that pops at
-// 11:59pm Saturday and gets reported Sunday afternoon still earns the bonus. "The start of the
-// next day" is read as midnight in the America/Los_Angeles zone (auto-switches PDT/PST with
-// DST) rather than a hardcoded UTC-7 offset, since a fixed PDT offset would silently become
-// wrong for half the year.
+// day (the day after the range's end day)," not "the match happened to be reported during the
+// window" — a series that pops at 11:59pm on the range's last day and gets reported the next
+// afternoon still earns the bonus. "The start of the next day" is read as midnight in the
+// America/Los_Angeles zone (auto-switches PDT/PST with DST) rather than a hardcoded UTC-7
+// offset, since a fixed PDT offset would silently become wrong for half the year.
 export async function computeBonusDayMultiplier(): Promise<number> {
   const enabled = await getConfigNumber("bonus_day_enabled", 1);
   if (enabled !== 1) return 1;
-  const targetDay = await getConfigNumber("bonus_day_of_week", 6);
-  if (currentPacificDayOfWeek() !== targetDay) return 1;
+  const startDay = await getConfigNumber("bonus_day_start", 6);
+  const endDay = await getConfigNumber("bonus_day_end", 6);
+  if (!isDayInRange(currentPacificDayOfWeek(), startDay, endDay)) return 1;
   const bonusPct = await getConfigNumber("bonus_day_bonus_pct", 50);
   return 1 + bonusPct / 100;
 }

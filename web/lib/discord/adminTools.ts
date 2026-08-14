@@ -169,9 +169,14 @@ async function dispatchAdminSubcommand(
         await processBonusDaySetBonus(interaction, actorId, typeof percent === "number" ? percent : undefined);
         return;
       }
-      if (path[1] === "set-day") {
+      if (path[1] === "set-start-day") {
         const day = getParamValue(params, "day");
-        await processBonusDaySetDay(interaction, actorId, typeof day === "string" ? day : null);
+        await processBonusDaySetRangeEnd(interaction, actorId, "bonus_day_start", typeof day === "string" ? day : null);
+        return;
+      }
+      if (path[1] === "set-end-day") {
+        const day = getParamValue(params, "day");
+        await processBonusDaySetRangeEnd(interaction, actorId, "bonus_day_end", typeof day === "string" ? day : null);
         return;
       }
       await editOriginalResponse(interaction.token, { content: "Unrecognized bonus-day subcommand." });
@@ -1428,10 +1433,12 @@ async function processStreakBonusToggle(interaction: DiscordInteraction, actorId
 }
 
 // ---------------------------------------------------------------------------
-// /admin bonus-day toggle|set-bonus|set-day — see CLAUDE.md, "Weekly bonus day". Three
-// dedicated commands rather than the generic /admin config set (same precedent as
-// stop/start managing bot_paused) so set-day gets Discord-native choice validation and
+// /admin bonus-day toggle|set-bonus|set-start-day|set-end-day — see CLAUDE.md, "Weekly bonus
+// day". Four dedicated commands rather than the generic /admin config set (same precedent as
+// stop/start managing bot_paused) so the day commands get Discord-native choice validation and
 // set-bonus can be bounds-checked, instead of accepting an arbitrary config set value.
+// bonus_day_start/bonus_day_end together form an inclusive, wraparound-aware day range (see
+// isDayInRange in bonusDay.ts) — set independently, one command per endpoint, per request.
 // ---------------------------------------------------------------------------
 
 async function processBonusDayToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
@@ -1462,22 +1469,41 @@ async function processBonusDaySetBonus(interaction: DiscordInteraction, actorId:
   });
 }
 
-async function processBonusDaySetDay(interaction: DiscordInteraction, actorId: string, day: string | null) {
+// Shared by set-start-day/set-end-day — each just writes its own end of the range, then reads
+// the other end back to confirm the resulting effective range rather than only the one value
+// that changed, so an admin immediately sees the combined effect of both commands.
+async function processBonusDaySetRangeEnd(
+  interaction: DiscordInteraction,
+  actorId: string,
+  key: "bonus_day_start" | "bonus_day_end",
+  day: string | null,
+) {
   const dayIndex = day !== null ? Number(day) : NaN;
   if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6) {
     await editOriginalResponse(interaction.token, { content: "Invalid day." });
     return;
   }
-  const oldValue = await getConfigValue("bonus_day_of_week");
-  await setConfigValue("bonus_day_of_week", String(dayIndex));
-  await logAdminAction(actorId, "bonus_day_set_day", undefined, undefined, [
+  const otherKey = key === "bonus_day_start" ? "bonus_day_end" : "bonus_day_start";
+  const [oldValue, otherValueRaw] = await Promise.all([getConfigValue(key), getConfigValue(otherKey)]);
+  await setConfigValue(key, String(dayIndex));
+  await logAdminAction(actorId, key === "bonus_day_start" ? "bonus_day_set_start_day" : "bonus_day_set_end_day", undefined, undefined, [
     {
-      field: "bonus_day_of_week",
+      field: key,
       before: oldValue !== null ? BONUS_DAY_NAMES[Number(oldValue)] : `${BONUS_DAY_NAMES[6]} (default)`,
       after: BONUS_DAY_NAMES[dayIndex],
     },
   ]);
-  await editOriginalResponse(interaction.token, { content: `Bonus day set to ${BONUS_DAY_NAMES[dayIndex]} (12am–12am Pacific).` });
+  const otherIndex = otherValueRaw !== null ? Number(otherValueRaw) : 6;
+  const startIndex = key === "bonus_day_start" ? dayIndex : otherIndex;
+  const endIndex = key === "bonus_day_end" ? dayIndex : otherIndex;
+  const label = key === "bonus_day_start" ? "start" : "end";
+  const rangeDescription =
+    startIndex === endIndex
+      ? `${BONUS_DAY_NAMES[startIndex]} only`
+      : `${BONUS_DAY_NAMES[startIndex]} through ${BONUS_DAY_NAMES[endIndex]}`;
+  await editOriginalResponse(interaction.token, {
+    content: `Bonus range ${label} set to ${BONUS_DAY_NAMES[dayIndex]} (now ${rangeDescription}, 12am–12am Pacific).`,
+  });
 }
 
 // ---------------------------------------------------------------------------
