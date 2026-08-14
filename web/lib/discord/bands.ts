@@ -506,6 +506,24 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 //
 // Discord role sync swaps each affected player's current band role for Unranked, the mirror
 // image of the swap recomputeBands() already does the moment a player first places.
+//
+// **Prism holders, fixed this session**: `is_prism` is also cleared and the *Prism* role (not the
+// band role) is what actually gets removed for a currently-Prism player — a bug caught via a live
+// report of players keeping their Prism status/role indefinitely after a season reset. The old
+// code only ever removed `roleIdByBand.get(p.band)` (the player's underlying band column, almost
+// always still "Sapphire" for a Prism holder, since Prism never touches that column — it only
+// overlays a role swap on top of it). For a Prism player that's a no-op: their *actual* Discord
+// role is Prism, not Sapphire, so nothing was ever actually removed, and `is_prism` stayed `true`
+// in the DB. Worse, this was self-perpetuating: the same reset also zeroes `rank_games_played` and
+// flips `is_placed` to `false`, which drops that player out of `recomputeBands()`'s pool entirely
+// (`pool` only includes already-`is_placed` players or newly-crossing-`placement_games_required`
+// ones — a reset player satisfies neither) — so the very next `recomputeBands()` call `/newseason`
+// already makes right after opening the new season, previously assumed (per a since-corrected
+// comment in `seasonClose.ts`) to "clear out anyone who no longer qualifies," could never actually
+// reconsider them. The stale Prism role/flag would only ever get cleaned up if that specific player
+// happened to re-place in the new season without re-qualifying for Prism. Fixed by handling Prism
+// directly in this same pass instead of relying on a later recompute that structurally can't see
+// these players anymore.
 // ---------------------------------------------------------------------------
 
 export async function resetAllPlacementsToUnranked(): Promise<number> {
@@ -513,7 +531,7 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
 
   const { data: placed } = await supabase
     .from("crl6mansqueuebot_players")
-    .select("id, discord_id, band")
+    .select("id, discord_id, band, is_prism")
     .eq("is_placed", true)
     .eq("is_test_data", false);
   const players = placed ?? [];
@@ -524,6 +542,7 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
     .update({
       is_placed: false,
       band: null,
+      is_prism: false,
       rank_games_played: 0,
       band_games_played: 0,
       last_rank_game_at: null,
@@ -550,7 +569,9 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
       await Promise.all(
         players.map(async (p) => {
           try {
-            const oldRoleId = p.band ? roleIdByBand.get(p.band as Band) : undefined;
+            // A Prism player's real held role is Prism, not their underlying band — remove
+            // whichever one they actually have, not always the band role.
+            const oldRoleId = p.is_prism ? roleIdByBand.get("Prism") : p.band ? roleIdByBand.get(p.band as Band) : undefined;
             if (oldRoleId) await removeMemberRole(resolvedGuildId, p.discord_id, oldRoleId);
             if (unrankedRoleId) await addMemberRole(resolvedGuildId, p.discord_id, unrankedRoleId);
           } catch (err) {

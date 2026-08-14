@@ -144,10 +144,12 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   }
 
   // Prism role sync used to happen here (strip/grant against last season's `is_prism` holders).
-  // That's now handled live by bands.ts's recomputeBands() — /newseason calls it explicitly
-  // right after opening the new season (see seasons.ts), which re-evaluates the top-N cut
-  // against the fresh (all-zero) season-games counts and clears out anyone who no longer
-  // qualifies, rather than waiting for their next report.
+  // That's now handled live by bands.ts's recomputeBands() for the ordinary case (re-evaluated on
+  // every report/daily cron). At season-reset time specifically, though, resetAllPlacementsToUnranked
+  // (called below, via applyMmrDecay's sibling call) clears `is_prism` and the Prism role itself —
+  // fixed this session, since a later recomputeBands() call can't reconsider a player it just reset
+  // out of its own pool (is_placed/rank_games_played both get zeroed), so it could never actually
+  // "clear out anyone who no longer qualifies" the way this comment used to (incorrectly) claim.
 
   const playersDecayed = await applyMmrDecay(supabase, decayFactor);
   const playersReset = await resetAllPlacementsToUnranked();
