@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -179,6 +179,31 @@ async function postHybridAnnouncement(channelId: string, headline: string, ping?
     method: "POST",
     body: JSON.stringify({ content: ping ?? "", embeds: [{ color, description: `**${headline}**` }] }),
   }).catch((err) => console.error(`Failed to post hybrid queue announcement in ${channelId}`, err));
+}
+
+// Rich mode's pop-time announcement — a dedicated, always-posted "Match Found!" embed, separate
+// from (and in addition to) the roster-copy message queueMessageBody's richContext-less fallback
+// already posts as the pop's own single-message-per-event content. Only the *ordinary per-player
+// join card* gets replaced by the roster copy at pop — this announcement stays, unchanged from
+// before, as the actual "the match is starting" notification. @mentions all 6 players (same
+// "must actually notify" precedent as the "Teams formed!" summary and the first-join role ping —
+// embed-only mentions never notify).
+async function richMatchFoundEmbed(members: PlayerRow[], streaks: StreakIds): Promise<any> {
+  const lines = await buildRosterLines(members, streaks);
+  return {
+    color: GOLD_COLOR,
+    description: `### Match Found!\n${lines.join("\n")}`,
+    footer: { text: "Forming teams…" },
+  };
+}
+
+async function postRichMatchFoundAnnouncement(channelId: string, members: PlayerRow[], streaks: StreakIds) {
+  const embed = await richMatchFoundEmbed(members, streaks);
+  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
+  await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: mentions, embeds: [embed] }),
+  }).catch((err) => console.error(`Failed to post rich match-found announcement in ${channelId}`, err));
 }
 
 // Posted once, alongside the first-join role ping (see the "first join" branch in the /q command
@@ -714,9 +739,13 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       // single-player "X joined" card would be immediately misleading once the queue clears for
       // team formation. With no richContext, refreshQueueMessage's claimed message falls back to
       // the same roster embed /status returns (see queueMessageBody) — a copy of the status
-      // message showing the completed 6/6 roster, matching the plain (non-pinging) treatment
-      // every other mode already gives this moment.
+      // message showing the completed 6/6 roster. The dedicated gold "Match Found!" announcement
+      // (with the notifying @mention-all-6) still posts separately, unchanged — only the ordinary
+      // join card is what the roster copy replaces, not that announcement.
       await refreshQueueMessage(supabase, queueType);
+      const members = await fetchQueueMembers(supabase, queueType);
+      const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+      await postRichMatchFoundAnnouncement(channelId, members, streaks);
       await freezeQueueRosterMessage(supabase, queueType);
     } else {
       // Show the queue at 6/6 (same "has joined" treatment as any other join) before handlePop
