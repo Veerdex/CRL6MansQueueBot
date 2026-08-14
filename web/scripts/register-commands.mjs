@@ -966,6 +966,28 @@ if (!guildId) {
   console.log(`Auto-detected guild: ${guilds[0].name} (${guildId})`);
 }
 
+// Diagnostic: this bot deliberately registers guild-scoped commands only (see the header
+// comment above) — a leftover *global* command with the same name as a guild command can
+// confuse Discord clients about which definition to show/autocomplete against, and global
+// commands take up to ~1hr to change on top of that. Surface any global commands here so a
+// stale-global-command mismatch is visible instead of silently confusing.
+const globalRes = await fetch(`https://discord.com/api/v10/applications/${appId}/commands`, {
+  headers: { Authorization: `Bot ${token}` },
+});
+if (globalRes.ok) {
+  const globalCommands = await globalRes.json();
+  if (globalCommands.length > 0) {
+    console.log(
+      `WARNING: ${globalCommands.length} GLOBAL command(s) also registered for this app (these can shadow/conflict with the guild-scoped ones below):`,
+      globalCommands.map((c) => c.name).join(", "),
+    );
+  } else {
+    console.log("No global commands registered for this app (expected — this bot is guild-scoped only).");
+  }
+} else {
+  console.log(`Could not check global commands: ${globalRes.status} ${await globalRes.text()}`);
+}
+
 const res = await fetch(`https://discord.com/api/v10/applications/${appId}/guilds/${guildId}/commands`, {
   method: "PUT",
   headers: {
