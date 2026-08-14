@@ -1,0 +1,26 @@
+name: Register Discord Commands
+
+# Manually re-runs web/scripts/register-commands.mjs (a bulk overwrite of this bot's Discord
+# slash commands) from a runner with normal outbound network access — for use whenever the
+# command set changes and there's no local machine handy to run it from directly. Trigger from
+# the Actions tab -> this workflow -> "Run workflow" (works fine from GitHub's mobile web UI).
+on:
+  workflow_dispatch:
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node scripts/register-commands.mjs
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
+          DISCORD_GUILD_ID: ${{ secrets.DISCORD_GUILD_ID }}
