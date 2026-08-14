@@ -1,10 +1,43 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+// In-memory cache of the whole config table, module-scoped so it survives across requests on a
+// warm Vercel instance. Every command reads several config keys (a typical /q in rich mode reads
+// 6+), each of which used to be its own Supabase round trip with zero caching — this was one of
+// the largest, most universal sources of latency in the bot (see the /q latency discussion),
+// since it affects every command that touches config, not just queueing. Config changes are rare
+// (admin-only) and don't need to be instant everywhere, so a short TTL is an easy tradeoff — but
+// the two write paths below also update the cache immediately, so the instance that actually
+// handled an admin's `/admin config set` (or any other config-writing command) sees its own
+// change right away rather than waiting out the TTL, even though *other* warm instances still
+// only pick it up once their own cache expires.
+const CONFIG_CACHE_TTL_MS = 30_000;
+let configCache: Map<string, string> | null = null;
+let configCacheLoadedAt = 0;
+let configCacheLoadPromise: Promise<Map<string, string>> | null = null;
+
+async function loadConfigCache(): Promise<Map<string, string>> {
+  if (configCache && Date.now() - configCacheLoadedAt < CONFIG_CACHE_TTL_MS) return configCache;
+  // Collapse concurrent cache-miss callers onto one in-flight fetch instead of each firing its
+  // own SELECT — the whole point of this cache is fewer round trips, so a stampede of parallel
+  // reloads right as the TTL expires would defeat that.
+  if (configCacheLoadPromise) return configCacheLoadPromise;
+
+  configCacheLoadPromise = (async () => {
+    const supabase = createAdminClient();
+    const { data } = await supabase.from("crl6mansqueuebot_config").select("key, value");
+    const map = new Map((data ?? []).map((row) => [row.key as string, row.value as string]));
+    configCache = map;
+    configCacheLoadedAt = Date.now();
+    configCacheLoadPromise = null;
+    return map;
+  })();
+  return configCacheLoadPromise;
+}
+
 export async function getConfigValue(key: string): Promise<string | null> {
-  const supabase = createAdminClient();
-  const { data } = await supabase.from("crl6mansqueuebot_config").select("value").eq("key", key).maybeSingle();
-  return data?.value ?? null;
+  const cache = await loadConfigCache();
+  return cache.get(key) ?? null;
 }
 
 export async function getConfigNumber(key: string, fallback: number): Promise<number> {
@@ -89,11 +122,16 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
 export async function setConfigValue(key: string, value: string): Promise<void> {
   const supabase = createAdminClient();
   await supabase.from("crl6mansqueuebot_config").upsert({ key, value });
+  // Best-effort: keep this instance's cache in sync so the write is visible on its very next
+  // read. If the cache hasn't been loaded yet on this instance, there's nothing to update —
+  // the next getConfigValue call will load it fresh (including this write) anyway.
+  if (configCache) configCache.set(key, value);
 }
 
 export async function deleteConfigValue(key: string): Promise<void> {
   const supabase = createAdminClient();
   await supabase.from("crl6mansqueuebot_config").delete().eq("key", key);
+  if (configCache) configCache.delete(key);
 }
 
 // Apply MMR display transformation: displayed_mmr = (actual_mmr * scale) + shift

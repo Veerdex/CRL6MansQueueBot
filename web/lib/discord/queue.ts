@@ -109,16 +109,15 @@ async function richEventEmbed(
   queueSize: number,
 ): Promise<any> {
   const label = QUEUE_LABELS[queueType];
-  const scale = await getConfigNumber("mmr_scale", 1);
-  const shift = await getConfigNumber("mmr_shift", 0);
   const band = player.is_prism ? "Prism" : player.is_placed ? player.band : null;
-  const displayMmr = Math.round(player.mmr * scale + shift);
-  const rankEmoji = await getRankEmoji(band);
-
-  const [winStreak, lossStreak] = await Promise.all([
+  const [scale, shift, rankEmoji, winStreak, lossStreak] = await Promise.all([
+    getConfigNumber("mmr_scale", 1),
+    getConfigNumber("mmr_shift", 0),
+    getRankEmoji(band),
     getPriorRankWinStreak(supabase, player.id),
     getPriorRankLossStreak(supabase, player.id),
   ]);
+  const displayMmr = Math.round(player.mmr * scale + shift);
 
   let statLine = `${rankEmoji} ${displayMmr} MMR`;
   if (winStreak >= FLAME_THRESHOLD) {
@@ -456,15 +455,28 @@ export async function refreshQueueMessage(
   headline?: string,
   ping?: string,
   richContext?: { action: "join" | "leave"; player: PlayerRow; queueSize: number },
+  // Callers that already looked up this queue_type's crl6mansqueuebot_queue_messages row a
+  // moment earlier for their own purposes (processQueueCommand resolves channel->queue_type off
+  // this exact table before doing anything else) can pass it here to skip attempt 0's otherwise-
+  // redundant re-fetch of the same row. Only used for the first attempt — if the optimistic claim
+  // built off it loses the race (another refresh already moved message_id), the loop falls back
+  // to a fresh fetch on attempt 1 exactly as before, so a slightly stale known row is never unsafe,
+  // just occasionally not the fast path.
+  knownMsgRow?: { channel_id: string; message_id: string },
 ) {
   const mode = await getQueueMessageMode();
   let announced = false;
   for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt++) {
-    const { data: msgRow } = await supabase
-      .from("crl6mansqueuebot_queue_messages")
-      .select("*")
-      .eq("queue_type", queueType)
-      .maybeSingle();
+    const msgRow =
+      attempt === 0 && knownMsgRow
+        ? knownMsgRow
+        : (
+            await supabase
+              .from("crl6mansqueuebot_queue_messages")
+              .select("*")
+              .eq("queue_type", queueType)
+              .maybeSingle()
+          ).data;
     if (!msgRow) return;
 
     // Hybrid mode's headline-only announcement is a separate, always-stacking message — post it
@@ -667,9 +679,13 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     return;
   }
 
+  // Selects the full row (not just queue_type) so the channel_id/message_id already known here
+  // can be passed straight through to refreshQueueMessage's calls below (as knownMsgRow) instead
+  // of it re-querying this exact same row from scratch a moment later — same table, same
+  // queue_type, nothing in between changes it.
   const { data: msgRow } = await supabase
     .from("crl6mansqueuebot_queue_messages")
-    .select("queue_type")
+    .select("*")
     .eq("channel_id", channelId)
     .maybeSingle();
   if (!msgRow) {
@@ -679,6 +695,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     return;
   }
   const queueType = msgRow.queue_type as QueueType;
+  const knownMsgRow = { channel_id: msgRow.channel_id, message_id: msgRow.message_id };
 
   const player = await getOrCreatePlayer(
     supabase,
@@ -708,6 +725,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       `<@${discordId}> has left the ${QUEUE_LABELS[queueType]}.`,
       undefined,
       { action: "leave", player, queueSize: result.queue_size },
+      knownMsgRow,
     );
     await deleteOriginalResponse(interaction.token);
     return;
@@ -754,7 +772,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       // message showing the completed 6/6 roster. The dedicated gold "Match Found!" announcement
       // (with the notifying @mention-all-6) still posts separately, unchanged — only the ordinary
       // join card is what the roster copy replaces, not that announcement.
-      await refreshQueueMessage(supabase, queueType);
+      await refreshQueueMessage(supabase, queueType, undefined, undefined, undefined, knownMsgRow);
       const members = await fetchQueueMembers(supabase, queueType);
       const streaks = await getStreakIds(supabase, members.map((m) => m.id));
       await postRichMatchFoundAnnouncement(channelId, members, streaks);
@@ -763,7 +781,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       // Show the queue at 6/6 (same "has joined" treatment as any other join) before handlePop
       // clears crl6mansqueuebot_queue_members and the vote embed replaces this as the channel's
       // newest message.
-      await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`);
+      await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`, undefined, undefined, knownMsgRow);
       // Hybrid mode: freeze the roster message just posted above (the final 6/6 state) so it's
       // never deleted by a future queue cycle — see freezeQueueRosterMessage.
       if (mode === "hybrid") {
@@ -791,7 +809,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       }
     }
 
-    await refreshQueueMessage(supabase, queueType, headline, ping, { action: "join", player, queueSize: result.queue_size });
+    await refreshQueueMessage(supabase, queueType, headline, ping, { action: "join", player, queueSize: result.queue_size }, knownMsgRow);
     if (result.queue_size === 1 && (await isSuperchargedDayLive())) {
       await postSuperchargedAnnouncement(channelId);
     }

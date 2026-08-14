@@ -34,12 +34,18 @@ export function isDayInRange(day: number, start: number, end: number): boolean {
 // America/Los_Angeles zone (auto-switches PDT/PST with DST) rather than a hardcoded UTC-7
 // offset, since a fixed PDT offset would silently become wrong for half the year.
 export async function computeBonusDayMultiplier(): Promise<number> {
-  const enabled = await getConfigNumber("bonus_day_enabled", 1);
+  // Fetched together rather than sequentially short-circuited on `enabled` — config.ts caches
+  // the whole config table in one request regardless of how many individual keys are asked for,
+  // so there's no longer a round trip to save by reading fewer keys; parallelizing just avoids a
+  // few extra sequential microtask ticks per call, and this runs on every queue join/leave.
+  const [enabled, startDay, endDay, bonusPct] = await Promise.all([
+    getConfigNumber("bonus_day_enabled", 1),
+    getConfigNumber("bonus_day_start", 6),
+    getConfigNumber("bonus_day_end", 6),
+    getConfigNumber("bonus_day_bonus_pct", 50),
+  ]);
   if (enabled !== 1) return 1;
-  const startDay = await getConfigNumber("bonus_day_start", 6);
-  const endDay = await getConfigNumber("bonus_day_end", 6);
   if (!isDayInRange(currentPacificDayOfWeek(), startDay, endDay)) return 1;
-  const bonusPct = await getConfigNumber("bonus_day_bonus_pct", 50);
   return 1 + bonusPct / 100;
 }
 
