@@ -7,6 +7,7 @@ import { postTrackedQueueMessage, refreshQueueMessage } from "@/lib/discord/queu
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
+import { resolveSeriesLengthByMajority } from "@/lib/discord/teamFormation";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
@@ -24,21 +25,53 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient();
 
+  const voteTimeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+  const voteCutoff = new Date(Date.now() - voteTimeoutSeconds * 1000).toISOString();
+
+  // Series-length vote (BO3/5/7) timeout, checked before the Balanced/Captains vote below since
+  // it's the earlier phase when series_length_vote_enabled is on — resolves by majority (never
+  // voids) via resolveSeriesLengthByMajority, which also hands off into the Balanced/Captains
+  // vote the same way a click-resolved series-length vote does. series_length_vote_active is what
+  // scopes this to series where that vote is the *currently* active phase, as opposed to a series
+  // where the feature was off (never active) or already resolved (active flag cleared on
+  // resolution) — see CLAUDE.md, "Team formation (on pop)".
+  const { data: pendingSeriesLength, error: seriesLengthError } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .eq("status", "forming")
+    .eq("series_length_vote_active", true)
+    .lt("vote_started_at", voteCutoff);
+
+  if (seriesLengthError) {
+    console.error("Sweep: failed to fetch pending series-length votes", seriesLengthError);
+  }
+
+  let seriesLengthResolved = 0;
+  for (const series of pendingSeriesLength ?? []) {
+    try {
+      await resolveSeriesLengthByMajority(supabase, series);
+      seriesLengthResolved += 1;
+    } catch (err) {
+      console.error(`Sweep: failed to resolve series-length vote for ${series.id}`, err);
+    }
+  }
+
   // Vote silence: nobody voted at all within vote_timeout_seconds -> cancel outright rather
   // than defaulting to a mode. Checked separately (and first) since it's a much shorter
   // window than the general series timeout below, and only applies pre-resolution (a series
   // where the draft is mid-progress already has >=3 votes, so it's naturally excluded here
   // and left to the general timeout instead). See CLAUDE.md, "Team formation, in the match
-  // channel".
-  const voteTimeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-  const voteCutoff = new Date(Date.now() - voteTimeoutSeconds * 1000).toISOString();
-
+  // channel". Scoped to `series_length_vote_active = false` so this doesn't race the
+  // series-length vote timeout above for a series still on that earlier phase — vote_started_at
+  // reflects whichever phase is actually current, not the original pop time, so the
+  // Balanced/Captains vote always gets its own full window once it actually begins.
   const { data: silentSeries, error: silentError } = await supabase
     .from("crl6mansqueuebot_series")
     .select("*")
     .eq("status", "forming")
     .is("vote_result", null)
-    .lt("created_at", voteCutoff);
+    .eq("series_length_vote_active", false)
+    .lt("vote_started_at", voteCutoff);
 
   if (silentError) {
     console.error("Sweep: failed to fetch vote-silent series", silentError);
@@ -325,7 +358,17 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true, voided, voidedForSilence, orphansCleaned, queueMembersRemoved, subRequestsExpired, mafiaLobbiesCancelled, scheduledResetFired });
+  return NextResponse.json({
+    ok: true,
+    voided,
+    voidedForSilence,
+    seriesLengthResolved,
+    orphansCleaned,
+    queueMembersRemoved,
+    subRequestsExpired,
+    mafiaLobbiesCancelled,
+    scheduledResetFired,
+  });
 }
 
 async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, message: string) {

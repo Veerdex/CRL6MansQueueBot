@@ -14,6 +14,7 @@ import { cleanupTestMatchRows } from "./testMatch";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { encodeMatchId } from "./matchId";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
+import { SERIES_LENGTH_LABELS } from "./teamFormation";
 import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
 // Instant deletion of voice channels after report
@@ -200,7 +201,9 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Locked in at pop time (see bonusDay.ts) — not re-evaluated against "now", which could
     // have drifted outside the bonus window by the time a match actually gets reported.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
+    // series_length_k_multiplier is locked in at vote-resolution time instead (see
+    // teamFormation.ts) — defaults to 1 (no-op) when the series-length vote feature is off.
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier * series.series_length_k_multiplier;
 
     const eloInputs = allSeriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
@@ -377,7 +380,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   const reportChannelId = reportChannelConfig?.value;
   if (reportChannelId) {
     const matchId = encodeMatchId(matchNumber);
-    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1);
+    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length);
     const embeds: Array<Record<string, unknown>> = [embed];
     if (streakAnnounceLines.length > 0) embeds.push(streakAnnouncementEmbed(streakAnnounceLines));
     await discordFetch(`/channels/${reportChannelId}/messages`, {
@@ -398,12 +401,20 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   await deleteOriginalResponse(interaction.token);
 }
 
-function reportResultEmbed(winner: Team, matchId: string, winnerLines: string[], loserLines: string[], bonusDayActive: boolean) {
+function reportResultEmbed(
+  winner: Team,
+  matchId: string,
+  winnerLines: string[],
+  loserLines: string[],
+  bonusDayActive: boolean,
+  seriesLength: SeriesRow["series_length"],
+) {
+  const seriesLengthMarker = seriesLength ? ` · ${SERIES_LENGTH_LABELS[seriesLength]}` : "";
   return {
     color: bonusDayActive ? SUPERCHARGED_COLOR : BRAND_COLOR,
     title: `Match Reported — Team ${winner} Wins!`,
     description:
-      `**Match #${matchId}**${bonusDayActive ? " 🔥 Supercharged!" : ""}\n\n` +
+      `**Match #${matchId}**${bonusDayActive ? " 🔥 Supercharged!" : ""}${seriesLengthMarker}\n\n` +
       `**Winners**\n${winnerLines.join("\n")}\n\n` +
       `**Losers**\n${loserLines.join("\n")}`,
   };

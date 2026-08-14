@@ -7,7 +7,7 @@ import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalRe
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
-import { startTeamFormation } from "./teamFormation";
+import { startTeamFormation, startSeriesLengthVote } from "./teamFormation";
 import { computeBonusDayMultiplier, isSuperchargedDayLive } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber, getConfigValue } from "./config";
@@ -945,7 +945,15 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
 
 export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[], queueChannelId: string) {
   try {
-    await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
+    // Best-of-3/5/7 pre-vote, feature-flagged and off by default — see CLAUDE.md, "Team
+    // formation (on pop)". When disabled, startTeamFormation runs exactly as it always has;
+    // this is the entire guarantee that a disabled feature changes nothing about today's flow.
+    const seriesLengthVoteEnabled = (await getConfigNumber("series_length_vote_enabled", 0)) === 1;
+    if (seriesLengthVoteEnabled) {
+      await startSeriesLengthVote(supabase, guildId, seriesId, queueChannelId, members);
+    } else {
+      await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
+    }
   } catch (err) {
     console.error(`Failed to start team formation for series ${seriesId}`, err);
     await postTrackedQueueMessage(

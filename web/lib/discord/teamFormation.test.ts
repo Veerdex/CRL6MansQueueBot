@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bestBalancedSplit, deriveTurnCaptain, selectCaptainCandidates } from "./teamFormation";
+import { bestBalancedSplit, deriveTurnCaptain, selectCaptainCandidates, resolveSeriesLengthTieBreak } from "./teamFormation";
+import type { SeriesLength } from "@/lib/supabase/types";
 import type { PlayerRow } from "@/lib/supabase/types";
 
 function player(id: string, mmr: number, isPlaced = false): PlayerRow {
@@ -151,5 +152,30 @@ describe("deriveTurnCaptain", () => {
 
   it("returns null once 3 picks are made, signalling auto-assignment of the last player", () => {
     expect(deriveTurnCaptain(3)).toBeNull();
+  });
+});
+
+describe("resolveSeriesLengthTieBreak", () => {
+  const counts = (bo3: number, bo5: number, bo7: number): Record<SeriesLength, number> => ({ bo3, bo5, bo7 });
+
+  it("picks the option with the most votes", () => {
+    expect(resolveSeriesLengthTieBreak(counts(1, 2, 0))).toBe("bo5");
+    expect(resolveSeriesLengthTieBreak(counts(0, 1, 2))).toBe("bo7");
+  });
+
+  it("a 0-0-0 tie (nobody voted) resolves to bo3", () => {
+    expect(resolveSeriesLengthTieBreak(counts(0, 0, 0))).toBe("bo3");
+  });
+
+  it("an exact 2-2-2 tie resolves to bo3", () => {
+    expect(resolveSeriesLengthTieBreak(counts(2, 2, 2))).toBe("bo3");
+  });
+
+  it("a tie between bo5 and bo7 (bo3 not tied for the lead) still favors the lower of the two leaders", () => {
+    expect(resolveSeriesLengthTieBreak(counts(0, 2, 2))).toBe("bo5");
+  });
+
+  it("a tie between bo3 and bo7 favors bo3", () => {
+    expect(resolveSeriesLengthTieBreak(counts(2, 0, 2))).toBe("bo3");
   });
 });

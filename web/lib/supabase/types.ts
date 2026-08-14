@@ -3,6 +3,7 @@ export type SeriesStatus = "forming" | "active" | "reported" | "cancelled" | "vo
 export type Team = "A" | "B";
 export type Band = "Iron" | "Garnet" | "Emerald" | "Sapphire";
 export type VoteChoice = "balanced" | "captains";
+export type SeriesLength = "bo3" | "bo5" | "bo7";
 
 // Row shapes must be `type` aliases, not `interface` — interfaces don't get an
 // implicit index signature, so they fail postgrest-js's `Record<string, unknown>`
@@ -53,6 +54,10 @@ export type SeriesRow = {
   teams_formed_at: string | null;
   private_match_password: string | null;
   match_number: number | null;
+  series_length: SeriesLength | null;
+  series_length_k_multiplier: number;
+  vote_started_at: string | null;
+  series_length_vote_active: boolean;
 };
 
 export type SeriesPlayerRow = {
@@ -104,6 +109,12 @@ export type SeriesVoteRow = {
   series_id: string;
   player_id: string;
   choice: VoteChoice;
+};
+
+export type SeriesLengthVoteRow = {
+  series_id: string;
+  player_id: string;
+  choice: SeriesLength;
 };
 
 export type CancelVoteRow = {
@@ -249,6 +260,12 @@ export type Database = {
         Row: SeriesVoteRow;
         Insert: SeriesVoteRow;
         Update: Partial<SeriesVoteRow>;
+        Relationships: [];
+      };
+      crl6mansqueuebot_series_length_votes: {
+        Row: SeriesLengthVoteRow;
+        Insert: SeriesLengthVoteRow;
+        Update: Partial<SeriesLengthVoteRow>;
         Relationships: [];
       };
       crl6mansqueuebot_cancel_votes: {

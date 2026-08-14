@@ -112,6 +112,13 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // but deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set through its
   // own dedicated, boolean-validated /admin streak-bonus toggle command instead.
   streak_bonus_enabled: 1,
+  // Best-of-3/5/7 series-length pre-vote — see CLAUDE.md, "Team formation (on pop)". Same
+  // precedent as bonus_day_enabled/streak_bonus_enabled: listed here for /admin config get's
+  // display, but deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set
+  // through its own dedicated /admin series-length-vote toggle command instead. Defaults to
+  // disabled — this is a new behavior change to the pop flow, not something that should suddenly
+  // activate for a live community without an admin's deliberate choice.
+  series_length_vote_enabled: 0,
   // /mafia mini-game — see CLAUDE.md, "Mafia". No dedicated subcommand exists for these (unlike
   // bonus_day_*/streak_bonus_enabled above), so both are left in register-commands.mjs's
   // CONFIG_KEYS and settable via the generic /admin config set.

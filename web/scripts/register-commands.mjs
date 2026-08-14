@@ -869,6 +869,19 @@ const commands = [
         ],
       },
       {
+        name: "series-length-vote",
+        description: "Toggle the Best-of-3/5/7 series-length pre-vote (off by default).",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "enabled",
+            description: "If true, a Best of 3/5/7 vote runs before Balanced/Captains, scaling the K-factor (0.6x/1.0x/1.4x).",
+            type: BOOLEAN_OPTION,
+            required: true,
+          },
+        ],
+      },
+      {
         name: "band-calc-mode",
         description: "Set how band percentile is computed: leaderboard position, or raw MMR distribution.",
         type: SUB_COMMAND,

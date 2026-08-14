@@ -226,6 +226,11 @@ async function dispatchAdminSubcommand(
       await processStreakBonusToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
       return;
     }
+    case "series-length-vote": {
+      const enabled = getParamValue(params, "enabled");
+      await processSeriesLengthVoteToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+      return;
+    }
     case "band-calc-mode": {
       const mode = getParamValue(params, "mode");
       await processBandCalcModeSet(interaction, actorId, typeof mode === "string" ? mode : undefined);
@@ -385,9 +390,10 @@ async function processCorrectReport(
       getConfigNumber("streak_bonus_enabled", 1),
     ]);
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
-    // Same locked-in-at-pop multiplier the original report used — a correction reuses it rather
-    // than re-evaluating "now" so it stays consistent with whatever the original settle applied.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
+    // Same locked-in-at-pop/vote-resolution multipliers the original report used — a correction
+    // reuses them rather than re-evaluating "now" so it stays consistent with whatever the
+    // original settle applied.
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier * series.series_length_k_multiplier;
 
     const eloInputs = seriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
@@ -1429,6 +1435,26 @@ async function processStreakBonusToggle(interaction: DiscordInteraction, actorId
     content: enabled
       ? "Win-streak MMR bonus enabled."
       : "Win-streak MMR bonus disabled — streaks, the win-streak announcement, and the fire-emoji mention decoration still work as normal.",
+  });
+}
+
+// /admin series-length-vote toggle enabled:<bool> — see CLAUDE.md, "Team formation (on pop)".
+// Default off: this inserts a whole new voting step into the pop flow, so it shouldn't suddenly
+// activate for a live community without an admin's deliberate choice.
+async function processSeriesLengthVoteToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
+  if (enabled === undefined) {
+    await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
+    return;
+  }
+  const oldValue = await getConfigValue("series_length_vote_enabled");
+  await setConfigValue("series_length_vote_enabled", enabled ? "1" : "0");
+  await logAdminAction(actorId, "series_length_vote_toggle", undefined, undefined, [
+    { field: "series_length_vote_enabled", before: oldValue ?? "0 (default)", after: enabled ? "1" : "0" },
+  ]);
+  await editOriginalResponse(interaction.token, {
+    content: enabled
+      ? "Series-length (Best of 3/5/7) pre-vote enabled — it'll run before the Balanced/Captains vote on the next pop."
+      : "Series-length pre-vote disabled — pops go straight to the Balanced/Captains vote, same as before.",
   });
 }
 

@@ -7,7 +7,7 @@ import {
   ButtonStyleTypes,
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { PlayerRow, SeriesLobbyRow, SeriesRow, Team, VoteChoice } from "@/lib/supabase/types";
+import type { PlayerRow, SeriesLobbyRow, SeriesRow, Team, VoteChoice, SeriesLength } from "@/lib/supabase/types";
 import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { getConfigNumber, getDisplayMMR } from "./config";
@@ -26,6 +26,29 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // duplicated /cancel as a voting option) against the shared crl6mansqueuebot_cancel_votes
 // table. See registerCancelVoteAndMaybeVoid below and CLAUDE.md, "Series end".
 const CANCEL_VOTE_THRESHOLD = 4;
+
+// Best-of-3/5/7 series-length pre-vote — see CLAUDE.md, "Team formation (on pop)". Fixed
+// constants, not admin-configurable (only the whole feature's on/off state is, via /admin
+// series-length-vote toggle) — same precedent as CANCEL_VOTE_THRESHOLD above, since the user
+// supplied exact fixed values rather than asking for them to be tunable.
+const SERIES_LENGTH_VOTE_THRESHOLD = 3;
+const SERIES_LENGTH_ORDER: SeriesLength[] = ["bo3", "bo5", "bo7"];
+const SERIES_LENGTH_K_MULTIPLIERS: Record<SeriesLength, number> = { bo3: 0.6, bo5: 1.0, bo7: 1.4 };
+export const SERIES_LENGTH_LABELS: Record<SeriesLength, string> = { bo3: "Best of 3", bo5: "Best of 5", bo7: "Best of 7" };
+
+// Picks whichever series length currently has the most votes; ties (including a 0-0-0 tie, i.e.
+// nobody voted at all) favor the shorter series, since SERIES_LENGTH_ORDER is walked bo3->bo5->bo7
+// and only a *strictly* greater count replaces the running winner. Pure and exported so it's
+// unit-testable independent of DB access, same as bonusDay.ts's isDayInRange. Used both for the
+// "all 6 voted, nobody hit 3" case (necessarily an exact 2-2-2 split) and for the sweep route's
+// timeout-driven majority resolution.
+export function resolveSeriesLengthTieBreak(counts: Record<SeriesLength, number>): SeriesLength {
+  let winner: SeriesLength = "bo3";
+  for (const length of SERIES_LENGTH_ORDER) {
+    if (counts[length] > counts[winner]) winner = length;
+  }
+  return winner;
+}
 
 // ---------------------------------------------------------------------------
 // Vote message: Balanced vs Captains, first to 3/6 wins, exact 3-3 tie -> Captains.
@@ -68,6 +91,40 @@ function voteButtons(seriesId: string) {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Series-length vote message: Best of 3/5/7, first to 3/6 wins, same shape as the Balanced vs
+// Captains vote above. Runs *before* that vote when series_length_vote_enabled is on — see
+// startSeriesLengthVote/resolveSeriesLengthVote below.
+// ---------------------------------------------------------------------------
+
+function seriesLengthVoteEmbed(bo3Count: number, bo5Count: number, bo7Count: number, timeoutSeconds: number, supercharged: boolean) {
+  const minutes = Math.round(timeoutSeconds / 60);
+  return {
+    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
+    description:
+      `**You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote on series length. Vote by clicking the buttons below.**\n` +
+      `This message needs **3 player interactions** to proceed! If time runs out, the option with the most votes wins — ties favor the shorter series.`,
+    fields: [
+      { name: "Best of 3", value: `${bo3Count} / 3`, inline: true },
+      { name: "Best of 5", value: `${bo5Count} / 3`, inline: true },
+      { name: "Best of 7", value: `${bo7Count} / 3`, inline: true },
+    ],
+  };
+}
+
+function seriesLengthVoteButtons(seriesId: string) {
+  return [
+    {
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Best of 3", custom_id: `series_length_vote:${seriesId}:bo3` },
+        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Best of 5", custom_id: `series_length_vote:${seriesId}:bo5` },
+        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Best of 7", custom_id: `series_length_vote:${seriesId}:bo7` },
+      ],
+    },
+  ];
+}
+
 async function fetchLobbyMembers(supabase: AdminClient, seriesId: string): Promise<PlayerRow[]> {
   const { data: lobbyRows, error } = await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId);
   if (error) throw new Error(`Failed to fetch lobby: ${error.message}`);
@@ -88,25 +145,49 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
   return rows.map((row) => ({ row, player: byId.get(row.player_id) })).filter((x): x is { row: SeriesLobbyRow; player: PlayerRow } => Boolean(x.player));
 }
 
-// Entry point called by queue.ts once the series is created — posts the vote message in
-// the queue channel, then auto-casts any player's saved /vote-default preference (still
-// overridable per game by clicking a button). Cast sequentially so a mid-loop resolution's
-// follow-on writes (draft/balanced setup) can't interleave with a not-yet-processed auto-cast.
-export async function startTeamFormation(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
+// Entry point called by queue.ts once the series is created (feature disabled, or the series-
+// length vote has just resolved) — posts the Balanced-vs-Captains vote message, then auto-casts
+// any player's saved /vote-default preference (still overridable per game by clicking a button).
+// Cast sequentially so a mid-loop resolution's follow-on writes (draft/balanced setup) can't
+// interleave with a not-yet-processed auto-cast.
+//
+// `existingMessageId`, when passed, means the series-length vote already posted a message and
+// resolved into this one — PATCH that message into the Balanced/Captains vote UI instead of
+// posting a new one, so the whole flow (series-length tally -> this vote -> draft-turn UI) reads
+// as one continuously-edited message rather than a new post per phase. Either way,
+// `vote_started_at` is (re)stamped here so this vote gets its own full vote_timeout_seconds
+// window regardless of how long the series-length vote (if any) took to resolve.
+export async function startTeamFormation(
+  supabase: AdminClient,
+  guildId: string,
+  seriesId: string,
+  queueChannelId: string,
+  members: PlayerRow[],
+  existingMessageId?: string,
+) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
   const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
   const supercharged = await isSuperchargedSeries(supabase, seriesId);
-  const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds, supercharged)], components: voteButtons(seriesId) }),
-  })) as { id: string };
+  const body = { content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds, supercharged)], components: voteButtons(seriesId) };
 
-  await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
+  let messageId: string;
+  if (existingMessageId) {
+    messageId = existingMessageId;
+    await discordFetch(`/channels/${queueChannelId}/messages/${existingMessageId}`, { method: "PATCH", body: JSON.stringify(body) });
+  } else {
+    const message = (await discordFetch(`/channels/${queueChannelId}/messages`, { method: "POST", body: JSON.stringify(body) })) as { id: string };
+    messageId = message.id;
+  }
+
+  await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ formation_message_id: messageId, vote_started_at: new Date().toISOString() })
+    .eq("id", seriesId);
 
   for (const member of members) {
     if (member.vote_default) {
-      await castVote(supabase, guildId, seriesId, queueChannelId, message.id, members, member.id, member.vote_default);
+      await castVote(supabase, guildId, seriesId, queueChannelId, messageId, members, member.id, member.vote_default);
     }
   }
 }
@@ -159,6 +240,166 @@ export async function castVote(
   } else {
     await beginCaptainsDraft(supabase, guildId, seriesId, queueChannelId, messageId, members);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Series-length vote flow — runs before the Balanced/Captains vote when
+// series_length_vote_enabled is on (queue.ts's createMatchChannels decides which one starts
+// first; this vote never auto-casts from a saved default, since none exists for series length).
+// ---------------------------------------------------------------------------
+
+// Entry point called by queue.ts instead of startTeamFormation when the feature is enabled.
+export async function startSeriesLengthVote(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
+  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
+  const supercharged = await isSuperchargedSeries(supabase, seriesId);
+  const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: mentions, embeds: [seriesLengthVoteEmbed(0, 0, 0, timeoutSeconds, supercharged)], components: seriesLengthVoteButtons(seriesId) }),
+  })) as { id: string };
+
+  await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ formation_message_id: message.id, vote_started_at: new Date().toISOString(), series_length_vote_active: true })
+    .eq("id", seriesId);
+}
+
+// Shared tail for both the click-resolved and timeout-majority-resolved paths: atomically claims
+// the outcome (same UPDATE...WHERE-IS-NULL pattern castVote uses for vote_result), writes the
+// matching K-factor multiplier alongside it, clears series_length_vote_active (so the sweep
+// route's Balanced/Captains timeout check picks this series back up instead of the series-length
+// one), then hands off to startTeamFormation to PATCH the same message into the Balanced/Captains
+// vote UI.
+async function resolveSeriesLengthVote(
+  supabase: AdminClient,
+  guildId: string,
+  seriesId: string,
+  queueChannelId: string,
+  messageId: string,
+  members: PlayerRow[],
+  winner: SeriesLength,
+) {
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ series_length: winner, series_length_k_multiplier: SERIES_LENGTH_K_MULTIPLIERS[winner], series_length_vote_active: false })
+    .eq("id", seriesId)
+    .is("series_length", null)
+    .select("id");
+  if (!claimed || claimed.length === 0) return;
+
+  await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members, messageId);
+}
+
+export async function castSeriesLengthVote(
+  supabase: AdminClient,
+  guildId: string,
+  seriesId: string,
+  queueChannelId: string,
+  messageId: string,
+  members: PlayerRow[],
+  playerId: string,
+  choice: SeriesLength,
+) {
+  await supabase.from("crl6mansqueuebot_series_length_votes").upsert({ series_id: seriesId, player_id: playerId, choice });
+
+  const { data: votes } = await supabase.from("crl6mansqueuebot_series_length_votes").select("choice").eq("series_id", seriesId);
+  const counts: Record<SeriesLength, number> = {
+    bo3: (votes ?? []).filter((v) => v.choice === "bo3").length,
+    bo5: (votes ?? []).filter((v) => v.choice === "bo5").length,
+    bo7: (votes ?? []).filter((v) => v.choice === "bo7").length,
+  };
+  const totalVotes = counts.bo3 + counts.bo5 + counts.bo7;
+
+  let winner: SeriesLength | null = null;
+  if (counts.bo3 >= SERIES_LENGTH_VOTE_THRESHOLD) winner = "bo3";
+  else if (counts.bo5 >= SERIES_LENGTH_VOTE_THRESHOLD) winner = "bo5";
+  else if (counts.bo7 >= SERIES_LENGTH_VOTE_THRESHOLD) winner = "bo7";
+  else if (totalVotes >= 6) winner = resolveSeriesLengthTieBreak(counts); // exact 2-2-2 tie
+
+  if (!winner) {
+    const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+    const supercharged = await isSuperchargedSeries(supabase, seriesId);
+    await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        embeds: [seriesLengthVoteEmbed(counts.bo3, counts.bo5, counts.bo7, timeoutSeconds, supercharged)],
+        components: seriesLengthVoteButtons(seriesId),
+      }),
+    });
+    return;
+  }
+
+  await resolveSeriesLengthVote(supabase, guildId, seriesId, queueChannelId, messageId, members, winner);
+}
+
+// Called by the sweep route once vote_timeout_seconds has elapsed with no winner reached —
+// resolves by whichever option currently has the most votes, lowest-length tie-break (including
+// the 0-0-0 case where nobody voted at all). Never voids the series — see CLAUDE.md.
+export async function resolveSeriesLengthByMajority(supabase: AdminClient, series: SeriesRow): Promise<void> {
+  if (!series.formation_message_id || !series.queue_channel_id) return;
+  const guildId = await getGuildId();
+  const { data: votes } = await supabase.from("crl6mansqueuebot_series_length_votes").select("choice").eq("series_id", series.id);
+  const counts: Record<SeriesLength, number> = {
+    bo3: (votes ?? []).filter((v) => v.choice === "bo3").length,
+    bo5: (votes ?? []).filter((v) => v.choice === "bo5").length,
+    bo7: (votes ?? []).filter((v) => v.choice === "bo7").length,
+  };
+  const winner = resolveSeriesLengthTieBreak(counts);
+  const members = await fetchLobbyMembers(supabase, series.id);
+  await resolveSeriesLengthVote(supabase, guildId, series.id, series.queue_channel_id, series.formation_message_id, members, winner);
+}
+
+export function handleSeriesLengthVoteButton(interaction: DiscordInteraction, seriesId: string, choice: SeriesLength) {
+  after(() => processSeriesLengthVoteButton(interaction, seriesId, choice));
+  return {
+    type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
+  };
+}
+
+async function processSeriesLengthVoteButton(interaction: DiscordInteraction, seriesId: string, choice: SeriesLength) {
+  const supabase = createAdminClient();
+  const discordId = interactionUserId(interaction);
+  if (!discordId || !interaction.guild_id || !interaction.channel_id) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const { data: player } = await supabase.from("crl6mansqueuebot_players").select("*").eq("discord_id", discordId).maybeSingle();
+  const { data: lobbyRow } = player
+    ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
+    : { data: null };
+  if (!player || !lobbyRow) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "You're not part of this match.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
+  if (!series || series.series_length || !series.formation_message_id) {
+    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: "Voting isn't open for this match anymore.", flags: InteractionResponseFlags.EPHEMERAL },
+      }),
+    }).catch(() => {});
+    return;
+  }
+
+  const members = await fetchLobbyMembers(supabase, seriesId);
+  await castSeriesLengthVote(supabase, interaction.guild_id, seriesId, interaction.channel_id, series.formation_message_id, members, player.id, choice);
 }
 
 // ---------------------------------------------------------------------------
