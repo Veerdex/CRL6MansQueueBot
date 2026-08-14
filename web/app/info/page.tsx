@@ -35,7 +35,8 @@ export default async function InfoPage() {
   const [
     seriesTimeoutHours,
     bonusDayEnabled,
-    bonusDayOfWeek,
+    bonusDayStart,
+    bonusDayEnd,
     bonusDayBonusPct,
     garnetCutoff,
     emeraldCutoff,
@@ -50,7 +51,8 @@ export default async function InfoPage() {
   ] = await Promise.all([
     getConfigNumber("series_timeout_hours", 2),
     getConfigNumber("bonus_day_enabled", 1),
-    getConfigNumber("bonus_day_of_week", 6),
+    getConfigNumber("bonus_day_start", 6),
+    getConfigNumber("bonus_day_end", 6),
     getConfigNumber("bonus_day_bonus_pct", 50),
     getConfigNumber("band_cutoff_garnet_pctile", 40),
     getConfigNumber("band_cutoff_emerald_pctile", 70),
@@ -163,12 +165,22 @@ export default async function InfoPage() {
         <Section title="Bonuses">
           <ul className="list-disc space-y-1.5 pl-5">
             <li>
-              <strong>Bonus Day</strong> is <strong>{DAY_NAMES[bonusDayOfWeek] ?? "Saturday"}</strong> — Rank
-              Queue MMR gains and losses are boosted by <strong>+{bonusDayBonusPct}%</strong> for the whole
-              day{!bonusDayEnabled && <em> (currently disabled)</em>}.
+              {bonusDayStart === bonusDayEnd ? (
+                <>
+                  <strong>Bonus Day</strong> is <strong>{DAY_NAMES[bonusDayStart] ?? "Saturday"}</strong>
+                </>
+              ) : (
+                <>
+                  <strong>Bonus Range</strong> runs from <strong>{DAY_NAMES[bonusDayStart] ?? "Saturday"}</strong>{" "}
+                  through <strong>{DAY_NAMES[bonusDayEnd] ?? "Saturday"}</strong>
+                </>
+              )}{" "}
+              — Rank Queue MMR gains and losses are boosted by <strong>+{bonusDayBonusPct}%</strong> the whole
+              time{!bonusDayEnabled && <em> (currently disabled)</em>}.
             </li>
             <li>
-              The window runs <strong>midnight to midnight, Pacific time</strong>.
+              The window starts at <strong>midnight Pacific time</strong> on the first day and ends at{" "}
+              <strong>midnight Pacific time</strong> the day after the final day.
             </li>
             <li>
               What matters is when your match <em>pops</em> (fills to 6/6) — if that happens inside the
@@ -177,7 +189,7 @@ export default async function InfoPage() {
             <li>
               <em>Universal Queue is never affected</em> — it doesn&apos;t touch MMR at all.
             </li>
-            <li>The win-streak bonus above stacks with Bonus Day.</li>
+            <li>The win-streak bonus above stacks with the Bonus Range.</li>
           </ul>
         </Section>
 
