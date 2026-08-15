@@ -357,6 +357,10 @@ export type Database = {
         Args: { p_game_id: string; p_discord_id: string };
         Returns: { status: "not_open" | "not_joined" | "left"; player_count: number }[];
       };
+      crl6mansqueuebot_assign_match_number: {
+        Args: { p_series_id: string };
+        Returns: number;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

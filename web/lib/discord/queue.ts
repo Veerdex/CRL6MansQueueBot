@@ -906,12 +906,13 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     return;
   }
 
-  // match_number is assigned automatically by a DB column default (sequence-backed — see
-  // migration 0030_fix_match_number_race.sql) at the insert above, so no application-level
-  // read-count-then-write is needed here. The previous hand-rolled version computed a
-  // non-unique "count of reported series" value and wrote it with no error handling, which
-  // collided with the column's UNIQUE constraint (and silently failed) on nearly every pop,
-  // since multiple series are normally in-flight before any of them get reported.
+  // match_number is intentionally left unset here — revised a later session, supersedes
+  // assigning it at pop time via a sequence-backed column default (migration
+  // 0030_fix_match_number_race.sql). Assigning at pop time meant void/cancelled/timed-out
+  // series consumed a real match number identically to reported ones, since nothing at pop time
+  // knows a series' eventual outcome. match_number is now only ever assigned once, atomically,
+  // at the moment a series actually settles to 'reported' (report.ts) — see migration
+  // 0042_match_number_on_report.sql.
 
   await supabase
     .from("crl6mansqueuebot_series_lobby")
@@ -979,6 +980,9 @@ export async function createVoiceChannels(
   guildId: string,
   teamA: PlayerRow[],
   teamB: PlayerRow[],
+  // Called with a live *preview* number (teamFormation.ts's computePreviewMatchNumber), not the
+  // series' real match_number — that isn't assigned until the match is reported, well after
+  // these channels are created and named. Naming is otherwise unaware of the distinction.
   matchNumber?: number,
 ) {
   const adminRoleIds = await getAdminRoleIds();

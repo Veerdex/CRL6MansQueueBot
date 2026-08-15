@@ -124,11 +124,27 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     return;
   }
 
-  // match_number is assigned once, atomically, at pop time (queue.ts's handlePop, via a
-  // sequence-backed column default — see migration 0030_fix_match_number_race.sql) — report
-  // time just reads that already-assigned value rather than maintaining a second, separately
-  // computed numbering scheme that used to collide with it on the same UNIQUE column.
-  const matchNumber = series.match_number ?? 0;
+  // match_number is now assigned here, at the moment a series actually settles to 'reported' —
+  // revised a later session, supersedes assignment at pop time (queue.ts's handlePop). Assigning
+  // at pop time meant void/cancelled/timed-out series consumed a number identically to reported
+  // ones, since nothing at pop time knows a series' eventual outcome — reported live as real
+  // match numbers jumping e.g. #10 straight to #17 (see migration 0042_match_number_on_report.sql
+  // for the full account and the one-time cleanup of already-affected rows). Test matches never
+  // call this at all, so their match_number stays permanently null, same as before.
+  // crl6mansqueuebot_assign_match_number is a stored function (not a plain read-nextval-then-
+  // write in application code) so the nextval()-then-update stays atomic under concurrent
+  // reports — same reasoning as crl6mansqueuebot_join_queue (0002_queue_system.sql).
+  let matchNumber = 0;
+  if (!series.is_test_data) {
+    const { data: assignedMatchNumber, error: assignError } = await supabase.rpc("crl6mansqueuebot_assign_match_number", {
+      p_series_id: series.id,
+    });
+    if (assignError) {
+      console.error(`Failed to assign match_number for series ${series.id}`, assignError);
+    } else if (typeof assignedMatchNumber === "number") {
+      matchNumber = assignedMatchNumber;
+    }
+  }
 
   await clearPendingSeriesState(supabase, series.id);
   // The queue status message is deliberately left un-refreshed at pop time (see handlePop's

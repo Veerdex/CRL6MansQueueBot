@@ -1125,6 +1125,39 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   }
 }
 
+// Live "preview" number for voice-channel naming while a match is still being played — the real
+// match_number isn't assigned until the series actually reports (crl6mansqueuebot_assign_match_
+// number, called from report.ts), so no genuine number exists yet at team-formation time. This
+// estimates "what number would this match get if every currently in-flight match reported in the
+// order it was created": the count of already-reported real matches, plus how many other
+// in-flight real matches were created at or before this one. That second term is what makes
+// multiple concurrent matches each get a distinct, increasing preview instead of every one of
+// them showing the same "current max + 1" — but since matches don't necessarily *report* in pop
+// order, a given match's preview can still end up different from its actual final match_number.
+// Display-only and never persisted anywhere, so there's nothing to keep in sync when that happens.
+async function computePreviewMatchNumber(supabase: AdminClient, seriesCreatedAt: string): Promise<number> {
+  const [maxReportedResult, aheadCountResult] = await Promise.all([
+    supabase
+      .from("crl6mansqueuebot_series")
+      .select("match_number")
+      .eq("status", "reported")
+      .eq("is_test_data", false)
+      .not("match_number", "is", null)
+      .order("match_number", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("crl6mansqueuebot_series")
+      .select("*", { count: "exact", head: true })
+      .in("status", ["forming", "active"])
+      .eq("is_test_data", false)
+      .lte("created_at", seriesCreatedAt),
+  ]);
+  const maxReported = (maxReportedResult.data as { match_number: number } | null)?.match_number ?? 0;
+  const aheadCount = aheadCountResult.count ?? 0;
+  return maxReported + aheadCount;
+}
+
 // ---------------------------------------------------------------------------
 // Finalize: write series_players, drop the lobby, flip the series to 'active', create the
 // two team voice channels, unlock the text channel's message lock, post a summary.
@@ -1157,19 +1190,27 @@ async function finalizeTeams(
   const teamA = members.filter((m) => teamAssignments.get(m.id) === "A");
   const teamB = members.filter((m) => teamAssignments.get(m.id) === "B");
 
-  // Fetch match number for voice channel naming, plus the two fields matchTimeStats.ts needs.
+  // Fetch created_at (for the voice-channel preview number below) plus the two fields
+  // matchTimeStats.ts needs. match_number itself isn't fetched here — it's null at this point
+  // and stays null until the series is actually reported (see report.ts).
   const { data: seriesData } = await supabase
     .from("crl6mansqueuebot_series")
-    .select("match_number, bonus_day_multiplier, is_test_data")
+    .select("created_at, bonus_day_multiplier, is_test_data")
     .eq("id", seriesId)
     .single();
-  const fetchedSeriesData = seriesData as { match_number?: number; bonus_day_multiplier?: number; is_test_data?: boolean } | null;
-  const matchNumber = fetchedSeriesData?.match_number;
+  const fetchedSeriesData = seriesData as { created_at?: string; bonus_day_multiplier?: number; is_test_data?: boolean } | null;
   const supercharged = (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1;
   const formationColor = supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR;
 
+  // Live "preview" number for the voice channels, since the real match_number isn't assigned
+  // until report time (see report.ts) — no genuine number exists yet while the match is still
+  // being played.
+  const previewMatchNumber = fetchedSeriesData?.created_at
+    ? await computePreviewMatchNumber(supabase, fetchedSeriesData.created_at)
+    : undefined;
+
   // Create voice channels now that teams are finalized
-  await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, matchNumber);
+  await createVoiceChannels(supabase, seriesId, guildId, teamA, teamB, previewMatchNumber);
 
   // Match-time stats — see CLAUDE.md, "Match time stats". Best-effort, never blocks formation.
   await recordMatchTimeStats(supabase, Boolean(fetchedSeriesData?.is_test_data), (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1);
