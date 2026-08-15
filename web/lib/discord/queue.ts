@@ -134,11 +134,16 @@ async function richEventEmbed(
   const filledEmoji = supercharged ? "🟪" : "🟩";
   const progress = `${filledEmoji.repeat(filled)}${"⬛".repeat(6 - filled)}  ${filled}/6`;
 
+  const playerMention = mention(player.discord_id, { onFire: winStreak >= FLAME_THRESHOLD, cold: lossStreak >= COLD_THRESHOLD });
+
   return {
     color,
-    description: `**${player.display_name} ${verb} the ${label}!**\n${statLine}`,
+    description: `**${playerMention} ${verb} the ${label}!**\n${statLine}`,
     fields: [{ name: "Queue Progress", value: progress, inline: false }],
-    footer: { text: `Run /q to join the ${label} or /l to leave.` },
+    // Join/leave instructions removed — /help already covers that, and this spot is reserved for
+    // the supercharged-day flourish below instead of static copy every card repeats.
+    footer: supercharged ? { text: "🔥".repeat(10) } : undefined,
+    thumbnail: player.avatar_url ? { url: player.avatar_url } : undefined,
   };
 }
 
