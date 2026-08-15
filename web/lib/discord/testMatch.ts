@@ -89,7 +89,18 @@ async function processTestMatch(interaction: DiscordInteraction, queueType: Queu
   // does with the real queue channel — see CLAUDE.md's queue_channel_id migration note.
   const { data: series, error: seriesError } = await supabase
     .from("crl6mansqueuebot_series")
-    .insert({ season_id: season.id, queue_type: queueType, status: "forming", is_test_data: true, queue_channel_id: interaction.channel_id ?? null })
+    .insert({
+      season_id: season.id,
+      queue_type: queueType,
+      status: "forming",
+      is_test_data: true,
+      queue_channel_id: interaction.channel_id ?? null,
+      // Explicit null overrides match_number's sequence-backed column default (see CLAUDE.md,
+      // "Match #N voice-channel naming") — a test match shouldn't consume a real match number
+      // and put gaps in the sequence real matches use. createVoiceChannels already falls back
+      // to the series-id slice for naming when this is null.
+      match_number: null,
+    })
     .select("id")
     .single();
   if (seriesError || !series) {

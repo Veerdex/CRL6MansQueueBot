@@ -184,6 +184,7 @@ export async function generateTestData(): Promise<{ playersAdded: number }> {
     is_test_data: true;
     created_at: string;
     reported_at: string;
+    match_number: null;
   }[] = [];
   const seriesPlayerRows: { series_id: string; player_id: string; team: Team }[] = [];
 
@@ -207,6 +208,9 @@ export async function generateTestData(): Promise<{ playersAdded: number }> {
         is_test_data: true,
         created_at: timestamp,
         reported_at: timestamp,
+        // Explicit null overrides match_number's sequence-backed column default — a bulk-seeded
+        // dev-panel row shouldn't consume a real match number (same fix as testMatch.ts).
+        match_number: null,
       });
       seriesPlayerRows.push({ series_id: seriesId, player_id: playerId, team: "A" });
     });
