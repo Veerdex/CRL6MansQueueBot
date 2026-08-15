@@ -250,6 +250,19 @@ const commands = [
     ],
   },
   {
+    name: "profile",
+    description: "Show a player's band, MMR, streak, wins/losses, and leaderboard rank.",
+    type: 1,
+    options: [
+      {
+        name: "target",
+        description: "Whose profile to show — defaults to yourself.",
+        type: USER_OPTION,
+        required: false,
+      },
+    ],
+  },
+  {
     name: "add-admin-role",
     description: "Grant a Discord role admin access and match-channel visibility.",
     type: 1,

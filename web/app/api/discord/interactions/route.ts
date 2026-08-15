@@ -23,6 +23,7 @@ import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, ha
 import type { VoteChoice, SeriesLength } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand, handleRanksCommand } from "@/lib/discord/bands";
 import { handleChancesCommand } from "@/lib/discord/chances";
+import { handleProfileCommand } from "@/lib/discord/profile";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
 import { handleMafiaCommand, handleMafiaJoinButton, handleMafiaJoinModalSubmit, handleMafiaLeaveButton } from "@/lib/discord/mafia";
@@ -169,6 +170,10 @@ export async function POST(request: Request) {
 
     if (commandName === "chances") {
       return NextResponse.json(handleChancesCommand(interaction));
+    }
+
+    if (commandName === "profile") {
+      return NextResponse.json(handleProfileCommand(interaction));
     }
 
     if (commandName === "add-admin-role") {
