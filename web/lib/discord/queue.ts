@@ -140,9 +140,8 @@ async function richEventEmbed(
     color,
     description: `**${playerMention} ${verb} the ${label}!**\n${statLine}`,
     fields: [{ name: "Queue Progress", value: progress, inline: false }],
-    // Join/leave instructions removed — /help already covers that, and this spot is reserved for
-    // the supercharged-day flourish below instead of static copy every card repeats.
-    footer: supercharged ? { text: "🔥".repeat(10) } : undefined,
+    // Join/leave instructions removed — /help already covers that. No footer at all, including
+    // on a supercharged day — an earlier version showed ten 🔥 here, removed per direct request.
     thumbnail: player.avatar_url ? { url: player.avatar_url } : undefined,
   };
 }
