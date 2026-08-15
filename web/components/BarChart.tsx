@@ -1,6 +1,7 @@
 export interface BarChartBar {
   label: string;
   value: number;
+  color?: string;
 }
 
 interface BarChartProps {
@@ -55,7 +56,7 @@ export default function BarChart({ bars, color = "#ff8238", height = 260 }: BarC
           const barHeight = paddingTop + plotHeight - y;
           return (
             <g key={i}>
-              <rect x={barX} y={y} width={barWidth} height={barHeight} fill={color} rx={2} />
+              <rect x={barX} y={y} width={barWidth} height={barHeight} fill={bar.color ?? color} rx={2} />
               <text x={slotX + slotWidth / 2} y={height - paddingBottom + 14} textAnchor="middle" className="fill-muted text-[9px]">
                 {bar.label}
               </text>

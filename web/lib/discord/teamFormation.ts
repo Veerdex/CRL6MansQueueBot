@@ -33,7 +33,7 @@ const CANCEL_VOTE_THRESHOLD = 4;
 // supplied exact fixed values rather than asking for them to be tunable.
 const SERIES_LENGTH_VOTE_THRESHOLD = 3;
 const SERIES_LENGTH_ORDER: SeriesLength[] = ["bo3", "bo5", "bo7"];
-const SERIES_LENGTH_K_MULTIPLIERS: Record<SeriesLength, number> = { bo3: 0.6, bo5: 1.0, bo7: 1.4 };
+export const SERIES_LENGTH_K_MULTIPLIERS: Record<SeriesLength, number> = { bo3: 0.6, bo5: 1.0, bo7: 1.4 };
 export const SERIES_LENGTH_LABELS: Record<SeriesLength, string> = { bo3: "Best of 3", bo5: "Best of 5", bo7: "Best of 7" };
 
 // Picks whichever series length currently has the most votes; ties (including a 0-0-0 tie, i.e.

@@ -1,6 +1,16 @@
 import "server-only";
 import { createServerClient } from "../supabase/server";
-import type { Band, DayOfWeekStatsRow, PlayerRow, QueueType, SeasonHistoryRow, SeasonRow, Team, TimeOfDayStatsRow } from "../supabase/types";
+import type {
+  Band,
+  DayOfWeekStatsRow,
+  PlayerRow,
+  QueueType,
+  SeasonHistoryRow,
+  SeasonRow,
+  SeriesLength,
+  Team,
+  TimeOfDayStatsRow,
+} from "../supabase/types";
 
 export interface CompletedGame {
   seriesId: string;
@@ -208,4 +218,38 @@ export async function getMMRDistributionStats(): Promise<MMRDistributionStats> {
     rankMatchesPlayed: rankCount.count ?? 0,
     universalMatchesPlayed: universalCount.count ?? 0,
   };
+}
+
+export interface SeriesLengthStats {
+  counts: Record<SeriesLength, number>;
+  total: number;
+}
+
+// Powers the series-length bar chart on the hidden match-time-stats page. Rank Queue only — the
+// series-length K-factor multiplier (see teamFormation.ts's SERIES_LENGTH_K_MULTIPLIERS) only
+// ever affects Elo, which Universal Queue never runs, so a Universal-scoped "weighted share"
+// would be meaningless. A series only has series_length set if the pre-vote was enabled and it
+// actually resolved (see CLAUDE.md, "Team formation (on pop)") — series formed before the
+// feature existed, or while it was off, are simply excluded rather than counted as some default
+// length.
+export async function getSeriesLengthStats(): Promise<SeriesLengthStats> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("series_length")
+    .eq("status", "reported")
+    .eq("is_test_data", false)
+    .eq("queue_type", "rank")
+    .not("series_length", "is", null);
+  if (error) throw error;
+
+  const counts: Record<SeriesLength, number> = { bo3: 0, bo5: 0, bo7: 0 };
+  let total = 0;
+  for (const row of data ?? []) {
+    if (row.series_length) {
+      counts[row.series_length] += 1;
+      total += 1;
+    }
+  }
+  return { counts, total };
 }

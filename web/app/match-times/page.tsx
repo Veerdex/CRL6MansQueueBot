@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { getMatchTimeStats, getMMRDistributionStats } from "@/lib/leaderboard/queries";
+import { getMatchTimeStats, getMMRDistributionStats, getSeriesLengthStats } from "@/lib/leaderboard/queries";
 import { getConfigNumber, getConfigValue } from "@/lib/discord/config";
 import { computeDayTrackingTotals } from "@/lib/discord/bonusDay";
 import LineChart from "@/components/LineChart";
 import MMRDistributionPanel from "@/components/MMRDistributionPanel";
+import SeriesLengthPanel from "@/components/SeriesLengthPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,7 @@ export default async function MatchTimesPage() {
   const [
     { timeOfDay, dayOfWeek },
     distribution,
+    seriesLengthStats,
     mmrScale,
     mmrShift,
     statsStartedAtRaw,
@@ -34,6 +36,7 @@ export default async function MatchTimesPage() {
   ] = await Promise.all([
     getMatchTimeStats(),
     getMMRDistributionStats(),
+    getSeriesLengthStats(),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
     getConfigValue("match_time_stats_started_at"),
@@ -105,6 +108,10 @@ export default async function MatchTimesPage() {
           occurred since tracking began.
         </p>
         <LineChart series={[{ label: "Overall", color: "#a3a3a3", values: weeklyValues }]} xLabels={weeklyLabels} />
+      </div>
+
+      <div className="panel animate-in-delay-2 mb-6 p-4 sm:p-6">
+        <SeriesLengthPanel stats={seriesLengthStats} />
       </div>
 
       <div className="panel animate-in-delay-2 p-4 sm:p-6">
