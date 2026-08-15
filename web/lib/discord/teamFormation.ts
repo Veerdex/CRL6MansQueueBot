@@ -8,7 +8,7 @@ import {
 } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, SeriesLobbyRow, SeriesRow, Team, VoteChoice, SeriesLength } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, sendFollowupMessage, editOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
@@ -26,6 +26,17 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // duplicated /cancel as a voting option) against the shared crl6mansqueuebot_cancel_votes
 // table. See registerCancelVoteAndMaybeVoid below and CLAUDE.md, "Series end".
 const CANCEL_VOTE_THRESHOLD = 4;
+
+// Ephemeral error replies from the button handlers below must go through the followup webhook,
+// never the interaction's one-shot /callback endpoint. Every one of these runs inside an after()
+// callback, i.e. *after* route.ts has already acknowledged the click with DEFERRED_UPDATE_MESSAGE
+// — Discord rejects a second /callback POST on an already-acknowledged interaction, and the
+// blanket .catch(() => {}) these previously used swallowed that rejection, so none of these
+// messages were ever actually delivered. Same latent bug, and same fix, as /mafia's replyError
+// (see CLAUDE.md, "Mafia mini-game").
+async function replyError(interaction: DiscordInteraction, content: string) {
+  await sendFollowupMessage(interaction.token, { content }).catch(() => {});
+}
 
 // Best-of-3/5/7 series-length pre-vote — see CLAUDE.md, "Team formation (on pop)". Fixed
 // constants, not admin-configurable (only the whole feature's on/off state is, via /admin
@@ -361,13 +372,7 @@ async function processSeriesLengthVoteButton(interaction: DiscordInteraction, se
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId || !interaction.guild_id || !interaction.channel_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Couldn't identify you — try again.");
     return;
   }
 
@@ -376,25 +381,13 @@ async function processSeriesLengthVoteButton(interaction: DiscordInteraction, se
     ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
     : { data: null };
   if (!player || !lobbyRow) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "You're not part of this match.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "You're not part of this match.");
     return;
   }
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.series_length || !series.formation_message_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Voting isn't open for this match anymore.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Voting isn't open for this match anymore.");
     return;
   }
 
@@ -417,13 +410,7 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId || !interaction.guild_id || !interaction.channel_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Couldn't identify you — try again.");
     return;
   }
 
@@ -432,25 +419,13 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
     ? await supabase.from("crl6mansqueuebot_series_lobby").select("player_id").eq("series_id", seriesId).eq("player_id", player.id).maybeSingle()
     : { data: null };
   if (!player || !lobbyRow) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "You're not part of this match.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "You're not part of this match.");
     return;
   }
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result || !series.formation_message_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Voting isn't open for this match anymore.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Voting isn't open for this match anymore.");
     return;
   }
 
@@ -957,13 +932,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Couldn't identify you — try again.");
     return;
   }
   // Draft picks are DM-driven now (see sendDraftPickPrompt) — a DM interaction has no guild_id
@@ -974,13 +943,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "The draft isn't active for this match.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "The draft isn't active for this match.");
     return;
   }
 
@@ -988,13 +951,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
   const captainBRow = lobby.find((x) => x.row.is_captain && x.row.team === "B");
   if (!captainARow || !captainBRow) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Something's wrong with this draft — ask an admin to check it.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Something's wrong with this draft — ask an admin to check it.");
     return;
   }
 
@@ -1002,37 +959,19 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   const assignedCount = nonCaptainRows.filter((x) => x.row.team).length;
   const turnCaptain = deriveTurnCaptain(assignedCount);
   if (!turnCaptain) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "The draft has already finished.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "The draft has already finished.");
     return;
   }
 
   const turnCaptainPlayer = turnCaptain === "A" ? captainARow.player : captainBRow.player;
   if (turnCaptainPlayer.discord_id !== discordId) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "It's not your pick.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "It's not your pick.");
     return;
   }
 
   const target = nonCaptainRows.find((x) => x.row.player_id === pickedPlayerId);
   if (!target || target.row.team) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "That player isn't available to pick.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "That player isn't available to pick.");
     return;
   }
 
@@ -1044,13 +983,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
     .is("team", null)
     .select("player_id");
   if (!claimed || claimed.length === 0) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "That pick already happened.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "That pick already happened.");
     return;
   }
 
@@ -1098,26 +1031,14 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Couldn't identify you — try again.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Couldn't identify you — try again.");
     return;
   }
   const guildId = interaction.guild_id ?? (await getGuildId());
 
   const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
   if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "The draft isn't active for this match.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "The draft isn't active for this match.");
     return;
   }
 
@@ -1125,13 +1046,7 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
   const captainBRow = lobby.find((x) => x.row.is_captain && x.row.team === "B");
   if (!captainARow || !captainBRow) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Something's wrong with this draft — ask an admin to check it.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Something's wrong with this draft — ask an admin to check it.");
     return;
   }
 
@@ -1139,25 +1054,13 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   const assignedCount = nonCaptainRows.filter((x) => x.row.team).length;
   const turnCaptain = deriveTurnCaptain(assignedCount);
   if (!turnCaptain) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "The draft has already finished.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "The draft has already finished.");
     return;
   }
 
   const turnCaptainPlayer = turnCaptain === "A" ? captainARow.player : captainBRow.player;
   if (turnCaptainPlayer.discord_id !== discordId) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "It's not your pick.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "It's not your pick.");
     return;
   }
 
@@ -1166,13 +1069,7 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   const uniquePickedIds = [...new Set(pickedPlayerIds)];
   const requiredCount = expectedPickCount(turnCaptain, available.length);
   if (uniquePickedIds.length !== requiredCount || !uniquePickedIds.every((id) => availableIds.has(id))) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "That selection isn't valid anymore — the draft may have moved on.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "That selection isn't valid anymore — the draft may have moved on.");
     return;
   }
 
@@ -1186,13 +1083,7 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   const claimedIds = (claimed ?? []).map((c) => c.player_id);
 
   if (claimedIds.length === 0) {
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "Those picks already happened.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "Those picks already happened.");
     return;
   }
 
@@ -1200,13 +1091,7 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
     // Partial race — someone else claimed one of the selected players first. Revert what we
     // did manage to claim rather than leaving the draft in a half-assigned state.
     await supabase.from("crl6mansqueuebot_series_lobby").update({ team: null }).eq("series_id", seriesId).in("player_id", claimedIds);
-    await discordFetch(`/interactions/${interaction.id}/${interaction.token}/callback`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "One of those players was just picked — try again.", flags: InteractionResponseFlags.EPHEMERAL },
-      }),
-    }).catch(() => {});
+    await replyError(interaction, "One of those players was just picked — try again.");
     return;
   }
 

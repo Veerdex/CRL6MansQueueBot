@@ -43,6 +43,7 @@ export async function POST(request: Request) {
   }
 
   const interaction = JSON.parse(verified.body) as DiscordInteraction;
+  const receivedAt = Date.now();
 
   // Discord's handshake when (re-)registering the endpoint URL — must reply PONG with no
   // other side effects, and quickly, or the URL registration in the dev portal fails.
@@ -65,39 +66,51 @@ export async function POST(request: Request) {
     const customId = interaction.data?.custom_id ?? "";
     const [action, arg1, arg2] = customId.split(":");
 
+    // Diagnostic logging for the "button click -> The application did not respond" report: the
+    // function was returning 200 with no error, so the failure had to be in *what* we send back
+    // (or how long we take), neither of which was visible anywhere. Logs the exact serialized
+    // response body and the elapsed time, so a malformed/empty body or a slow path shows up
+    // directly in the Vercel log instead of having to be inferred.
+    const respond = (payload: unknown) => {
+      console.log(
+        `[interaction] component custom_id=${customId || "-"} body=${JSON.stringify(payload)} ms=${Date.now() - receivedAt}`,
+      );
+      return NextResponse.json(payload);
+    };
+
     if (action === "sub_accept" && arg1 && arg2) {
-      return NextResponse.json(handleSubAcceptButton(interaction, arg1, arg2));
+      return respond(handleSubAcceptButton(interaction, arg1, arg2));
     }
 
     if (action === "vote" && arg1 && (arg2 === "balanced" || arg2 === "captains")) {
-      return NextResponse.json(handleVoteButton(interaction, arg1, arg2 as VoteChoice));
+      return respond(handleVoteButton(interaction, arg1, arg2 as VoteChoice));
     }
 
     if (action === "series_length_vote" && arg1 && (arg2 === "bo3" || arg2 === "bo5" || arg2 === "bo7")) {
-      return NextResponse.json(handleSeriesLengthVoteButton(interaction, arg1, arg2 as SeriesLength));
+      return respond(handleSeriesLengthVoteButton(interaction, arg1, arg2 as SeriesLength));
     }
 
     if (action === "draft_pick" && arg1 && arg2) {
-      return NextResponse.json(handleDraftPickButton(interaction, arg1, arg2));
+      return respond(handleDraftPickButton(interaction, arg1, arg2));
     }
 
     if (action === "draft_pick_multi" && arg1) {
-      return NextResponse.json(handleDraftPickMultiButton(interaction, arg1, interaction.data?.values ?? []));
+      return respond(handleDraftPickMultiButton(interaction, arg1, interaction.data?.values ?? []));
     }
 
     if (action === "notification" && (arg1 === "rank" || arg1 === "universal")) {
-      return NextResponse.json(handleNotificationButton(interaction, arg1));
+      return respond(handleNotificationButton(interaction, arg1));
     }
 
     if (action === "mafia_join" && arg1) {
-      return NextResponse.json(await handleMafiaJoinButton(interaction, arg1));
+      return respond(await handleMafiaJoinButton(interaction, arg1));
     }
 
     if (action === "mafia_leave" && arg1) {
-      return NextResponse.json(handleMafiaLeaveButton(interaction, arg1));
+      return respond(handleMafiaLeaveButton(interaction, arg1));
     }
 
-    return NextResponse.json({
+    return respond({
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: { content: "Unrecognized action.", flags: 64 },
     });
