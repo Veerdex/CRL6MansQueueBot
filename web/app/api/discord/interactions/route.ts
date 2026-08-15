@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { after } from "next/server";
 import { InteractionType, InteractionResponseType } from "discord-interactions";
 import { verifyDiscordRequest } from "@/lib/discord/verify";
-import { getConfigNumber } from "@/lib/discord/config";
+import { getConfigNumber, getConfigValue } from "@/lib/discord/config";
+import { discordFetch } from "@/lib/discord/rest";
 import type { DiscordInteraction } from "@/lib/discord/types";
 import { handleQueueJoinCommand, handleQueueLeaveCommand, handleStatusCommand, handleSetQueueChannelCommand, handleSet6mansCallCategoryCommand, handleSetReportChannelCommand, handleSetLogChannelCommand, handleSetLobbyChannelCommand, handleSetQueueMentionRoleCommand } from "@/lib/discord/queue";
 import { handleSetNotificationChannelCommand, handleSetNotificationRoleCommand, handleNotificationButton } from "@/lib/discord/notifications";
@@ -36,6 +38,22 @@ export const maxDuration = 60;
 // Discord's HTTP Interactions endpoint. Every slash command / button click for this bot
 // arrives here as a POST — see CLAUDE.md, "Discord bot runtime architecture" for why this
 // project uses the webhook model instead of a persistent gateway connection.
+// TEMPORARY DIAGNOSTIC helper — see the call sites in POST below. Best-effort and fully
+// swallowed: this must never affect the interaction response it's reporting on. No-ops when no
+// log channel is configured. Runs inside after(), so it can't add latency to the response.
+async function postInteractionDebug(line: string) {
+  try {
+    const channelId = await getConfigValue("log_channel_id");
+    if (!channelId) return;
+    await discordFetch(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content: `\`[interaction] ${line}\``.slice(0, 1900) }),
+    });
+  } catch {
+    // ignore — diagnostics must never break or delay a real interaction
+  }
+}
+
 export async function POST(request: Request) {
   const verified = await verifyDiscordRequest(request);
   if (!verified.valid) {
@@ -44,6 +62,18 @@ export async function POST(request: Request) {
 
   const interaction = JSON.parse(verified.body) as DiscordInteraction;
   const receivedAt = Date.now();
+
+  // TEMPORARY DIAGNOSTIC — mirrors the console.log diagnostics into the configured log channel
+  // (/setlogchannel) so they're readable without digging through Vercel's log UI. Logged on
+  // arrival for *every* interaction type, which is what makes "button clicks never reach us"
+  // distinguishable from "they reach us and we answer with something Discord rejects": if
+  // slash commands produce a line and button clicks produce nothing, the request never arrived.
+  // Remove this (and the RESPONSE line below) once the button-interaction issue is resolved.
+  after(() =>
+    postInteractionDebug(
+      `IN type=${interaction.type} name=${interaction.data?.name ?? "-"} custom_id=${interaction.data?.custom_id ?? "-"}`,
+    ),
+  );
 
   // Discord's handshake when (re-)registering the endpoint URL — must reply PONG with no
   // other side effects, and quickly, or the URL registration in the dev portal fails.
@@ -72,9 +102,9 @@ export async function POST(request: Request) {
     // response body and the elapsed time, so a malformed/empty body or a slow path shows up
     // directly in the Vercel log instead of having to be inferred.
     const respond = (payload: unknown) => {
-      console.log(
-        `[interaction] component custom_id=${customId || "-"} body=${JSON.stringify(payload)} ms=${Date.now() - receivedAt}`,
-      );
+      const line = `RESPONSE custom_id=${customId || "-"} body=${JSON.stringify(payload)} ms=${Date.now() - receivedAt}`;
+      console.log(`[interaction] component ${line}`);
+      after(() => postInteractionDebug(line));
       return NextResponse.json(payload);
     };
 
