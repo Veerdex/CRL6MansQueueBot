@@ -707,9 +707,15 @@ async function processRanksCommand(interaction: DiscordInteraction) {
     Sapphire: computeBandThresholdMmr(pool, sapphireCutoff, bandCalcMode),
   };
 
+  // Computed up front (not after the loop, where this used to live) so the Sapphire line below
+  // can subtract it — a Prism holder's underlying `band` column stays "Sapphire" (Prism is a
+  // live overlay on top of it, not a separate band value — see CLAUDE.md, "Bands / ranks"), so
+  // without this a Prism player was counted on *both* the Sapphire line and the Prism line.
+  const prismCount = pool.filter((p) => p.is_prism).length;
+
   const lines: string[] = [];
   for (const band of BAND_ORDER) {
-    const count = pool.filter((p) => p.band === band).length;
+    const count = pool.filter((p) => p.band === band).length - (band === "Sapphire" ? prismCount : 0);
     const emoji = await getRankEmoji(band);
     lines.push(`${count} ${emoji} **${getRankLabel(band)}** — ${display(thresholdMmrByBand[band])} MMR`);
   }
@@ -727,7 +733,6 @@ async function processRanksCommand(interaction: DiscordInteraction) {
   // current Sapphire pool, indexing straight at prismTopN - 1 runs off the end and reports "N/A"
   // even though a real cut line exists — the lowest-MMR Sapphire player currently in the bracket.
   const prismCutoffMmr = sapphireByMmr[Math.min(prismTopN, sapphireByMmr.length) - 1]?.mmr;
-  const prismCount = pool.filter((p) => p.is_prism).length;
   const prismEmoji = await getRankEmoji("Prism");
   lines.push(
     `${prismCount} ${prismEmoji} **Prism** — ${prismCutoffMmr === undefined ? "N/A" : `${display(prismCutoffMmr)} MMR`}`,
