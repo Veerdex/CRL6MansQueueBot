@@ -17,6 +17,13 @@
 -- collides with another row's not-yet-updated old value depending on row processing order. Moving
 -- everything to a disjoint negative range first, then flipping to the final positive values,
 -- avoids that entirely since match_number has only ever held positive values.
+--
+-- Ordering matters here in a way 0041 didn't have to worry about: the "null out everything else"
+-- step must run *before* the flip-to-positive step, not after. A void/cancelled series still
+-- holds its old positive match_number until it's nulled — flipping a reported row to that same
+-- positive value while the void row hasn't been cleared yet collides with it directly (hit live:
+-- "duplicate key value violates unique constraint... Key (match_number)=(46) already exists").
+-- Nulling first removes every stale positive value before anything tries to reuse it.
 
 with renumbered as (
   select id, row_number() over (order by reported_at asc) as new_number
@@ -29,13 +36,13 @@ from renumbered r
 where s.id = r.id;
 
 update crl6mansqueuebot_series
-set match_number = -match_number
-where status = 'reported' and is_test_data = false and match_number < 0;
-
-update crl6mansqueuebot_series
 set match_number = null
 where match_number is not null
   and not (status = 'reported' and is_test_data = false);
+
+update crl6mansqueuebot_series
+set match_number = -match_number
+where status = 'reported' and is_test_data = false and match_number < 0;
 
 -- Same setval() idiom 0030/0034/0041 already use, re-run since the max match_number has changed.
 select setval(
