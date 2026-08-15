@@ -83,15 +83,6 @@ const commands = [
     description: "Get the link to the leaderboard website.",
     type: 1,
   },
-  // TEMPORARY DIAGNOSTIC — minimal button test for the "application did not respond" issue.
-  // Deliberately a top-level command, NOT an /admin subcommand: /admin's combined name+description
-  // budget is at ~3890 of Discord's 4000-character limit, so another subcommand there risks
-  // rejecting the entire registration batch. Remove once the button issue is resolved.
-  {
-    name: "test-button",
-    description: "Post two test buttons to check which interaction response types work.",
-    type: 1,
-  },
   {
     name: "setqueuechannel",
     description: "Post the persistent queue message in this channel.",
@@ -987,6 +978,13 @@ if (!guildId) {
   guildId = guilds[0].id;
   console.log(`Auto-detected guild: ${guilds[0].name} (${guildId})`);
 }
+
+// Always state the target guild, not just on the auto-detect path. Commands registered against
+// the wrong (or an unexpectedly empty) guild register "successfully" and simply never appear in
+// the server you're watching, which is indistinguishable from a client-cache problem and cost a
+// long debugging session to track down. Printing it unconditionally makes the target auditable
+// in the workflow log regardless of how it was resolved.
+console.log(`Registering commands to guild: ${guildId}${process.env.DISCORD_GUILD_ID ? " (from DISCORD_GUILD_ID)" : " (auto-detected)"}`);
 
 // Diagnostic: this bot deliberately registers guild-scoped commands only (see the header
 // comment above) — a leftover *global* command with the same name as a guild command can
