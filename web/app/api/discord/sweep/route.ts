@@ -8,6 +8,7 @@ import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
 import { resolveSeriesLengthByMajority } from "@/lib/discord/teamFormation";
+import { advanceMatchTimeStatsDayCounters } from "@/lib/discord/bonusDay";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
@@ -358,6 +359,17 @@ export async function POST(request: Request) {
     }
   }
 
+  // Match Times' supercharged/non-supercharged day counters (see CLAUDE.md, "Match time
+  // stats") — advances once per Pacific calendar day, classifying that day against the bonus
+  // config as of right now rather than recomputing every past day's classification on every page
+  // load. Best-effort/non-fatal, same as every other block in this route.
+  let matchTimeStatsDaysAdvanced = 0;
+  try {
+    matchTimeStatsDaysAdvanced = await advanceMatchTimeStatsDayCounters(new Date());
+  } catch (err) {
+    console.error("Sweep: failed to advance match-time-stats day counters", err);
+  }
+
   return NextResponse.json({
     ok: true,
     voided,
@@ -368,6 +380,7 @@ export async function POST(request: Request) {
     subRequestsExpired,
     mafiaLobbiesCancelled,
     scheduledResetFired,
+    matchTimeStatsDaysAdvanced,
   });
 }
 

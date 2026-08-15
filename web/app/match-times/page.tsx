@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { getMatchTimeStats, getMMRDistributionStats, getSeriesLengthStats } from "@/lib/leaderboard/queries";
 import { getConfigNumber, getConfigValue } from "@/lib/discord/config";
-import { computeDayTrackingTotals } from "@/lib/discord/bonusDay";
+import {
+  computeDayTrackingTotals,
+  MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY,
+  MATCH_TIME_STATS_NONSUPERCHARGED_DAYS_KEY,
+} from "@/lib/discord/bonusDay";
 import LineChart from "@/components/LineChart";
 import MMRDistributionPanel from "@/components/MMRDistributionPanel";
 import SeriesLengthPanel from "@/components/SeriesLengthPanel";
@@ -30,9 +34,8 @@ export default async function MatchTimesPage() {
     mmrScale,
     mmrShift,
     statsStartedAtRaw,
-    bonusDayEnabled,
-    bonusDayStart,
-    bonusDayEnd,
+    superchargedDays,
+    nonSuperchargedDays,
   ] = await Promise.all([
     getMatchTimeStats(),
     getMMRDistributionStats(),
@@ -40,25 +43,25 @@ export default async function MatchTimesPage() {
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
     getConfigValue("match_time_stats_started_at"),
-    getConfigNumber("bonus_day_enabled", 1),
-    getConfigNumber("bonus_day_start", 6),
-    getConfigNumber("bonus_day_end", 6),
+    getConfigNumber(MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY, 0),
+    getConfigNumber(MATCH_TIME_STATS_NONSUPERCHARGED_DAYS_KEY, 0),
   ]);
 
   const rawOverall = timeOfDay.map((row) => row.supercharged_count + row.non_supercharged_count);
   const hasAnyMatches = rawOverall.some((v) => v > 0);
 
-  // Raw counts are cumulative since match_time_stats_started_at (see the migration that
-  // introduced it) with no notion of how many days that represents — dividing by how many of
-  // each day "kind" have actually elapsed since then is what makes segments/days proportional
-  // and comparable, rather than just reflecting how long the counters have been running.
+  // Weekday-occurrence counts (Day of Week panel's denominator) are still pure calendar math off
+  // match_time_stats_started_at — a Monday is always a Monday regardless of config, so there's no
+  // retroactive-reclassification risk there. The supercharged/non-supercharged split above no
+  // longer comes from this — see MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY/..._NONSUPERCHARGED_...,
+  // two counters advanced once per day by the sweep (web/lib/discord/bonusDay.ts) instead of
+  // being recomputed against the *current* bonus range on every page load.
   const statsStartedAt = statsStartedAtRaw ? new Date(statsStartedAtRaw) : new Date();
-  const totals = computeDayTrackingTotals(statsStartedAt, new Date(), bonusDayEnabled === 1, bonusDayStart, bonusDayEnd);
+  const totals = computeDayTrackingTotals(statsStartedAt, new Date());
+  const totalDays = superchargedDays + nonSuperchargedDays;
 
-  const supercharged = timeOfDay.map((row) => (totals.superchargedDays > 0 ? row.supercharged_count / totals.superchargedDays : 0));
-  const nonSupercharged = timeOfDay.map((row) =>
-    totals.nonSuperchargedDays > 0 ? row.non_supercharged_count / totals.nonSuperchargedDays : 0,
-  );
+  const supercharged = timeOfDay.map((row) => (superchargedDays > 0 ? row.supercharged_count / superchargedDays : 0));
+  const nonSupercharged = timeOfDay.map((row) => (nonSuperchargedDays > 0 ? row.non_supercharged_count / nonSuperchargedDays : 0));
   // "Overall" is the sum of the two per-kind averages (not total count / total days) — an
   // average day's expected match count in this segment, whether or not that particular day
   // turns out to be supercharged.
@@ -86,8 +89,8 @@ export default async function MatchTimesPage() {
         <h2 className="mb-1 text-lg font-bold text-foreground">Time of Day</h2>
         <p className="mb-4 text-sm text-muted">
           Average matches formed per 30-minute segment (Pacific time), overall vs. per Supercharged (Bonus Range) day vs.
-          per non-Supercharged day — based on {totals.totalDays} day{totals.totalDays === 1 ? "" : "s"} tracked (
-          {totals.superchargedDays} supercharged, {totals.nonSuperchargedDays} non-supercharged).
+          per non-Supercharged day — based on {totalDays} day{totalDays === 1 ? "" : "s"} tracked ({superchargedDays}{" "}
+          supercharged, {nonSuperchargedDays} non-supercharged).
         </p>
         {!hasAnyMatches && <p className="mb-4 text-sm text-muted">No matches recorded yet.</p>}
         <LineChart

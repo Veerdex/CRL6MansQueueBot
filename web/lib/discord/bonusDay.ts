@@ -1,5 +1,5 @@
 import "server-only";
-import { getConfigNumber } from "./config";
+import { getConfigNumber, getConfigValue, setConfigValue } from "./config";
 
 // Sun=0 .. Sat=6, matching JS/Intl weekday ordering — see CLAUDE.md's "Weekly bonus day" note.
 // Exported so the admin set-day command can render/validate its choices against the same list.
@@ -85,34 +85,25 @@ function calendarDayToUtcDate({ year, month, day }: { year: number; month: numbe
 
 export interface DayTrackingTotals {
   totalDays: number;
-  superchargedDays: number;
-  nonSuperchargedDays: number;
   // Index 0=Sun..6=Sat, matching this file's existing convention — how many times each weekday
   // has occurred (as a Pacific calendar date) between startedAt and now, inclusive of both ends.
   daysOccurredByWeekday: number[];
 }
 
-// Powers the Match Times page's per-day averaging (see CLAUDE.md, "Match time stats") — the
-// denominator for "matches per day" is computed live from a single stored start timestamp rather
-// than a second set of incrementing counters, since it's pure calendar-date arithmetic against
-// the *current* bonus-day range config. That's a known approximation if the admin has changed the
-// bonus range since startedAt (there's no historical config log to consult, same precedent as
-// every other place in this codebase that reads current config against historical data) — an
-// accepted tradeoff for not needing a whole second daily-cron-driven counter system. Pure and
-// exported so it's unit-testable independent of config/DB access, same as isDayInRange.
-export function computeDayTrackingTotals(
-  startedAt: Date,
-  now: Date,
-  bonusDayEnabled: boolean,
-  bonusDayStart: number,
-  bonusDayEnd: number,
-): DayTrackingTotals {
+// Powers the Match Times page's Day of Week averaging denominator ("how many Mondays have
+// occurred so far") — pure calendar-date arithmetic with no config dependency, since a Monday is
+// always a Monday regardless of any admin setting. (The supercharged/non-supercharged split used
+// to live here too, computed the same way against the *current* bonus-day range — which was a
+// real bug: changing the bonus range later silently reclassified every already-elapsed day, not
+// just future ones, on every page load. That's now tracked by two persistent counters instead —
+// see advanceMatchTimeStatsDayCounters/computeDayAdvanceSteps below.) Pure and exported so it's
+// unit-testable independent of config/DB access, same as isDayInRange.
+export function computeDayTrackingTotals(startedAt: Date, now: Date): DayTrackingTotals {
   const startUtc = calendarDayToUtcDate(pacificDateParts(startedAt));
   const endUtc = calendarDayToUtcDate(pacificDateParts(now));
   const totalDays = Math.max(1, Math.round((endUtc.getTime() - startUtc.getTime()) / MS_PER_DAY) + 1);
 
   const daysOccurredByWeekday = [0, 0, 0, 0, 0, 0, 0];
-  let superchargedDays = 0;
 
   for (let i = 0; i < totalDays; i++) {
     // getUTCDay() on a date built from Date.UTC(y, m-1, d) gives that calendar date's real
@@ -120,15 +111,87 @@ export function computeDayTrackingTotals(
     // component that could shift the date across a UTC day boundary.
     const weekday = new Date(startUtc.getTime() + i * MS_PER_DAY).getUTCDay();
     daysOccurredByWeekday[weekday]++;
-    if (bonusDayEnabled && isDayInRange(weekday, bonusDayStart, bonusDayEnd)) {
-      superchargedDays++;
-    }
   }
 
-  return {
-    totalDays,
-    superchargedDays,
-    nonSuperchargedDays: totalDays - superchargedDays,
-    daysOccurredByWeekday,
-  };
+  return { totalDays, daysOccurredByWeekday };
+}
+
+// Pacific calendar date as "YYYY-MM-DD" — the storage/comparison format for
+// match_time_stats_last_marked_date below, since plain ISO-date strings sort/compare correctly
+// with ordinary string comparison and need no date-library parsing to persist or read back.
+export function pacificDateString(date: Date): string {
+  const { year, month, day } = pacificDateParts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+export interface DayAdvanceStep {
+  date: string; // Pacific calendar date, YYYY-MM-DD
+  supercharged: boolean;
+}
+
+// Pure: given the last Pacific calendar date already counted and "today" (both YYYY-MM-DD),
+// returns one step per day that has now fully elapsed and needs counting — today itself is
+// excluded since it hasn't finished yet. Each step's supercharged/non-supercharged
+// classification is evaluated once, using the bonus config passed in — this is the actual fix
+// for the old computeDayTrackingTotals behavior: a day's classification is decided when that day
+// ends and never revisited, so changing the bonus range later can't silently rewrite days that
+// already elapsed. (A catch-up gap, e.g. the sweep having been down for a few days, is still a
+// best-effort approximation — every day in the gap is evaluated against whatever the config says
+// right now, since there's no historical config log to consult for the exact days in between.)
+// Pure and exported so it's unit-testable independent of config/DB access.
+export function computeDayAdvanceSteps(
+  lastMarkedDate: string,
+  today: string,
+  bonusDayEnabled: boolean,
+  bonusDayStart: number,
+  bonusDayEnd: number,
+): DayAdvanceStep[] {
+  const steps: DayAdvanceStep[] = [];
+  let cursor = new Date(`${lastMarkedDate}T00:00:00Z`);
+  const todayUtc = new Date(`${today}T00:00:00Z`);
+  while (cursor.getTime() < todayUtc.getTime()) {
+    cursor = new Date(cursor.getTime() + MS_PER_DAY);
+    const weekday = cursor.getUTCDay();
+    steps.push({
+      date: cursor.toISOString().slice(0, 10),
+      supercharged: bonusDayEnabled && isDayInRange(weekday, bonusDayStart, bonusDayEnd),
+    });
+  }
+  return steps;
+}
+
+export const MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY = "match_time_stats_supercharged_days";
+export const MATCH_TIME_STATS_NONSUPERCHARGED_DAYS_KEY = "match_time_stats_nonsupercharged_days";
+export const MATCH_TIME_STATS_LAST_MARKED_DATE_KEY = "match_time_stats_last_marked_date";
+
+// DB-backed wrapper around computeDayAdvanceSteps, called once per sweep tick (see
+// web/app/api/discord/sweep/route.ts) — a no-op on nearly every tick (0 steps, since a Pacific
+// day only rolls over once every ~1440 one-minute ticks), and catches up multiple days at once
+// if the sweep was ever down across a day boundary. Returns how many days were counted this call.
+export async function advanceMatchTimeStatsDayCounters(now: Date): Promise<number> {
+  const lastMarked = await getConfigValue(MATCH_TIME_STATS_LAST_MARKED_DATE_KEY);
+  if (!lastMarked) return 0; // not seeded yet — the migration that seeds it hasn't been applied
+
+  const today = pacificDateString(now);
+  const [enabled, start, end, superCount, nonSuperCount] = await Promise.all([
+    getConfigNumber("bonus_day_enabled", 1),
+    getConfigNumber("bonus_day_start", 6),
+    getConfigNumber("bonus_day_end", 6),
+    getConfigNumber(MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY, 0),
+    getConfigNumber(MATCH_TIME_STATS_NONSUPERCHARGED_DAYS_KEY, 0),
+  ]);
+
+  const steps = computeDayAdvanceSteps(lastMarked, today, enabled === 1, start, end);
+  if (steps.length === 0) return 0;
+
+  const superchargedDelta = steps.filter((s) => s.supercharged).length;
+  const nonSuperchargedDelta = steps.length - superchargedDelta;
+
+  await Promise.all([
+    setConfigValue(MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY, String(superCount + superchargedDelta)),
+    setConfigValue(MATCH_TIME_STATS_NONSUPERCHARGED_DAYS_KEY, String(nonSuperCount + nonSuperchargedDelta)),
+    setConfigValue(MATCH_TIME_STATS_LAST_MARKED_DATE_KEY, steps[steps.length - 1].date),
+  ]);
+
+  return steps.length;
 }
