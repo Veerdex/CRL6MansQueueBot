@@ -7,7 +7,7 @@ import { editOriginalResponse } from "./rest";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { getOrCreatePlayer, isPlayerLockedInActiveSeries, createMatchChannels } from "./queue";
-import { castVote } from "./teamFormation";
+import { castVote, castSeriesLengthVote } from "./teamFormation";
 import { deleteMatchChannels } from "./matchChannels";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -107,29 +107,59 @@ async function processTestMatch(interaction: DiscordInteraction, queueType: Queu
   const channelId = interaction.channel_id || "";
   await createMatchChannels(supabase, series.id, interaction.guild_id, members, channelId);
 
-  // Auto-cast 4 of 5 fake votes (2 Balanced, 2 Captains) — deliberately leaves the vote at 2-2
-  // so the admin's own click through the real button decides the outcome, exercising both the
-  // vote UI and whichever team-formation path they pick.
+  // Pre-cast bot votes so the admin's own click through the real button is what decides the
+  // outcome, exercising the vote UI end to end. Two things this has to get right:
+  //
+  // 1. Cast into whichever vote phase is actually *live*. With series_length_vote_enabled on,
+  //    createMatchChannels starts the Best-of-3/5/7 pre-vote first, and formation_message_id
+  //    points at that message — casting Balanced/Captains votes into it would overwrite that
+  //    embed and strand series_length_vote_active with no resolved series length.
+  // 2. Clear any votes already on the series before pre-casting. startTeamFormation auto-casts
+  //    every member's /vote-default (see teamFormation.ts), so an admin who has a default set
+  //    already has a vote in when this runs — the old flat "cast 4 votes" then reached the
+  //    3-vote threshold and resolved the whole vote before the admin could click anything.
   const { data: seriesRow } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", series.id).maybeSingle();
+  let voteHint = "";
   if (seriesRow?.queue_channel_id && seriesRow.formation_message_id) {
-    const voteChoices: ("balanced" | "captains")[] = ["balanced", "balanced", "captains", "captains"];
-    for (let i = 0; i < voteChoices.length; i++) {
-      await castVote(
-        supabase,
-        interaction.guild_id,
-        series.id,
-        seriesRow.queue_channel_id,
-        seriesRow.formation_message_id,
-        members,
-        fakePlayers[i].id,
-        voteChoices[i],
-      );
+    if (seriesRow.series_length_vote_active) {
+      // Two bots on Best of 5 -> the admin's click either resolves it (clicking Best of 5) or
+      // visibly moves the tally (clicking Best of 3/7), both of which prove the button works.
+      await supabase.from("crl6mansqueuebot_series_length_votes").delete().eq("series_id", series.id);
+      for (let i = 0; i < 2; i++) {
+        await castSeriesLengthVote(
+          supabase,
+          interaction.guild_id,
+          series.id,
+          seriesRow.queue_channel_id,
+          seriesRow.formation_message_id,
+          members,
+          fakePlayers[i].id,
+          "bo5",
+        );
+      }
+      voteHint = "Series-length vote is at 2 for Best of 5; your click decides it (Balanced/Captains follows).";
+    } else {
+      await supabase.from("crl6mansqueuebot_series_votes").delete().eq("series_id", series.id);
+      const voteChoices: ("balanced" | "captains")[] = ["balanced", "balanced", "captains", "captains"];
+      for (let i = 0; i < voteChoices.length; i++) {
+        await castVote(
+          supabase,
+          interaction.guild_id,
+          series.id,
+          seriesRow.queue_channel_id,
+          seriesRow.formation_message_id,
+          members,
+          fakePlayers[i].id,
+          voteChoices[i],
+        );
+      }
+      voteHint = "Vote is 2-2 (Balanced/Captains); your click decides it.";
     }
   }
 
   await logAdminAction(discordId, "test_match_start", series.id, `queue_type=${queueType}`);
   await editOriginalResponse(interaction.token, {
-    content: `Test ${QUEUE_LABELS[queueType]} match created — head to the new match channel. Vote is 2-2 (Balanced/Captains); your click decides it. Run /end-test in that channel when you're done.`,
+    content: `Test ${QUEUE_LABELS[queueType]} match created — head to the new match channel. ${voteHint} Run /end-test in that channel when you're done.`,
   });
 }
 
