@@ -675,11 +675,10 @@ export function handleRanksCommand(interaction: DiscordInteraction) {
 async function processRanksCommand(interaction: DiscordInteraction) {
   const supabase = createAdminClient();
 
-  const [garnetCutoff, emeraldCutoff, sapphireCutoff, prismTopN, mmrScale, mmrShift, bandCalcModeRaw] = await Promise.all([
+  const [garnetCutoff, emeraldCutoff, sapphireCutoff, mmrScale, mmrShift, bandCalcModeRaw] = await Promise.all([
     getConfigNumber("band_cutoff_garnet_pctile", 40),
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
-    getConfigNumber("prism_top_n", 1),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
     getConfigValue("band_calc_mode"),
@@ -720,19 +719,15 @@ async function processRanksCommand(interaction: DiscordInteraction) {
     lines.push(`${count} ${emoji} **${getRankLabel(band)}** — ${display(thresholdMmrByBand[band])} MMR`);
   }
 
-  // Same top-N-among-Sapphire-players cut recomputeBands' live Prism pass uses (see above), minus
-  // the top10_min_games eligibility filter — that gates who currently *holds* Prism, not where the
-  // cut line itself sits, and this line is meant to answer "what MMR do I need" rather than "is
-  // this specific player eligible right now."
-  const sapphireByMmr = pool
-    .filter((p) => p.band === "Sapphire")
-    .slice()
-    .sort((a, b) => b.mmr - a.mmr || b.total_games_played - a.total_games_played || a.id.localeCompare(b.id));
-  // Clamp to however many Sapphire players actually exist: if prism_top_n (an admin-tunable
-  // config value — see CLAUDE.md's "DB-override-shadows-code-default" caveat) is larger than the
-  // current Sapphire pool, indexing straight at prismTopN - 1 runs off the end and reports "N/A"
-  // even though a real cut line exists — the lowest-MMR Sapphire player currently in the bracket.
-  const prismCutoffMmr = sapphireByMmr[Math.min(prismTopN, sapphireByMmr.length) - 1]?.mmr;
+  // Revised a later session — supersedes a rank-based "top-N-among-Sapphire-by-MMR" cut, which
+  // could report a healthier-looking cutoff than reality: that ranking ignored the
+  // top10_min_games eligibility filter recomputeBands()'s live Prism pass actually applies, so a
+  // higher-MMR Sapphire player who simply hadn't played enough games yet could occupy a
+  // theoretical "top N" slot the real Prism roster didn't reflect. The cutoff now comes straight
+  // from who currently, actually holds is_prism — the worst (lowest-MMR) current Prism player's
+  // MMR — which can only ever match reality, no eligibility bookkeeping duplicated here.
+  const prismMmrs = pool.filter((p) => p.is_prism).map((p) => p.mmr);
+  const prismCutoffMmr = prismMmrs.length > 0 ? Math.min(...prismMmrs) : undefined;
   const prismEmoji = await getRankEmoji("Prism");
   lines.push(
     `${prismCount} ${prismEmoji} **Prism** — ${prismCutoffMmr === undefined ? "N/A" : `${display(prismCutoffMmr)} MMR`}`,

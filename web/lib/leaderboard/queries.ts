@@ -129,17 +129,22 @@ export async function getAllPlayersWithGames(): Promise<PlayerWithGames[]> {
   });
 }
 
-// Lightweight — just band + MMR for every currently-placed, real player. Powers the Info page's
-// per-band MMR display; doesn't need full game history.
-export async function getPlacedPlayerBandMMRs(): Promise<{ band: Band; mmr: number }[]> {
+// Lightweight — just band + MMR + is_prism for every currently-placed, real player. Powers the
+// Info page's per-band MMR display; doesn't need full game history. is_prism is included so the
+// page can compute the worst currently-holding Prism player's MMR directly, rather than deriving
+// a Prism floor from Sapphire's own max (see bands.ts's matching /ranks fix for why that diverges
+// from reality — a player can be a high-MMR Sapphire without actually holding Prism yet).
+export async function getPlacedPlayerBandMMRs(): Promise<{ band: Band; mmr: number; isPrism: boolean }[]> {
   const supabase = createServerClient();
   const { data, error } = await supabase
     .from("crl6mansqueuebot_players")
-    .select("band, mmr")
+    .select("band, mmr, is_prism")
     .eq("is_placed", true)
     .eq("is_test_data", false);
   if (error) throw error;
-  return (data ?? []).filter((p): p is { band: Band; mmr: number } => p.band !== null);
+  return (data ?? [])
+    .filter((p): p is { band: Band; mmr: number; is_prism: boolean } => p.band !== null)
+    .map((p) => ({ band: p.band, mmr: p.mmr, isPrism: p.is_prism }));
 }
 
 // Powers the hidden match-time-stats page (see CLAUDE.md, "Match time stats") — just the two

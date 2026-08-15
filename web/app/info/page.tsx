@@ -48,6 +48,8 @@ export default async function InfoPage() {
     prismTopN,
     top10MinGames,
     placedBandMMRs,
+    seriesLengthVoteEnabled,
+    reportCooldownMinutes,
   ] = await Promise.all([
     getConfigNumber("series_timeout_hours", 2),
     getConfigNumber("bonus_day_enabled", 1),
@@ -64,6 +66,8 @@ export default async function InfoPage() {
     getConfigNumber("prism_top_n", 1),
     getConfigNumber("top10_min_games", 8),
     getPlacedPlayerBandMMRs(),
+    getConfigNumber("series_length_vote_enabled", 0),
+    getConfigNumber("report_cooldown_minutes", 15),
   ]);
 
   // Single-value simplification (this session) of the old current-members min–max range: each
@@ -80,11 +84,16 @@ export default async function InfoPage() {
       bandFloorMmr.set(band, displayMmr);
     }
   }
-  const sapphireMaxMmr = placedBandMMRs
-    .filter((p) => p.band === "Sapphire")
-    .reduce<number | undefined>((max, p) => {
+  // Revised a later session — supersedes an ">Sapphire's max MMR" floor, which could read as a
+  // healthier cutoff than reality: a high-MMR Sapphire player who hasn't hit top10_min_games yet
+  // isn't actually holding Prism, so deriving the floor from Sapphire's max ignored that gap.
+  // Now computed straight from who currently, actually holds is_prism (see bands.ts's matching
+  // /ranks fix) — the worst (lowest-MMR) current Prism player's real MMR.
+  const prismMinMmr = placedBandMMRs
+    .filter((p) => p.isPrism)
+    .reduce<number | undefined>((min, p) => {
       const displayMmr = Math.round(p.mmr * mmrScale + mmrShift);
-      return max === undefined || displayMmr > max ? displayMmr : max;
+      return min === undefined || displayMmr < min ? displayMmr : min;
     }, undefined);
 
   const bandPercentileLabel: Record<Band, string> = {
@@ -124,9 +133,21 @@ export default async function InfoPage() {
               Once a queue fills to <strong>6 players</strong>, everyone in that match is locked out of
               queueing until the match is reported.
             </li>
+            {seriesLengthVoteEnabled === 1 && (
+              <li>
+                Right after a pop, vote for the match length — <strong>Best of 3, 5, or 7</strong> — before the
+                Balanced/Captains vote. A shorter series moves your MMR <em>less</em> (Best of 3 = 0.6x), a
+                longer one moves it <em>more</em> (Best of 7 = 1.4x); Best of 5 is the normal rate.
+              </li>
+            )}
             <li>
               After a pop, vote for <strong>Balanced</strong> teams or a <strong>Captains</strong> draft. Set
               a default with <strong>/vote-default</strong> so you don&apos;t have to vote every time.
+            </li>
+            <li>
+              Once teams are set, there&apos;s a short <strong>{reportCooldownMinutes}-minute cooldown</strong>{" "}
+              before <strong>/report</strong> is accepted — long enough that a game could plausibly have
+              actually finished.
             </li>
             <li>
               Didn&apos;t get reported? A match <em>auto-cancels</em> after {seriesTimeoutHours} hour
@@ -247,7 +268,7 @@ export default async function InfoPage() {
               <div className="min-w-0">
                 <div className="font-semibold text-foreground">Prism</div>
                 <div className="text-xs text-muted">
-                  {sapphireMaxMmr === undefined ? "No players currently placed" : `Currently >${sapphireMaxMmr} MMR`} •{" "}
+                  {prismMinMmr === undefined ? "No players currently hold Prism" : `Currently ${prismMinMmr} MMR`} •{" "}
                   {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
                   this season
                 </div>
