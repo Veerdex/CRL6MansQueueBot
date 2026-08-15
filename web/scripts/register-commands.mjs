@@ -83,6 +83,15 @@ const commands = [
     description: "Get the link to the leaderboard website.",
     type: 1,
   },
+  // TEMPORARY DIAGNOSTIC — minimal button test for the "application did not respond" issue.
+  // Deliberately a top-level command, NOT an /admin subcommand: /admin's combined name+description
+  // budget is at ~3890 of Discord's 4000-character limit, so another subcommand there risks
+  // rejecting the entire registration batch. Remove once the button issue is resolved.
+  {
+    name: "test-button",
+    description: "Post two test buttons to check which interaction response types work.",
+    type: 1,
+  },
   {
     name: "setqueuechannel",
     description: "Post the persistent queue message in this channel.",

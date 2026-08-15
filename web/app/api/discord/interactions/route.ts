@@ -54,6 +54,37 @@ async function postInteractionDebug(line: string) {
   }
 }
 
+// TEMPORARY DIAGNOSTIC — /test-button. A minimal reproduction for the "The application did not
+// respond" button failure, deliberately sharing nothing with the real handlers: no Supabase, no
+// after(), no background work at all, just an immediate response. The two buttons differ in
+// exactly one variable — the interaction response type:
+//
+//   "now"   -> type 4 (CHANNEL_MESSAGE_WITH_SOURCE), replies with a visible ephemeral message
+//   "defer" -> type 6 (DEFERRED_UPDATE_MESSAGE), the same ack every real button uses
+//
+// Reading the result: if "now" works and "defer" fails, Discord is rejecting our type-6 acks and
+// the fix is to change how buttons acknowledge. If BOTH fail, the problem is upstream of every
+// handler (endpoint config, deployment, or the path between Discord and Vercel) and no amount of
+// handler-level work will help. If both work, the failure is specific to what the real handlers
+// do *after* acking. Remove this once resolved.
+function testButtonMessage() {
+  return {
+    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      content: "Button diagnostic — click each one and note which (if either) errors.",
+      components: [
+        {
+          type: 1,
+          components: [
+            { type: 2, style: 1, label: "Immediate reply (type 4)", custom_id: "debugbtn:now" },
+            { type: 2, style: 2, label: "Deferred ack (type 6)", custom_id: "debugbtn:defer" },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 export async function POST(request: Request) {
   const verified = await verifyDiscordRequest(request);
   if (!verified.valid) {
@@ -107,6 +138,18 @@ export async function POST(request: Request) {
       after(() => postInteractionDebug(line));
       return NextResponse.json(payload);
     };
+
+    // TEMPORARY DIAGNOSTIC — see testButtonMessage above. Checked first and returns directly so
+    // it shares no code path with the real handlers.
+    if (action === "debugbtn") {
+      if (arg1 === "now") {
+        return respond({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: "✅ Immediate reply (type 4) worked.", flags: 64 },
+        });
+      }
+      return respond({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
+    }
 
     if (action === "sub_accept" && arg1 && arg2) {
       return respond(handleSubAcceptButton(interaction, arg1, arg2));
@@ -237,6 +280,11 @@ export async function POST(request: Request) {
 
     if (commandName === "site") {
       return NextResponse.json(handleSiteCommand(interaction));
+    }
+
+    // TEMPORARY DIAGNOSTIC — see testButtonMessage above.
+    if (commandName === "test-button") {
+      return NextResponse.json(testButtonMessage());
     }
 
     if (commandName === "newseason") {
