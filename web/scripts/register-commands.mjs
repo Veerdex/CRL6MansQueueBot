@@ -538,7 +538,7 @@ const commands = [
         options: [
           {
             name: "id",
-            description: "The series id to unreport.",
+            description: "The match number from the report (e.g. 55), or the series id.",
             type: STRING_OPTION,
             required: true,
           },
@@ -551,7 +551,7 @@ const commands = [
         options: [
           {
             name: "id",
-            description: "The series id to correct.",
+            description: "The match number from the report (e.g. 55), or the series id.",
             type: STRING_OPTION,
             required: true,
           },

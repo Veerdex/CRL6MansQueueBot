@@ -251,6 +251,31 @@ async function dispatchAdminSubcommand(
   }
 }
 
+// Resolves the `id:` param shared by /admin unreport and /admin correct-report. The only
+// identifier either command actually surfaces to an admin is the report embed's "Match #N" (see
+// report.ts's reportResultEmbed) — since match_number moved to report-time assignment (migration
+// 0042_match_number_on_report.sql), there is no longer any series UUID visible anywhere an admin
+// could copy it from. A plain-digits input is therefore treated as that match number and resolved
+// against the currently-reported series holding it (scoped to status='reported' and
+// is_test_data=false, matching the only state either caller ever targets — a match_number is only
+// ever assigned to a real reported series in the first place); anything else is assumed to already
+// be the raw series UUID, e.g. one copied from the audit log. An unresolvable digits-only input is
+// passed through unchanged so the caller's own "not reported / doesn't exist" error still fires.
+async function resolveReportedSeriesId(supabase: AdminClient, idOrMatchNumber: string): Promise<string> {
+  const trimmed = idOrMatchNumber.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const { data } = await supabase
+      .from("crl6mansqueuebot_series")
+      .select("id")
+      .eq("match_number", Number(trimmed))
+      .eq("status", "reported")
+      .eq("is_test_data", false)
+      .maybeSingle();
+    if (data) return data.id;
+  }
+  return trimmed;
+}
+
 // ---------------------------------------------------------------------------
 // /admin unreport id:<series_id> — reverses a reported series back to 'void' (reusing the
 // existing status rather than adding a new one; the audit log entry is what distinguishes an
@@ -260,8 +285,9 @@ async function dispatchAdminSubcommand(
 // series is reported (deleted 30s after /report), so there's nothing to clean up there.
 // ---------------------------------------------------------------------------
 
-async function processUnreport(interaction: DiscordInteraction, actorId: string, seriesId: string) {
+async function processUnreport(interaction: DiscordInteraction, actorId: string, seriesIdOrMatchNumber: string) {
   const supabase = createAdminClient();
+  const seriesId = await resolveReportedSeriesId(supabase, seriesIdOrMatchNumber);
 
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_series")
@@ -328,13 +354,15 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
 async function processCorrectReport(
   interaction: DiscordInteraction,
   actorId: string,
-  seriesId: string,
+  seriesIdOrMatchNumber: string,
   newWinner: "team_a" | "team_b",
 ) {
   const supabase = createAdminClient();
   const { computeEloDeltas, computeStreakBonus } = await import("@/lib/mmr/elo");
   const { getConfigNumber } = await import("./config");
   const { getPriorRankWinStreak } = await import("./streaks");
+
+  const seriesId = await resolveReportedSeriesId(supabase, seriesIdOrMatchNumber);
 
   // Fetch the series — must be reported
   const { data: seriesData } = await supabase
