@@ -69,7 +69,9 @@ async function buildRosterLines(members: PlayerRow[], streaks: StreakIds): Promi
 // Roster embed: one player per line instead of the flat @mention line above. Used by /status
 // (a one-off snapshot, any mode), hybrid mode's own tracked roster message (headline lives in
 // its own separate, always-stacking announcement instead — see postHybridAnnouncement, so this
-// embed is roster-only there), and rich mode's richContext-less fallback (see queueMessageBody).
+// embed is roster-only there), and rich mode's richContext-less fallback (see queueMessageBody —
+// now only hit by a headline-less refresh with no single "acting player," e.g. admin force-leave;
+// the 6th-join pop no longer falls back to this).
 async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds) {
   const label = QUEUE_LABELS[queueType];
   const lines = await buildRosterLines(members, streaks);
@@ -153,12 +155,11 @@ async function richEventEmbed(
 // fire.
 //
 // Rich mode's `richContext` carries the acting player/action/queueSize needed for richEventEmbed's
-// per-player fields. When it's absent (the pop moment specifically — see the pop branch in
-// processQueueCommand — plus any headline-less refresh with no single "acting player" to
-// describe, e.g. admin force-leave), rich mode falls back to the same roster embed /status
-// returns: literally "a copy of the status message" instead of a join/leave-styled card, which
-// is exactly right for the pop moment since the queue is about to clear for team formation
-// anyway.
+// per-player fields. Revised this session — the 6th join (pop) now passes a richContext too, same
+// as any other join, so it renders the ordinary join card instead of a roster copy (see the pop
+// branch in processQueueCommand). richContext is only absent for a genuinely headline-less refresh
+// with no single "acting player" to describe (e.g. admin force-leave), where rich mode still falls
+// back to the same roster embed /status returns.
 async function queueMessageBody(
   supabase: AdminClient,
   mode: QueueMessageMode,
@@ -278,13 +279,15 @@ export type QueueMessageMode = "simplified" | "default" | "hybrid" | "rich";
 //     already covers "see the whole current roster" on demand, making the second message
 //     redundant): a data-rich embed (richEventEmbed: H3 headline, Rank/MMR/Streak fields, a
 //     queue-progress bar), posted "default"-style — a new message per event, nothing deleted, so
-//     the channel keeps a running history. At the 6th join (pop), instead of an ordinary
-//     per-player join card, the posted message falls back to the same roster embed /status
-//     returns (a copy of the status message showing the completed 6/6 roster) and is then frozen
-//     permanently — see freezeQueueRosterMessage — so it stays visible as a record of who played
-//     that match. Applies uniformly to both queue types — a Universal player's Streak field
-//     simply never appears, since it's driven by Rank-Queue-only streak counts which are always
-//     0 for them.
+//     the channel keeps a running history. At the 6th join (pop), the ordinary per-player join
+//     card is what posts — revised again this session, supersedes an intermediate design where
+//     the pop instead fell back to a roster-copy embed (/status's shape); reverted back to the
+//     plain join card per direct request. That message is still frozen permanently right after —
+//     see freezeQueueRosterMessage — so it stays visible as a record of who played that match, and
+//     the separate, always-posted gold "Match Found!" announcement (postRichMatchFoundAnnouncement)
+//     covers the full 6-player roster regardless of what this message shows. Applies uniformly to
+//     both queue types — a Universal player's Streak field simply never appears, since it's driven
+//     by Rank-Queue-only streak counts which are always 0 for them.
 //
 // Reads the new `queue_message_mode` string config first; falls back to the older
 // `queue_simplified_messages` boolean (pre-hybrid) so an admin who already toggled that keeps
@@ -313,11 +316,15 @@ async function getQueueMessageMode(): Promise<QueueMessageMode> {
 // the losing-race cleanup a few lines down always runs regardless, since that's a duplicate this
 // exact call itself created (never shown to anyone as "history"), not the old message the mode
 // is about preserving.
+//
+// `oldMessageId === null` means the row currently exists with no live message attached (the state
+// freezeQueueRosterMessage puts it in at pop time, instead of reposting an empty placeholder) —
+// the CAS claim keys on `message_id is null` in that case, and there's nothing to delete.
 async function tryPostAndClaimQueueMessage(
   supabase: AdminClient,
   queueType: QueueType,
   channelId: string,
-  oldMessageId: string,
+  oldMessageId: string | null,
   members: PlayerRow[],
   streaks: StreakIds,
   headline: string | undefined,
@@ -330,16 +337,16 @@ async function tryPostAndClaimQueueMessage(
     body: JSON.stringify(await queueMessageBody(supabase, mode, queueType, members, streaks, headline, ping, richContext)),
   })) as { id: string };
 
-  const { data: claimed, error } = await supabase
+  let claimQuery = supabase
     .from("crl6mansqueuebot_queue_messages")
     .update({ channel_id: channelId, message_id: message.id })
-    .eq("queue_type", queueType)
-    .eq("message_id", oldMessageId)
-    .select("queue_type");
+    .eq("queue_type", queueType);
+  claimQuery = oldMessageId === null ? claimQuery.is("message_id", null) : claimQuery.eq("message_id", oldMessageId);
+  const { data: claimed, error } = await claimQuery.select("queue_type");
   if (error) console.error(`Queue message claim failed for ${queueType}`, error);
 
   if (!error && claimed && claimed.length > 0) {
-    if (mode !== "default" && mode !== "rich") {
+    if (oldMessageId !== null && mode !== "default" && mode !== "rich") {
       await discordFetch(`/channels/${channelId}/messages/${oldMessageId}`, { method: "DELETE" }).catch((err) =>
         console.error(`Failed to delete previous queue message ${oldMessageId}`, err),
       );
@@ -466,7 +473,7 @@ export async function refreshQueueMessage(
   // built off it loses the race (another refresh already moved message_id), the loop falls back
   // to a fresh fetch on attempt 1 exactly as before, so a slightly stale known row is never unsafe,
   // just occasionally not the fast path.
-  knownMsgRow?: { channel_id: string; message_id: string },
+  knownMsgRow?: { channel_id: string; message_id: string | null },
 ) {
   const mode = await getQueueMessageMode();
   let announced = false;
@@ -512,23 +519,25 @@ export async function refreshQueueMessage(
   console.error(`Queue message refresh for ${queueType} gave up after ${MAX_REFRESH_ATTEMPTS} attempts`);
 }
 
-// Hybrid and rich modes only: the roster message posted for a queue's final 6/6 state at pop
-// time is a historical record of "who played this match" and must survive forever — including through the
-// next queue cycle's own roster refreshes, which would otherwise delete it as their "old"
-// message the moment the next cycle's first join lands. Re-homes its tracking out of
+// Hybrid and rich modes only: the tracked message posted at pop time (hybrid: the roster embed;
+// rich: the ordinary join card for the 6th join) is treated as a historical record of "who played
+// this match" and must survive forever — including through the next queue cycle's own message
+// refreshes, which would otherwise delete it as their "old" message the moment the next cycle's
+// first join lands. Re-homes its tracking out of
 // crl6mansqueuebot_queue_messages (the single-row-per-queue_type table every refresh reads and
 // deletes from) into crl6mansqueuebot_queue_channel_messages' existing keep_permanently
 // mechanism (the same one finalizeTeams's "Teams formed!" message uses in teamFormation.ts).
 //
-// The queue_type's row is then immediately re-created (not just left deleted) via
-// postFreshQueueMessage's oldMessageId===null path, posting a fresh 0-member status message.
-// This used to just delete the row and stop, on the assumption that "the next cycle's first
-// join" would recreate it — but processQueueCommand (/q, /l) resolves a channel's queue_type by
-// looking up this exact table, with no fallback for a missing row, so that left the channel
-// entirely unable to process /q/l ("this channel isn't set up as a queue channel") from the
-// instant a queue popped until an admin manually reran /setqueuechannel. Posting a fresh
-// 0-member message here instead keeps the mapping continuously intact, and is accurate besides —
-// the queue really is empty the instant it pops.
+// The queue_type's row is kept (not deleted) with message_id nulled out, rather than reposting a
+// fresh "Current Queue Members: 0" placeholder message — that placeholder was reported as
+// unnecessary noise (see CLAUDE.md's "Queue channels"). Deleting the row outright isn't an option
+// either: processQueueCommand (/q, /l) resolves a channel's queue_type by looking up this exact
+// table with no fallback for a missing row, so that would leave the channel entirely unable to
+// process /q/l ("this channel isn't set up as a queue channel") from the instant a queue popped
+// until an admin manually reran /setqueuechannel. A null message_id (migration
+// 0044_nullable_queue_message_id.sql) keeps the channel<->queue_type mapping continuously intact
+// with no visible message — the next join's refreshQueueMessage call claims against
+// `message_id is null` (tryPostAndClaimQueueMessage) and posts the real join/leave message itself.
 async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueType) {
   const { data: msgRow } = await supabase
     .from("crl6mansqueuebot_queue_messages")
@@ -537,7 +546,6 @@ async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueT
     .maybeSingle();
   if (!msgRow) return;
 
-  await supabase.from("crl6mansqueuebot_queue_messages").delete().eq("queue_type", queueType);
   await supabase.from("crl6mansqueuebot_queue_channel_messages").insert({
     channel_id: msgRow.channel_id,
     message_id: msgRow.message_id,
@@ -545,7 +553,10 @@ async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueT
     keep_permanently: true,
   } as any);
 
-  await postFreshQueueMessage(supabase, queueType, msgRow.channel_id, null, []);
+  await supabase
+    .from("crl6mansqueuebot_queue_messages")
+    .update({ message_id: null })
+    .eq("queue_type", queueType);
 }
 
 export async function initQueueMessage(queueType: QueueType, channelId: string) {
@@ -769,14 +780,20 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     const guildId = interaction.guild_id ?? (await getGuildId());
     const mode = await getQueueMessageMode();
     if (mode === "rich") {
-      // Rich mode: skip the ordinary per-player join card once the roster is actually full — a
-      // single-player "X joined" card would be immediately misleading once the queue clears for
-      // team formation. With no richContext, refreshQueueMessage's claimed message falls back to
-      // the same roster embed /status returns (see queueMessageBody) — a copy of the status
-      // message showing the completed 6/6 roster. The dedicated gold "Match Found!" announcement
-      // (with the notifying @mention-all-6) still posts separately, unchanged — only the ordinary
-      // join card is what the roster copy replaces, not that announcement.
-      await refreshQueueMessage(supabase, queueType, undefined, undefined, undefined, knownMsgRow);
+      // Rich mode: the 6th join posts the ordinary per-player join card (richEventEmbed), same as
+      // any other join — revised back this session, supersedes the roster-copy-instead-of-a-join-
+      // card behavior above (which itself superseded an even earlier version of this same
+      // behavior) per explicit request to go back to showing the join message at 6/6. The
+      // dedicated gold "Match Found!" announcement (with the notifying @mention-all-6) still posts
+      // separately, unchanged, right after — it's the actual full-roster record of who played.
+      await refreshQueueMessage(
+        supabase,
+        queueType,
+        undefined,
+        undefined,
+        { action: "join", player, queueSize: result.queue_size },
+        knownMsgRow,
+      );
       const members = await fetchQueueMembers(supabase, queueType);
       const streaks = await getStreakIds(supabase, members.map((m) => m.id));
       await postRichMatchFoundAnnouncement(channelId, members, streaks);

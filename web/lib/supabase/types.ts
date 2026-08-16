@@ -95,7 +95,7 @@ export type QueueMemberRow = {
 export type QueueMessageRow = {
   queue_type: QueueType;
   channel_id: string;
-  message_id: string;
+  message_id: string | null;
 };
 
 export type SeriesLobbyRow = {
