@@ -417,7 +417,9 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   await deleteOriginalResponse(interaction.token);
 }
 
-function reportResultEmbed(
+// Exported for correct.ts, which reuses this exact shape to post the new report message once a
+// mis-reported match is flipped via /correct's 5-of-6 player vote.
+export function reportResultEmbed(
   winner: Team,
   matchId: string,
   winnerLines: string[],
@@ -432,7 +434,8 @@ function reportResultEmbed(
     description:
       `**Match #${matchId}**${bonusDayActive ? " 🔥 Supercharged!" : ""}${seriesLengthMarker}\n\n` +
       `**Winners**\n${winnerLines.join("\n")}\n\n` +
-      `**Losers**\n${loserLines.join("\n")}`,
+      `**Losers**\n${loserLines.join("\n")}\n\n` +
+      `-# Wrong result? Run /correct — 5 of the 6 players can flip it.`,
   };
 }
 

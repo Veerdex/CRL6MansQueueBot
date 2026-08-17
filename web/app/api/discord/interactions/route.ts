@@ -19,6 +19,7 @@ import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleNominateCommand, handleSubAcceptButton } from "@/lib/discord/sub";
 import { handleAbandonCommand } from "@/lib/discord/abandon";
+import { handleCorrectCommand } from "@/lib/discord/correct";
 import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand, handleSeriesLengthVoteButton } from "@/lib/discord/teamFormation";
 import type { VoteChoice, SeriesLength } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand, handleRanksCommand } from "@/lib/discord/bands";
@@ -227,6 +228,10 @@ export async function POST(request: Request) {
 
     if (commandName === "cancel") {
       return NextResponse.json(handleCancelCommand(interaction));
+    }
+
+    if (commandName === "correct") {
+      return NextResponse.json(handleCorrectCommand(interaction));
     }
 
     if (commandName === "setbandrole") {

@@ -79,10 +79,7 @@ function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds:
   const minutes = Math.round(timeoutSeconds / 60);
   return {
     color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
-    description:
-      `**You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote. Vote by clicking the buttons below.**\n` +
-      `This message needs **3 player interactions** to proceed! An exact 3-3 tie resolves to Captains.\n` +
-      `Want to cancel this match instead? Use \`/cancel\`.`,
+    description: `You have **${minutes} minute${minutes === 1 ? "" : "s"}** to vote!`,
     fields: [
       { name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true },
       { name: "Captains", value: `${captainsCount} / 3`, inline: true },
@@ -112,13 +109,11 @@ function seriesLengthVoteEmbed(bo3Count: number, bo5Count: number, bo7Count: num
   const minutes = Math.round(timeoutSeconds / 60);
   return {
     color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
-    description:
-      `**You have ${minutes} minute${minutes === 1 ? "" : "s"} to vote on series length. Vote by clicking the buttons below.**\n` +
-      `This message needs **3 player interactions** to proceed! If time runs out, the option with the most votes wins — ties favor the shorter series.`,
+    description: `You have **${minutes} minute${minutes === 1 ? "" : "s"}** to vote on series length!`,
     fields: [
-      { name: "Best of 3", value: `${bo3Count} / 3`, inline: true },
-      { name: "Best of 5", value: `${bo5Count} / 3`, inline: true },
-      { name: "Best of 7", value: `${bo7Count} / 3`, inline: true },
+      { name: `${SERIES_LENGTH_K_MULTIPLIERS.bo3 * 100}%`, value: `Best of 3\n${bo3Count} / 3`, inline: true },
+      { name: `${SERIES_LENGTH_K_MULTIPLIERS.bo5 * 100}%`, value: `Best of 5\n${bo5Count} / 3`, inline: true },
+      { name: `${SERIES_LENGTH_K_MULTIPLIERS.bo7 * 100}%`, value: `Best of 7\n${bo7Count} / 3`, inline: true },
     ],
   };
 }
@@ -246,10 +241,22 @@ export async function castVote(
     .select("id");
   if (!claimed || claimed.length === 0) return;
 
+  // Replace the vote message with a short "___ Chosen!" announcement — the announcement's own
+  // message id becomes the new formation_message_id, so the balanced-summary/captains-draft UI
+  // that follows (sendDraftPickPrompt PATCHes whatever formation_message_id currently is) picks
+  // up from here rather than trying to edit the now-deleted vote message.
+  const supercharged = await isSuperchargedSeries(supabase, seriesId);
+  await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, { method: "DELETE" }).catch(() => {});
+  const chosenMessage = (await discordFetch(`/channels/${queueChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ embeds: [{ color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR, description: `**${winner === "balanced" ? "Balanced" : "Captains"} Chosen!**` }] }),
+  })) as { id: string };
+  await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: chosenMessage.id }).eq("id", seriesId);
+
   if (winner === "balanced") {
-    await resolveBalanced(supabase, guildId, seriesId, queueChannelId, messageId, members);
+    await resolveBalanced(supabase, guildId, seriesId, queueChannelId, chosenMessage.id, members);
   } else {
-    await beginCaptainsDraft(supabase, guildId, seriesId, queueChannelId, messageId, members);
+    await beginCaptainsDraft(supabase, guildId, seriesId, queueChannelId, chosenMessage.id, members);
   }
 }
 
@@ -298,6 +305,15 @@ async function resolveSeriesLengthVote(
     .is("series_length", null)
     .select("id");
   if (!claimed || claimed.length === 0) return;
+
+  // Announce the chosen series length as its own short-lived message — additive to, not a
+  // replacement for, the existing hand-off: startTeamFormation below still PATCH-edits the same
+  // `messageId` from the series-length vote UI directly into the Balanced/Captains vote UI.
+  const supercharged = await isSuperchargedSeries(supabase, seriesId);
+  await discordFetch(`/channels/${queueChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ embeds: [{ color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR, description: `**${winner.toUpperCase()} Chosen!**` }] }),
+  }).catch(() => {});
 
   await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members, messageId);
 }

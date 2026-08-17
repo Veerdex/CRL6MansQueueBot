@@ -477,6 +477,12 @@ const commands = [
     ],
   },
   {
+    name: "correct",
+    description: "Vote to flip your last match's result if it was mis-reported (5 of 6 players needed).",
+    type: 1,
+    options: [],
+  },
+  {
     name: "setbandrole",
     description: "Map a band (or the Placed gate / Prism season-Top-N role) to a Discord role for auto role-sync.",
     type: 1,

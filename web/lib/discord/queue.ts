@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, RICH_INACTIVITY_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -103,9 +103,17 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
 // streak suffix (`   |   +N Win Streak🔥` / `   |   N Loss Streak🥶`) reuses ON_FIRE_EMOJI/
 // COLD_EMOJI from streaks.ts rather than a hardcoded literal, so it's guaranteed to match the same
 // emoji used everywhere else in the bot (mention decoration, leaderboard) instead of drifting.
+//
+// Revised a later session: an `"inactive"` action reuses this same card shape (mention/stat-line/
+// progress-bar layout) for the sweep route's auto-remove-after-timeout case, so rich mode gets
+// exactly one message per inactive player instead of the roster-refresh-plus-plain-orange-embed
+// pair every other mode still posts — see CLAUDE.md, "Queue channels". Color is no longer
+// supercharged-overridable for "leave" or "inactive" (only "join" still swaps to
+// SUPERCHARGED_COLOR on a bonus day) — leave is always RICH_LEAVE_COLOR (red) and inactive is
+// always RICH_INACTIVITY_COLOR (orange), regardless of the day, per explicit request.
 async function richEventEmbed(
   supabase: AdminClient,
-  action: "join" | "leave",
+  action: "join" | "leave" | "inactive",
   player: PlayerRow,
   queueType: QueueType,
   queueSize: number,
@@ -128,9 +136,11 @@ async function richEventEmbed(
     statLine += `   |   ${lossStreak} Loss Streak${COLD_EMOJI}`;
   }
 
-  const verb = action === "join" ? "joined" : "left";
   const supercharged = await isSuperchargedDayLive();
-  const color = supercharged ? SUPERCHARGED_COLOR : action === "join" ? RICH_JOIN_COLOR : RICH_LEAVE_COLOR;
+  // Leave and inactivity always render in their own fixed color, even on a supercharged day — only
+  // join keeps the purple override, since it's the one case worth celebrating.
+  const color =
+    action === "inactive" ? RICH_INACTIVITY_COLOR : action === "leave" ? RICH_LEAVE_COLOR : supercharged ? SUPERCHARGED_COLOR : RICH_JOIN_COLOR;
 
   const filled = Math.max(0, Math.min(6, queueSize));
   const filledEmoji = supercharged ? "🟪" : "🟩";
@@ -138,9 +148,14 @@ async function richEventEmbed(
 
   const playerMention = mention(player.discord_id, { onFire: winStreak >= FLAME_THRESHOLD, cold: lossStreak >= COLD_THRESHOLD });
 
+  // Inactivity is a copy of the leave card's shape (same stat line, same progress bar) with its
+  // own headline instead of "left the ... Queue!" — see CLAUDE.md, "Queue channels".
+  const headline =
+    action === "inactive" ? `**${playerMention} was removed from the ${label} due to inactivity.**` : `**${playerMention} ${action === "join" ? "joined" : "left"} the ${label}!**`;
+
   return {
     color,
-    description: `**${playerMention} ${verb} the ${label}!**\n${statLine}`,
+    description: `${headline}\n${statLine}`,
     fields: [{ name: "Queue Progress", value: progress, inline: false }],
     // Join/leave instructions removed — /help already covers that. No footer at all, including
     // on a supercharged day — an earlier version showed ten 🔥 here, removed per direct request.
@@ -168,7 +183,7 @@ async function queueMessageBody(
   streaks: StreakIds,
   headline?: string,
   ping?: string,
-  richContext?: { action: "join" | "leave"; player: PlayerRow; queueSize: number },
+  richContext?: { action: "join" | "leave" | "inactive"; player: PlayerRow; queueSize: number },
 ) {
   if (mode === "hybrid") {
     return { content: "", embeds: [await hybridRosterEmbed(queueType, members, streaks)] };
@@ -240,7 +255,7 @@ async function postSuperchargedAnnouncement(channelId: string) {
   }).catch((err) => console.error(`Failed to post supercharged announcement in ${channelId}`, err));
 }
 
-async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
+export async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
   const { data: memberRows, error } = await supabase
     .from("crl6mansqueuebot_queue_members")
     .select("player_id")
@@ -287,12 +302,17 @@ export type QueueMessageMode = "simplified" | "default" | "hybrid" | "rich";
 //     the separate, always-posted gold "Match Found!" announcement (postRichMatchFoundAnnouncement)
 //     covers the full 6-player roster regardless of what this message shows. Applies uniformly to
 //     both queue types — a Universal player's Streak field simply never appears, since it's driven
-//     by Rank-Queue-only streak counts which are always 0 for them.
+//     by Rank-Queue-only streak counts which are always 0 for them. A player auto-removed by the
+//     sweep route for inactivity (queue_member_timeout_minutes) also gets exactly one message —
+//     the same richEventEmbed card shape, headlined as removed-for-inactivity instead of left, and
+//     always RICH_INACTIVITY_COLOR (orange) — rather than the roster-refresh-plus-plain-orange-
+//     embed pair every other mode still posts for that case; see CLAUDE.md, "Queue channels".
 //
+
 // Reads the new `queue_message_mode` string config first; falls back to the older
 // `queue_simplified_messages` boolean (pre-hybrid) so an admin who already toggled that keeps
 // their choice honored until they explicitly pick a mode via the new command.
-async function getQueueMessageMode(): Promise<QueueMessageMode> {
+export async function getQueueMessageMode(): Promise<QueueMessageMode> {
   const raw = await getConfigValue("queue_message_mode");
   if (raw === "simplified" || raw === "default" || raw === "hybrid" || raw === "rich") return raw;
   const legacySimplified = (await getConfigNumber("queue_simplified_messages", 1)) !== 0;
@@ -330,7 +350,7 @@ async function tryPostAndClaimQueueMessage(
   headline: string | undefined,
   mode: QueueMessageMode,
   ping?: string,
-  richContext?: { action: "join" | "leave"; player: PlayerRow; queueSize: number },
+  richContext?: { action: "join" | "leave" | "inactive"; player: PlayerRow; queueSize: number },
 ): Promise<boolean> {
   const message = (await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
@@ -465,7 +485,7 @@ export async function refreshQueueMessage(
   queueType: QueueType,
   headline?: string,
   ping?: string,
-  richContext?: { action: "join" | "leave"; player: PlayerRow; queueSize: number },
+  richContext?: { action: "join" | "leave" | "inactive"; player: PlayerRow; queueSize: number },
   // Callers that already looked up this queue_type's crl6mansqueuebot_queue_messages row a
   // moment earlier for their own purposes (processQueueCommand resolves channel->queue_type off
   // this exact table before doing anything else) can pass it here to skip attempt 0's otherwise-

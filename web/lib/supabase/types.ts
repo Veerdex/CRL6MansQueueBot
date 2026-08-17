@@ -58,6 +58,10 @@ export type SeriesRow = {
   series_length_k_multiplier: number;
   vote_started_at: string | null;
   series_length_vote_active: boolean;
+  // One-time claim sentinel for /correct's player-vote flip — see migration
+  // 0045_correct_votes.sql. Null until a series is flipped via 5-of-6 player vote; once set,
+  // /correct refuses to flip that series again. Independent of `status`, which stays "reported".
+  correction_claimed_at: string | null;
 };
 
 export type SeriesPlayerRow = {
@@ -118,6 +122,12 @@ export type SeriesLengthVoteRow = {
 };
 
 export type CancelVoteRow = {
+  series_id: string;
+  player_id: string;
+  voted_at: string;
+};
+
+export type CorrectVoteRow = {
   series_id: string;
   player_id: string;
   voted_at: string;
@@ -272,6 +282,12 @@ export type Database = {
         Row: CancelVoteRow;
         Insert: Partial<CancelVoteRow> & Pick<CancelVoteRow, "series_id" | "player_id">;
         Update: Partial<CancelVoteRow>;
+        Relationships: [];
+      };
+      crl6mansqueuebot_correct_votes: {
+        Row: CorrectVoteRow;
+        Insert: Partial<CorrectVoteRow> & Pick<CorrectVoteRow, "series_id" | "player_id">;
+        Update: Partial<CorrectVoteRow>;
         Relationships: [];
       };
       crl6mansqueuebot_sub_requests: {

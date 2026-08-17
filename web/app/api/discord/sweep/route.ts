@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage, GOLD_COLOR } from "@/lib/discord/rest";
 import { getConfigNumber, getConfigValue, deleteConfigValue } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
-import { postTrackedQueueMessage, refreshQueueMessage } from "@/lib/discord/queue";
+import { postTrackedQueueMessage, refreshQueueMessage, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
@@ -161,7 +161,7 @@ export async function POST(request: Request) {
     const playerIds = staleMembers.map((m) => m.player_id);
     const { data: players } = await supabase
       .from("crl6mansqueuebot_players")
-      .select("id, discord_id, display_name")
+      .select("*")
       .in("id", playerIds);
 
     const { data: deleted } = await supabase
@@ -184,6 +184,25 @@ export async function POST(request: Request) {
           ),
         ),
       );
+
+      const mode = await getQueueMessageMode();
+
+      if (mode === "rich") {
+        // Rich mode gets exactly one message per inactive player — a copy of the leave card's
+        // shape with inactivity-specific wording/color, instead of a roster refresh plus a
+        // separate plain-orange embed. Sequential (not Promise.all) so each player's refresh
+        // doesn't CAS-retry against the same single tracked-message row concurrently. See
+        // CLAUDE.md, "Queue channels".
+        for (const p of players ?? []) {
+          const queueSize = (await fetchQueueMembers(supabase, queueType)).length;
+          await refreshQueueMessage(supabase, queueType, undefined, undefined, {
+            action: "inactive",
+            player: p,
+            queueSize,
+          });
+        }
+        continue;
+      }
 
       // Update the queue display message
       await refreshQueueMessage(supabase, queueType);

@@ -1,7 +1,7 @@
 import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
-import { editOriginalResponse } from "./rest";
+import { editOriginalResponse, sendFollowupMessage } from "./rest";
 import { hasAdminAccess, addAdminRole, removeAdminRole, listAdminRoles, logAdminAction } from "./admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { interactionUserId, type DiscordInteraction } from "./types";
@@ -118,13 +118,20 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement for yourself; they must accept via a button.",
     "`/nominate target:<@user> nominee:<@user>` — run inside your match channel to request a sub for any player in the match (disconnected, etc.), including yourself.",
     "`/abandon target:<@user>` — run inside your match channel to vote a player as abandoned. 3 votes cancels the series.",
+    "`/correct` — vote to flip your last match's result if it was mis-reported. 5 of 6 players needed.",
     "`/mafia [password:]` — start a game of Mafia in this channel; Join/Leave buttons fill a 6-player lobby, then one player is secretly picked as the Mafia. Set a password to require it on Join.",
     "`/help` — show this message.",
   ];
 
+  await editOriginalResponse(interaction.token, { content: lines.join("\n") });
+
+  // Sent as a separate followup rather than appended to `lines` above — the combined
+  // content pushed past Discord's 2000-char message limit, which made editOriginalResponse's
+  // PATCH get silently rejected (rest.ts only console.errors a failed edit, never throws/
+  // surfaces it) and left the interaction stuck "thinking..." forever for any admin/owner
+  // caller. Same two-message precedent /admin config get already uses for its own listing.
   if (isAdmin) {
-    lines.push(
-      "",
+    const adminLines = [
       "**Admin commands**",
       "`/chances [id:]` — see a team's live win chance for the current (or, with id:, any) active match. Ephemeral.",
       "`/setqueuechannel queue_type:<rank|universal>` — post the persistent queue message in the current channel.",
@@ -136,10 +143,9 @@ async function processHelp(interaction: DiscordInteraction) {
       "`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role>` — map a band (or the Unranked role, or the season-end Prism Top-N role) to a Discord role for auto role-sync.",
       "`/test-rank-match` / `/test-universal-match` — spin up a simulated match (you + 5 test bots) to try the flow yourself.",
       "`/end-test` — run inside a test match's channel to tear it down (category, voice channels, text channel, and its test data).",
-    );
+    ];
+    await sendFollowupMessage(interaction.token, { content: adminLines.join("\n") });
   }
-
-  await editOriginalResponse(interaction.token, { content: lines.join("\n") });
 }
 
 // ---------------------------------------------------------------------------
