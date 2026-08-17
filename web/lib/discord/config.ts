@@ -90,6 +90,14 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   mmr_shift: 0,
   mmr_skew_factor: 0.5,
   mmr_min_delta: 2,
+  // Divides s_scale for the expected-score used in MMR delta calculations (and, in turn, the
+  // win-streak bonus taper — see elo.ts, EloConfig.confidenceMultiplier). Deliberately separate
+  // from s_scale above: the website History page and /chances compute their own win-odds live
+  // off s_scale directly and never read this config, so tuning it changes how confident the Elo
+  // math itself is without retroactively shifting any displayed odds. 1 = no boost (same
+  // confidence as the real odds); >1 sharpens favorite/underdog deltas and tapers the streak
+  // bonus off faster for favorites.
+  mmr_confidence_multiplier: 1,
   // Weekly bonus day — see CLAUDE.md, "Weekly bonus day". Listed here so /admin config get can
   // display current values, but deliberately left out of register-commands.mjs's CONFIG_KEYS
   // (same precedent as bot_paused) — these four are set through their own dedicated,

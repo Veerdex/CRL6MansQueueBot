@@ -27,6 +27,15 @@ export type EloConfig = {
   // are supplied by call sites rather than baked into this type.
   skewFactor?: number;
   minDeltaFloor?: number;
+  // Divides sScale for the expected-score used in this module's own delta math (and, via
+  // EloResult.expected, the win-streak bonus taper) — but never touches the website's History
+  // page or /chances, since those recompute their own win-odds independently, live off the
+  // current s_scale config, with no knowledge of this multiplier. That's the whole point of a
+  // separate knob: tune how confident the Elo math itself is without retroactively shifting what
+  // any past or future match's odds display shows. Optional, defaulting to a no-op 1x when
+  // omitted; its live default (1) lives in config.ts's KNOWN_CONFIG_DEFAULTS as
+  // mmr_confidence_multiplier, matching kFactor/sScale's pattern.
+  confidenceMultiplier?: number;
 };
 
 export type EloResult = {
@@ -34,6 +43,11 @@ export type EloResult = {
   delta: number;
   newMmr: number;
   wasProvisional: boolean;
+  // This player's team's pre-game win probability as actually used for their delta above,
+  // computed at config.sScale / confidenceMultiplier — also the input to computeStreakBonus's
+  // scaling curve. Deliberately decoupled from the website's independently-computed History
+  // page / /chances odds (see confidenceMultiplier on EloConfig).
+  expected: number;
 };
 
 function teamAverage(players: EloPlayerInput[], team: Team): number {
@@ -48,7 +62,10 @@ const SKEW_BASE_SIGMA = 50;
 export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config: EloConfig): EloResult[] {
   const avgA = teamAverage(players, "A");
   const avgB = teamAverage(players, "B");
-  const expectedA = 1 / (1 + 10 ** ((avgB - avgA) / config.sScale));
+  // See EloConfig.confidenceMultiplier: divides sScale for this expected-score calculation only
+  // — the website's own win-odds displays compute their own, independent of this config.
+  const effectiveSScale = config.sScale / (config.confidenceMultiplier ?? 1);
+  const expectedA = 1 / (1 + 10 ** ((avgB - avgA) / effectiveSScale));
   const expectedByTeam: Record<Team, number> = { A: expectedA, B: 1 - expectedA };
 
   const skewFactor = config.skewFactor ?? 0;
@@ -91,7 +108,7 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
       delta += Math.sign(delta) * minDeltaFloor;
     }
 
-    return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional };
+    return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional, expected: expectedByTeam[p.team] };
   });
 }
 
@@ -100,6 +117,15 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
 // in report history (DB), not anything elo.ts otherwise touches. priorStreak is the player's
 // consecutive-win count *before* the game currently being scored — 0 below a 3-game streak,
 // then +1 per game up to a +5 cap (priorStreak=3 -> +1, 4 -> +2, 5 -> +3, 6 -> +4, 7+ -> +5).
-export function computeStreakBonus(priorStreak: number): number {
-  return Math.min(Math.max(priorStreak - 2, 0), 5);
+//
+// expected is the winning team's EloResult.expected (the same, possibly confidence-boosted, win
+// probability that produced this player's delta — see EloConfig.confidenceMultiplier) — scales
+// the base bonus down as the win looks more like a foregone conclusion, and never boosts it above
+// the base bonus for an underdog win.
+// At expected<=0.5 (coin-flip or underdog) the bonus is untouched; it tapers linearly to 0 as
+// expected approaches 1 (a near-certain favorite winning "as expected" earns no streak bonus).
+export function computeStreakBonus(priorStreak: number, expected: number): number {
+  const base = Math.min(Math.max(priorStreak - 2, 0), 5);
+  const scale = Math.min(Math.max(2 * (1 - expected), 0), 1);
+  return base * scale;
 }

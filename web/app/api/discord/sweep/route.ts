@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage, GOLD_COLOR } from "@/lib/discord/rest";
 import { getConfigNumber, getConfigValue, deleteConfigValue } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
-import { postTrackedQueueMessage, refreshQueueMessage, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
+import { postTrackedQueueMessage, refreshQueueMessage, refreshQueueMessageAfterSettlement, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
@@ -431,7 +431,8 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
   await clearPendingSeriesState(supabase, series.id);
   // Same staleness fix as /cancel, /abandon, /report — the queue status message is left
   // un-refreshed at pop time, so it keeps showing the pre-pop roster as "currently queued"
-  // through however the series ends unless something explicitly refreshes it afterward.
-  await refreshQueueMessage(supabase, series.queue_type);
+  // through however the series ends unless something explicitly refreshes it afterward. See
+  // refreshQueueMessageAfterSettlement's own comment for why rich/hybrid modes skip this instead.
+  await refreshQueueMessageAfterSettlement(supabase, series.queue_type);
   await deleteMatchChannels(supabase, series);
 }

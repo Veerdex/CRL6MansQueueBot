@@ -151,7 +151,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
   const pushLine = (sp: SeriesPlayerRow, line: string) => (sp.team === newWinner ? winnerLines : loserLines).push(line);
 
   if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
@@ -160,6 +160,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
       getConfigNumber("mmr_skew_factor", 0.5),
       getConfigNumber("mmr_min_delta", 2),
       getConfigNumber("streak_bonus_enabled", 1),
+      getConfigNumber("mmr_confidence_multiplier", 1),
     ]);
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Same locked-in-at-pop/vote-resolution multipliers the original report used.
@@ -169,7 +170,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
-    const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
+    const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier });
     const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
 
     // getPriorRankWinStreak/getPriorRankLossStreak always exclude this series by id (see
@@ -181,7 +182,8 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
         seriesPlayers.map(async (sp) => {
           if (sp.team !== newWinner) return;
           const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
-          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak));
+          const expected = newResultsById.get(sp.player_id)!.expected;
+          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
         }),
       );
     }

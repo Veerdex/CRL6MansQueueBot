@@ -8,7 +8,7 @@ import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands, type BandCalcMode } from "./bands";
 import { refreshPlayerAvatars } from "./avatars";
-import { refreshQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
+import { refreshQueueMessage, refreshQueueMessageAfterSettlement, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { claimSeriesVoid, closeMatchChannelsAfterDelay } from "./matchChannels";
 import { interactionUserId, interactionDisplayName, type CommandOption, type DiscordInteraction } from "./types";
 import type { SeriesRow, PlayerRow, Team } from "@/lib/supabase/types";
@@ -408,7 +408,7 @@ async function processCorrectReport(
 
   // Only recalculate MMR if this is a Rank Queue series
   if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
@@ -416,6 +416,7 @@ async function processCorrectReport(
       getConfigNumber("mmr_skew_factor", 0.5),
       getConfigNumber("mmr_min_delta", 2),
       getConfigNumber("streak_bonus_enabled", 1),
+      getConfigNumber("mmr_confidence_multiplier", 1),
     ]);
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Same locked-in-at-pop/vote-resolution multipliers the original report used — a correction
@@ -428,7 +429,7 @@ async function processCorrectReport(
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
 
-    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor });
+    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier });
     const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
     // Same win-streak MMR bonus report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"
@@ -443,7 +444,8 @@ async function processCorrectReport(
         seriesPlayers.map(async (sp) => {
           if (sp.team !== winnerTeam) return;
           const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
-          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak));
+          const expected = newResultsById.get(sp.player_id)!.expected;
+          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
         }),
       );
     }
@@ -550,8 +552,9 @@ async function processCancelSeries(interaction: DiscordInteraction, actorId: str
   }
   // See teamFormation.ts's registerCancelVoteAndMaybeVoid for why this is needed — the queue
   // status message is left un-refreshed at pop time and stays stale (pre-pop roster shown as
-  // "currently queued") through however the series ends unless explicitly refreshed here.
-  await refreshQueueMessage(supabase, series.queue_type);
+  // "currently queued") through however the series ends unless explicitly refreshed here. See
+  // refreshQueueMessageAfterSettlement's own comment for why rich/hybrid modes skip this instead.
+  await refreshQueueMessageAfterSettlement(supabase, series.queue_type);
 
   await logAdminAction(actorId, "cancel_series", series.id);
   await editOriginalResponse(interaction.token, { content: `Cancelled series ${series.id}.` });
@@ -591,8 +594,9 @@ async function processCancelMatches(interaction: DiscordInteraction, actorId: st
   }
 
   // One refresh per distinct queue type rather than once per series — see
-  // registerCancelVoteAndMaybeVoid in teamFormation.ts for why this is needed at all.
-  await Promise.all([...affectedQueueTypes].map((qt) => refreshQueueMessage(supabase, qt)));
+  // registerCancelVoteAndMaybeVoid in teamFormation.ts for why this is needed at all, and
+  // refreshQueueMessageAfterSettlement's own comment for why rich/hybrid modes skip it.
+  await Promise.all([...affectedQueueTypes].map((qt) => refreshQueueMessageAfterSettlement(supabase, qt)));
 
   await logAdminAction(actorId, "cancel_matches", "all", `cancelled=${cancelledCount}`);
   await editOriginalResponse(interaction.token, { content: `Cancelled ${cancelledCount} active/forming match${cancelledCount === 1 ? "" : "es"}.` });

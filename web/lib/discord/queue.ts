@@ -579,6 +579,20 @@ async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueT
     .eq("queue_type", queueType);
 }
 
+// Refreshes the queue's tracked status message after a series settles (report/abandon/cancel/
+// sweep timeout) — but only in modes freezeQueueRosterMessage never touched at pop time. Rich and
+// hybrid modes already left message_id null there specifically so the channel shows nothing until
+// the next real /q or /l posts a fresh message (see freezeQueueRosterMessage's comment) — calling
+// plain refreshQueueMessage here for those modes defeats that by immediately reposting a new,
+// contentless "Current Queue Members: 0 / Empty" message as pure noise. Default/simplified modes
+// were never frozen, so they still need this call to stop showing the stale pre-pop roster as
+// "currently queued" (see each call site's own comment for that history).
+export async function refreshQueueMessageAfterSettlement(supabase: AdminClient, queueType: QueueType) {
+  const mode = await getQueueMessageMode();
+  if (mode === "rich" || mode === "hybrid") return;
+  await refreshQueueMessage(supabase, queueType);
+}
+
 export async function initQueueMessage(queueType: QueueType, channelId: string) {
   const supabase = createAdminClient();
   const { data: existing } = await supabase
@@ -803,9 +817,7 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       // Rich mode: the 6th join posts the ordinary per-player join card (richEventEmbed), same as
       // any other join — revised back this session, supersedes the roster-copy-instead-of-a-join-
       // card behavior above (which itself superseded an even earlier version of this same
-      // behavior) per explicit request to go back to showing the join message at 6/6. The
-      // dedicated gold "Match Found!" announcement (with the notifying @mention-all-6) still posts
-      // separately, unchanged, right after — it's the actual full-roster record of who played.
+      // behavior) per explicit request to go back to showing the join message at 6/6.
       await refreshQueueMessage(
         supabase,
         queueType,
@@ -814,23 +826,30 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
         { action: "join", player, queueSize: result.queue_size },
         knownMsgRow,
       );
-      const members = await fetchQueueMembers(supabase, queueType);
-      const streaks = await getStreakIds(supabase, members.map((m) => m.id));
-      await postRichMatchFoundAnnouncement(channelId, members, streaks);
-      await freezeQueueRosterMessage(supabase, queueType);
     } else {
       // Show the queue at 6/6 (same "has joined" treatment as any other join) before handlePop
       // clears crl6mansqueuebot_queue_members and the vote embed replaces this as the channel's
       // newest message.
       await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`, undefined, undefined, knownMsgRow);
-      // Hybrid mode: freeze the roster message just posted above (the final 6/6 state) so it's
-      // never deleted by a future queue cycle — see freezeQueueRosterMessage.
-      if (mode === "hybrid") {
+    }
+
+    // The gold "Match Found!" announcement and the roster-message freeze both claim the match is
+    // actually forming, so they must wait until handlePop confirms a series row actually exists —
+    // see handlePop's own comment for why this ordering matters (posting them unconditionally
+    // beforehand is the bug this guards against: a failed pop left a false "Match Found" up with
+    // no vote ever following it, and the 6 players silently still sitting in queue_members).
+    const popped = await handlePop(supabase, queueType, guildId, channelId);
+    if (popped) {
+      if (mode === "rich") {
+        const streaks = await getStreakIds(supabase, popped.members.map((m) => m.id));
+        await postRichMatchFoundAnnouncement(channelId, popped.members, streaks);
+      }
+      if (mode === "rich" || mode === "hybrid") {
         await freezeQueueRosterMessage(supabase, queueType);
       }
     }
-    await handlePop(supabase, queueType, guildId, channelId);
-    // Pop succeeded — delete the deferred response so it auto-dismisses
+    // Pop succeeded (or failed with its own error already posted) — delete the deferred response
+    // so it auto-dismisses either way.
     await deleteOriginalResponse(interaction.token);
   } else if (result?.status === "joined") {
     const headline = `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`;
@@ -907,7 +926,23 @@ async function processStatusCommand(interaction: DiscordInteraction) {
 // ---------------------------------------------------------------------------
 
 
-async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: string, queueChannelId: string) {
+// Returns the popped members on success so the caller can post the "Match Found!" announcement
+// only once a series row genuinely exists — never before. Previously that announcement (and the
+// roster-freeze) were posted by the caller unconditionally, before handlePop ran at all; if
+// handlePop then bailed out here (no active season, or the series insert itself failing — both
+// realistic under the DB contention a burst of simultaneous joins across the server can cause),
+// the channel was left with a "Match Found! Forming teams…" message that nothing ever followed
+// up on, while the 6 players remained silently sitting in crl6mansqueuebot_queue_members (this
+// function returns before ever clearing them) — indistinguishable from an ordinary still-queued
+// state, so one of them leaving via /l worked as normal and joining back re-triggered a fresh
+// pop attempt. Now both failure paths post their own visible error instead of only console.error,
+// and the caller no longer announces a match that was never actually formed.
+async function handlePop(
+  supabase: AdminClient,
+  queueType: QueueType,
+  guildId: string,
+  queueChannelId: string,
+): Promise<{ members: PlayerRow[] } | null> {
   const members = await fetchQueueMembers(supabase, queueType);
   const playerIds = members.map((m) => m.id);
 
@@ -919,7 +954,14 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
 
   if (!season) {
     console.error("Pop triggered but no active season exists — leaving players queued until an admin fixes this");
-    return;
+    await postTrackedQueueMessage(
+      supabase,
+      queueChannelId,
+      { color: 0xef476f, description: "**Error:** No active season configured — ask an admin to check config. Run /l then /q again once it's fixed." },
+      "error",
+      true,
+    );
+    return null;
   }
 
   // Locked in now, at pop (= "the queue completes") — see CLAUDE.md, "Weekly bonus day": a
@@ -940,7 +982,14 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
     .single();
   if (seriesError || !series) {
     console.error("Failed to create series on pop", seriesError);
-    return;
+    await postTrackedQueueMessage(
+      supabase,
+      queueChannelId,
+      { color: 0xef476f, description: "**Error:** Failed to form your match — run /l then /q again. Ping an admin if this keeps happening." },
+      "error",
+      true,
+    );
+    return null;
   }
 
   // match_number is intentionally left unset here — revised a later session, supersedes
@@ -983,6 +1032,7 @@ async function handlePop(supabase: AdminClient, queueType: QueueType, guildId: s
   }
 
   await createMatchChannels(supabase, series.id, guildId, members, queueChannelId);
+  return { members };
 }
 
 export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[], queueChannelId: string) {

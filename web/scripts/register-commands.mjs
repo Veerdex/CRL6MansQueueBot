@@ -68,6 +68,7 @@ const CONFIG_KEYS = [
   "mmr_shift",
   "mmr_skew_factor",
   "mmr_min_delta",
+  "mmr_confidence_multiplier",
   "mafia_grace_seconds",
   "mafia_timeout_seconds",
 ];

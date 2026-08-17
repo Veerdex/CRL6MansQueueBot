@@ -4,7 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse } from "./rest";
 import { hasAdminAccess } from "./admin";
-import { getOrCreatePlayer, getLockedSeriesForPlayer, refreshQueueMessage } from "./queue";
+import { getOrCreatePlayer, getLockedSeriesForPlayer, refreshQueueMessageAfterSettlement } from "./queue";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { getStreakIds, mention } from "./streaks";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -144,8 +144,9 @@ async function processAbandon(interaction: DiscordInteraction, seriesIdOverride:
   // See teamFormation.ts's registerCancelVoteAndMaybeVoid for why this is needed — the queue
   // status message is never refreshed at pop time, so it stays stale (showing the pre-pop
   // roster as "currently queued") through the whole series unless something explicitly refreshes
-  // it once the 6 players are freed.
-  await refreshQueueMessage(supabase, series.queue_type);
+  // it once the 6 players are freed. See refreshQueueMessageAfterSettlement's own comment for why
+  // rich/hybrid modes skip this instead.
+  await refreshQueueMessageAfterSettlement(supabase, series.queue_type);
   await editOriginalResponse(interaction.token, { content: "Vote recorded — series cancelled." });
 
   if (series.queue_channel_id) {

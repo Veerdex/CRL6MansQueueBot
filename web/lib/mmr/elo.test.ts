@@ -169,6 +169,43 @@ describe("computeEloDeltas — skew factor", () => {
   });
 });
 
+describe("computeEloDeltas — confidence multiplier", () => {
+  it("with confidenceMultiplier=1 (default/omitted), behaves identically to plain baseline Elo", () => {
+    const players = [
+      player("a1", 300, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const withOne = computeEloDeltas(players, "A", { ...config, confidenceMultiplier: 1 });
+    const omitted = computeEloDeltas(players, "A", config);
+    for (let i = 0; i < withOne.length; i++) {
+      expect(withOne[i].delta).toBeCloseTo(omitted[i].delta, 10);
+      expect(withOne[i].expected).toBeCloseTo(omitted[i].expected, 10);
+    }
+  });
+
+  it("above 1, sharpens the expected score and shrinks the favorite's win delta", () => {
+    const players = [
+      player("a1", 300, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const boosted = computeEloDeltas(players, "A", { ...config, confidenceMultiplier: 2 });
+    const plain = computeEloDeltas(players, "A", config);
+    const boostedWinner = boosted.find((r) => r.playerId === "a1")!;
+    const plainWinner = plain.find((r) => r.playerId === "a1")!;
+    expect(boostedWinner.expected).toBeGreaterThan(plainWinner.expected);
+    expect(boostedWinner.delta).toBeLessThan(plainWinner.delta);
+    expect(boostedWinner.delta).toBeGreaterThan(0);
+  });
+});
+
 describe("computeEloDeltas — min delta floor", () => {
   it("with minDeltaFloor=0 (default/omitted), behaves identically to plain baseline Elo", () => {
     const players = [
@@ -209,19 +246,26 @@ describe("computeEloDeltas — min delta floor", () => {
 });
 
 describe("computeStreakBonus", () => {
-  it("is 0 below a 3-game prior streak", () => {
-    expect(computeStreakBonus(0)).toBe(0);
-    expect(computeStreakBonus(1)).toBe(0);
-    expect(computeStreakBonus(2)).toBe(0);
+  it("is 0 below a 3-game prior streak, at any expected value", () => {
+    expect(computeStreakBonus(0, 0.5)).toBe(0);
+    expect(computeStreakBonus(1, 0.5)).toBe(0);
+    expect(computeStreakBonus(2, 0.5)).toBe(0);
   });
 
-  it("ramps +1 per game starting at a 3-game prior streak", () => {
-    expect(computeStreakBonus(3)).toBe(1);
-    expect(computeStreakBonus(4)).toBe(2);
+  it("ramps +1 per game starting at a 3-game prior streak, unscaled at expected<=0.5", () => {
+    expect(computeStreakBonus(3, 0.5)).toBe(1);
+    expect(computeStreakBonus(4, 0.5)).toBe(2);
+    expect(computeStreakBonus(4, 0.2)).toBe(2);
   });
 
-  it("caps at +5", () => {
-    expect(computeStreakBonus(7)).toBe(5);
-    expect(computeStreakBonus(12)).toBe(5);
+  it("caps at +5, unscaled at expected<=0.5", () => {
+    expect(computeStreakBonus(7, 0.5)).toBe(5);
+    expect(computeStreakBonus(12, 0.1)).toBe(5);
+  });
+
+  it("tapers linearly to 0 as expected approaches 1", () => {
+    expect(computeStreakBonus(7, 0.75)).toBeCloseTo(2.5, 10);
+    expect(computeStreakBonus(7, 0.9)).toBeCloseTo(1, 10);
+    expect(computeStreakBonus(7, 1)).toBe(0);
   });
 });
