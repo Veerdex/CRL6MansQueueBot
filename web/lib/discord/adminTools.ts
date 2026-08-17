@@ -451,22 +451,51 @@ async function processCorrectReport(
       );
     }
 
-    // Update each player: reverse old delta, apply new delta
+    // Reverse old delta, apply new delta for each player. peak_mmr normally only ever rises
+    // (Math.max against the stored value — same "not tracked while unranked" rule as report.ts's
+    // own write). A correction is exactly the moment a stored peak might be provably wrong,
+    // though: if it drops a currently-placed player's mmr below their recorded peak, that peak
+    // may have been set by the very result now being corrected. For just those candidates, a
+    // full history replay (peakMmrRecompute.ts) determines each player's true lifetime peak from
+    // current data and is allowed to lower the stored value — see that module's header for why
+    // the full player population (not just these candidates) is required to get season-close
+    // decay right.
+    const correctedMmrByPlayer = new Map<string, number>();
+    const newDeltaByPlayer = new Map<string, number>();
+    for (const sp of seriesPlayers) {
+      const p = playersById.get(sp.player_id)!;
+      const oldDelta = sp.mmr_delta ?? 0;
+      const newResult = newResultsById.get(sp.player_id)!;
+      const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+      newDeltaByPlayer.set(sp.player_id, newDelta);
+      correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
+    }
+
+    const peakCandidates = seriesPlayers.filter((sp) => {
+      const p = playersById.get(sp.player_id)!;
+      return p.is_placed && correctedMmrByPlayer.get(sp.player_id)! < p.peak_mmr;
+    });
+    let reconstructedPeaks: Map<string, number> | null = null;
+    if (peakCandidates.length > 0) {
+      const { recomputeTruePeakMmr } = await import("@/lib/mmr/peakMmrRecompute");
+      reconstructedPeaks = (await recomputeTruePeakMmr(supabase)).peakMmrByPlayer;
+    }
+
     await Promise.all(
       seriesPlayers.map(async (sp) => {
         const p = playersById.get(sp.player_id)!;
-        const oldDelta = sp.mmr_delta ?? 0;
-        const newResult = newResultsById.get(sp.player_id)!;
-        const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
-        const correctedMmr = p.mmr - oldDelta + newDelta;
+        const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
+        const newDelta = newDeltaByPlayer.get(sp.player_id)!;
+        const isCandidate = reconstructedPeaks !== null && peakCandidates.includes(sp);
+        const peakMmr = isCandidate
+          ? Math.max(reconstructedPeaks!.get(p.id) ?? 0, correctedMmr, 0)
+          : p.is_placed
+            ? Math.max(p.peak_mmr, correctedMmr)
+            : p.peak_mmr;
 
         await supabase
           .from("crl6mansqueuebot_players")
-          .update({
-            mmr: correctedMmr,
-            // Same "not tracked while unranked" rule as report.ts's own write — see there.
-            peak_mmr: p.is_placed ? Math.max(p.peak_mmr, correctedMmr) : p.peak_mmr,
-          })
+          .update({ mmr: correctedMmr, peak_mmr: peakMmr })
           .eq("id", p.id);
 
         await supabase

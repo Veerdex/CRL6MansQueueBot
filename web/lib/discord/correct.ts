@@ -192,19 +192,46 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
 
     const finalDeltaByPlayer = new Map<string, number>();
     const correctedMmrByPlayer = new Map<string, number>();
+    for (const sp of seriesPlayers) {
+      const p = playersById.get(sp.player_id)!;
+      const oldDelta = sp.mmr_delta ?? 0;
+      const newResult = newResultsById.get(sp.player_id)!;
+      const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+      finalDeltaByPlayer.set(sp.player_id, newDelta);
+      correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
+    }
+
+    // peak_mmr normally only ever rises (Math.max against the stored value), but a correction is
+    // exactly the moment a stored peak might be provably wrong: if it drops a currently-placed
+    // player's mmr below their recorded peak, that peak may have been set by the very result now
+    // being corrected. For just those candidates, a full history replay determines each player's
+    // true lifetime peak from current data and is allowed to lower the stored value — see
+    // lib/mmr/peakMmrRecompute.ts's header for why the full player population is required.
+    const peakCandidates = seriesPlayers.filter((sp) => {
+      const p = playersById.get(sp.player_id)!;
+      return p.is_placed && correctedMmrByPlayer.get(sp.player_id)! < p.peak_mmr;
+    });
+    let reconstructedPeaks: Map<string, number> | null = null;
+    if (peakCandidates.length > 0) {
+      const { recomputeTruePeakMmr } = await import("@/lib/mmr/peakMmrRecompute");
+      reconstructedPeaks = (await recomputeTruePeakMmr(supabase)).peakMmrByPlayer;
+    }
+
     await Promise.all(
       seriesPlayers.map(async (sp) => {
         const p = playersById.get(sp.player_id)!;
-        const oldDelta = sp.mmr_delta ?? 0;
-        const newResult = newResultsById.get(sp.player_id)!;
-        const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
-        const correctedMmr = p.mmr - oldDelta + newDelta;
-        finalDeltaByPlayer.set(sp.player_id, newDelta);
-        correctedMmrByPlayer.set(sp.player_id, correctedMmr);
+        const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
+        const newDelta = finalDeltaByPlayer.get(sp.player_id)!;
+        const isCandidate = reconstructedPeaks !== null && peakCandidates.includes(sp);
+        const peakMmr = isCandidate
+          ? Math.max(reconstructedPeaks!.get(p.id) ?? 0, correctedMmr, 0)
+          : p.is_placed
+            ? Math.max(p.peak_mmr, correctedMmr)
+            : p.peak_mmr;
 
         await supabase
           .from("crl6mansqueuebot_players")
-          .update({ mmr: correctedMmr, peak_mmr: p.is_placed ? Math.max(p.peak_mmr, correctedMmr) : p.peak_mmr })
+          .update({ mmr: correctedMmr, peak_mmr: peakMmr })
           .eq("id", p.id);
         await supabase.from("crl6mansqueuebot_series_players").update({ mmr_delta: newDelta }).eq("series_id", series.id).eq("player_id", p.id);
       }),
