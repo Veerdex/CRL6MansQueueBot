@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getConfigNumber } from "@/lib/discord/config";
 import { getPlacedPlayerBandMMRs } from "@/lib/leaderboard/queries";
+import { REPORT_COOLDOWN_MINUTES_BY_LENGTH } from "@/lib/discord/teamFormation";
 import type { Band } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
@@ -49,7 +50,7 @@ export default async function InfoPage() {
     top10MinGames,
     placedBandMMRs,
     seriesLengthVoteEnabled,
-    reportCooldownMinutes,
+    reportCooldownEnabled,
   ] = await Promise.all([
     getConfigNumber("series_timeout_hours", 2),
     getConfigNumber("bonus_day_enabled", 1),
@@ -67,7 +68,7 @@ export default async function InfoPage() {
     getConfigNumber("top10_min_games", 8),
     getPlacedPlayerBandMMRs(),
     getConfigNumber("series_length_vote_enabled", 0),
-    getConfigNumber("report_cooldown_minutes", 15),
+    getConfigNumber("report_cooldown_enabled", 1),
   ]);
 
   // Single-value simplification (this session) of the old current-members min–max range: each
@@ -144,11 +145,15 @@ export default async function InfoPage() {
               After a pop, vote for <strong>Balanced</strong> teams or a <strong>Captains</strong> draft. Set
               a default with <strong>/vote-default</strong> so you don&apos;t have to vote every time.
             </li>
-            <li>
-              Once teams are set, there&apos;s a short <strong>{reportCooldownMinutes}-minute cooldown</strong>{" "}
-              before <strong>/report</strong> is accepted — long enough that a game could plausibly have
-              actually finished.
-            </li>
+            {reportCooldownEnabled === 1 && (
+              <li>
+                Once teams are set, there&apos;s a short cooldown before <strong>/report</strong> is
+                accepted — long enough that the series could plausibly have actually finished:{" "}
+                <strong>{REPORT_COOLDOWN_MINUTES_BY_LENGTH.bo3} minutes</strong> for Best of 3,{" "}
+                <strong>{REPORT_COOLDOWN_MINUTES_BY_LENGTH.bo5}</strong> for Best of 5, and{" "}
+                <strong>{REPORT_COOLDOWN_MINUTES_BY_LENGTH.bo7}</strong> for Best of 7.
+              </li>
+            )}
             <li>
               Didn&apos;t get reported? A match <em>auto-cancels</em> after {seriesTimeoutHours} hour
               {seriesTimeoutHours === 1 ? "" : "s"} with no MMR change. You can also vote it away early with{" "}

@@ -14,7 +14,7 @@ import { cleanupTestMatchRows } from "./testMatch";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { encodeMatchId } from "./matchId";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
-import { SERIES_LENGTH_LABELS } from "./teamFormation";
+import { SERIES_LENGTH_LABELS, REPORT_COOLDOWN_MINUTES_BY_LENGTH } from "./teamFormation";
 import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
 // Instant deletion of voice channels after report
@@ -85,9 +85,11 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
   // Report cooldown — see CLAUDE.md, "Reporting & disputes". Blocks a report right after teams
   // are formed, to prevent a false/premature report; teams_formed_at is stamped once, in
-  // teamFormation.ts's finalizeTeams, regardless of which path (balanced/captains) got there.
-  if (series.teams_formed_at) {
-    const cooldownMinutes = await getConfigNumber("report_cooldown_minutes", 15);
+  // teamFormation.ts's finalizeTeams, regardless of which path (balanced/captains) got there. The
+  // wait itself scales with series length (REPORT_COOLDOWN_MINUTES_BY_LENGTH) — a null
+  // series_length (series_length_vote_enabled off) falls back to the bo3 value.
+  if (series.teams_formed_at && (await getConfigNumber("report_cooldown_enabled", 1)) === 1) {
+    const cooldownMinutes = REPORT_COOLDOWN_MINUTES_BY_LENGTH[series.series_length ?? "bo3"];
     const elapsedMinutes = (Date.now() - new Date(series.teams_formed_at).getTime()) / 60000;
     if (elapsedMinutes < cooldownMinutes) {
       const remaining = Math.ceil(cooldownMinutes - elapsedMinutes);

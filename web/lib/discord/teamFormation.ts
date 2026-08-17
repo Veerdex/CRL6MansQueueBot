@@ -46,6 +46,13 @@ const SERIES_LENGTH_VOTE_THRESHOLD = 3;
 const SERIES_LENGTH_ORDER: SeriesLength[] = ["bo3", "bo5", "bo7"];
 export const SERIES_LENGTH_K_MULTIPLIERS: Record<SeriesLength, number> = { bo3: 0.6, bo5: 1.0, bo7: 1.4 };
 export const SERIES_LENGTH_LABELS: Record<SeriesLength, string> = { bo3: "Best of 3", bo5: "Best of 5", bo7: "Best of 7" };
+// /report's cooldown after teams are formed (see report.ts) — long enough that a series of this
+// length could plausibly have actually finished. Fixed per-length constants, not admin-
+// configurable, same precedent as SERIES_LENGTH_K_MULTIPLIERS above; only the whole feature's
+// on/off state is tunable, via the report_cooldown_enabled config key. A series formed while
+// series_length_vote_enabled is off never gets a series_length (stays null — see migration
+// 0039_series_length_vote.sql), so report.ts falls back to the bo3 value for those.
+export const REPORT_COOLDOWN_MINUTES_BY_LENGTH: Record<SeriesLength, number> = { bo3: 10, bo5: 15, bo7: 20 };
 
 // Picks whichever series length currently has the most votes; ties (including a 0-0-0 tie, i.e.
 // nobody voted at all) favor the shorter series, since SERIES_LENGTH_ORDER is walked bo3->bo5->bo7
