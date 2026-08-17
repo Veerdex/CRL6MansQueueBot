@@ -15,7 +15,9 @@ interface MMRDistributionPanelProps {
   mmrShift: number;
 }
 
-const BIN_COUNT = 12;
+const DEFAULT_DENSITY = 10;
+const MIN_DENSITY = 10;
+const MAX_DENSITY = 50;
 
 function applyTransform(mmr: number, scale: number, shift: number): number {
   return mmr * scale + shift;
@@ -43,6 +45,9 @@ export default function MMRDistributionPanel({
   const scaleMax = Math.max(5, mmrScale + 2);
   const shiftMin = Math.min(-500, mmrShift - 500);
   const shiftMax = Math.max(500, mmrShift + 500);
+  // Unlike scale/shift, this changes the actual bin boundaries/count below, not just the printed
+  // labels — a display density preference, not a preview of a server config value.
+  const [density, setDensity] = useState(DEFAULT_DENSITY);
 
   // Universal-only players sit at exactly MMR 0 forever (Universal never moves MMR) — including
   // them in the histogram would produce a fake spike at zero, so the charted population is
@@ -57,19 +62,19 @@ export default function MMRDistributionPanel({
   const { counts, binMin, binWidth, rawMin, rawMax, rawAvg, rawMedian } = useMemo(() => {
     const raw = rankPlayers.map((p) => p.mmr).sort((a, b) => a - b);
     if (raw.length === 0) {
-      return { counts: Array(BIN_COUNT).fill(0) as number[], binMin: 0, binWidth: 1, rawMin: 0, rawMax: 0, rawAvg: 0, rawMedian: 0 };
+      return { counts: Array(density).fill(0) as number[], binMin: 0, binWidth: 1, rawMin: 0, rawMax: 0, rawAvg: 0, rawMedian: 0 };
     }
     const min = raw[0];
     const max = raw[raw.length - 1];
-    const width = max > min ? (max - min) / BIN_COUNT : 1;
-    const bins = Array(BIN_COUNT).fill(0) as number[];
+    const width = max > min ? (max - min) / density : 1;
+    const bins = Array(density).fill(0) as number[];
     for (const mmr of raw) {
-      const idx = width > 0 ? Math.min(BIN_COUNT - 1, Math.floor((mmr - min) / width)) : 0;
+      const idx = width > 0 ? Math.min(density - 1, Math.floor((mmr - min) / width)) : 0;
       bins[idx] += 1;
     }
     const sum = raw.reduce((a, b) => a + b, 0);
     return { counts: bins, binMin: min, binWidth: width, rawMin: min, rawMax: max, rawAvg: sum / raw.length, rawMedian: median(raw) };
-  }, [rankPlayers]);
+  }, [rankPlayers, density]);
 
   // Only the labels (and the derived stats readouts below) depend on the sliders.
   const bars = useMemo(() => {
@@ -95,15 +100,35 @@ export default function MMRDistributionPanel({
     <div>
       <h2 className="mb-1 text-lg font-bold text-foreground">MMR Distribution</h2>
       <p className="mb-4 text-sm text-muted">
-        Rank Queue players only (Universal Queue never moves MMR). Bars are fixed — the sliders below only preview how the
-        displayed numbers would read under a different <code>mmr_scale</code>/<code>mmr_shift</code>; nothing is written.
+        Rank Queue players only (Universal Queue never moves MMR). The <code>mmr_scale</code>/<code>mmr_shift</code> sliders
+        below only preview how the displayed numbers would read under a different value; nothing is written. Density just
+        changes how finely the same players are grouped into bars.
       </p>
 
       {rankPlayers.length === 0 ? (
         <p className="mb-4 text-sm text-muted">No Rank Queue players yet.</p>
       ) : (
-        <BarChart bars={bars} />
+        <BarChart bars={bars} connected maxLabels={DEFAULT_DENSITY} />
       )}
+
+      <div className="mt-4">
+        <label className="block text-xs text-muted">
+          <div className="mb-1 flex items-center justify-between">
+            <span>density</span>
+            <span className="font-semibold text-foreground">{density} bars</span>
+          </div>
+          <input
+            type="range"
+            min={MIN_DENSITY}
+            max={MAX_DENSITY}
+            step={1}
+            value={density}
+            onChange={(e) => setDensity(Number(e.target.value))}
+            className="h-1.5 w-full cursor-pointer accent-accent"
+            aria-label="Histogram density (bar count)"
+          />
+        </label>
+      </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="block text-xs text-muted">
