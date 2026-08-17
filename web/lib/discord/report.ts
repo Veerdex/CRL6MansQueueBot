@@ -221,15 +221,16 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Locked in at pop time (see bonusDay.ts) — not re-evaluated against "now", which could
     // have drifted outside the bonus window by the time a match actually gets reported.
-    // series_length_k_multiplier is locked in at vote-resolution time instead (see
-    // teamFormation.ts) — defaults to 1 (no-op) when the series-length vote feature is off.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier * series.series_length_k_multiplier;
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
     const eloInputs = allSeriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
-    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier });
+    // series_length_k_multiplier is locked in at vote-resolution time (see teamFormation.ts) —
+    // defaults to 1 (no-op) when the series-length vote feature is off. Passed as
+    // seriesLengthMultiplier, not folded into effectiveKFactor above — see EloConfig's comment.
+    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
     const eloResultsById = new Map<string, EloResult>(eloResults.map((r) => [r.playerId, r]));
 
     // Win-streak MMR bonus (see CLAUDE.md, "MMR / Elo" — streak bonus). The settle claim above

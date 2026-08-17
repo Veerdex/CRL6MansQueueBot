@@ -36,6 +36,15 @@ export type EloConfig = {
   // omitted; its live default (1) lives in config.ts's KNOWN_CONFIG_DEFAULTS as
   // mmr_confidence_multiplier, matching kFactor/sScale's pattern.
   confidenceMultiplier?: number;
+  // Multiplies the fully-formed delta — after skew dampening and minDeltaFloor, not before —
+  // see CLAUDE.md, "Team formation" for BO3/5/7's 0.6x/1.0x/1.4x. Deliberately NOT folded into
+  // kFactor like bonus_day_multiplier: kFactor scaling only grows the "earned" score-expected
+  // term, which minDeltaFloor's flat add-on can dwarf on a near-certain result (a heavy BO7
+  // favorite winning as expected landed only a couple points ahead of the same BO3 win, since the
+  // scaled term was tiny and the flat floor dominated both). Applying the length multiplier last
+  // instead scales the whole delta, floor included, so BO7 stays proportionally bigger than BO3
+  // regardless of how lopsided the win was. Optional, defaulting to a no-op 1x when omitted.
+  seriesLengthMultiplier?: number;
 };
 
 export type EloResult = {
@@ -107,6 +116,9 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
     if (minDeltaFloor > 0 && delta !== 0) {
       delta += Math.sign(delta) * minDeltaFloor;
     }
+
+    // See EloConfig.seriesLengthMultiplier: applied last, over the whole delta (floor included).
+    delta *= config.seriesLengthMultiplier ?? 1;
 
     return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional, expected: expectedByTeam[p.team] };
   });

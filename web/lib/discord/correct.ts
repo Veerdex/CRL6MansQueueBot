@@ -164,13 +164,15 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
     ]);
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Same locked-in-at-pop/vote-resolution multipliers the original report used.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier * series.series_length_k_multiplier;
+    // series_length_k_multiplier is passed as seriesLengthMultiplier below, not folded into
+    // effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
     const eloInputs = seriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
-    const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier });
+    const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
     const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
 
     // getPriorRankWinStreak/getPriorRankLossStreak always exclude this series by id (see

@@ -421,15 +421,16 @@ async function processCorrectReport(
     const streakBonusEnabled = streakBonusEnabledRaw === 1;
     // Same locked-in-at-pop/vote-resolution multipliers the original report used — a correction
     // reuses them rather than re-evaluating "now" so it stays consistent with whatever the
-    // original settle applied.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier * series.series_length_k_multiplier;
+    // original settle applied. series_length_k_multiplier is passed as seriesLengthMultiplier
+    // below, not folded into effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
+    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
     const eloInputs = seriesPlayers.map((sp) => {
       const p = playersById.get(sp.player_id)!;
       return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
     });
 
-    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier });
+    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
     const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
     // Same win-streak MMR bonus report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"

@@ -245,6 +245,48 @@ describe("computeEloDeltas — min delta floor", () => {
   });
 });
 
+describe("computeEloDeltas — series length multiplier", () => {
+  it("with seriesLengthMultiplier=1 (default/omitted), behaves identically to plain baseline Elo", () => {
+    const players = [
+      player("a1", 0, "A"),
+      player("a2", 0, "A"),
+      player("a3", 0, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const withOne = computeEloDeltas(players, "A", { ...config, seriesLengthMultiplier: 1 });
+    const omitted = computeEloDeltas(players, "A", config);
+    for (let i = 0; i < withOne.length; i++) {
+      expect(withOne[i].delta).toBeCloseTo(omitted[i].delta, 10);
+    }
+  });
+
+  it("scales the fully-formed delta, floor included — not just the K-scaled earned component", () => {
+    const players = [
+      player("a1", 900, "A"),
+      player("a2", 900, "A"),
+      player("a3", 900, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const floorConfig: EloConfig = { ...config, minDeltaFloor: 2 };
+    const plain = computeEloDeltas(players, "A", floorConfig);
+    const bo3 = computeEloDeltas(players, "A", { ...floorConfig, seriesLengthMultiplier: 0.6 });
+    const bo7 = computeEloDeltas(players, "A", { ...floorConfig, seriesLengthMultiplier: 1.4 });
+    for (let i = 0; i < plain.length; i++) {
+      expect(bo3[i].delta).toBeCloseTo(plain[i].delta * 0.6, 10);
+      expect(bo7[i].delta).toBeCloseTo(plain[i].delta * 1.4, 10);
+    }
+    // BO7's win is more than double BO3's, even though the heavy favorite's plain "earned"
+    // component (before the flat floor) is tiny — proving the floor itself got scaled too.
+    const bo3Winner = bo3.find((r) => r.playerId === "a1")!;
+    const bo7Winner = bo7.find((r) => r.playerId === "a1")!;
+    expect(bo7Winner.delta).toBeGreaterThan(bo3Winner.delta * 2);
+  });
+});
+
 describe("computeStreakBonus", () => {
   it("is 0 below a 3-game prior streak, at any expected value", () => {
     expect(computeStreakBonus(0, 0.5)).toBe(0);
