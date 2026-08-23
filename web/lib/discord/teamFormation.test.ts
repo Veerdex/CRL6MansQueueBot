@@ -21,6 +21,7 @@ function player(id: string, mmr: number, isPlaced = false): PlayerRow {
     vote_default: null,
     avatar_url: null,
     created_at: "2026-01-01T00:00:00Z",
+    role_sync_pending: false,
   };
 }
 

@@ -25,6 +25,11 @@ export type PlayerRow = {
   vote_default: VoteChoice | null;
   avatar_url: string | null;
   created_at: string;
+  // See migration 0046_role_sync_pending.sql and bands.ts's reconcileMemberRole: true when a
+  // Discord role add/remove failed (rate limit, etc.) after band/is_prism already committed here,
+  // so the next recomputeBands() run retries the Discord sync even though this player's own
+  // band/is_prism didn't change again in the meantime.
+  role_sync_pending: boolean;
 };
 
 export type SeasonRow = {

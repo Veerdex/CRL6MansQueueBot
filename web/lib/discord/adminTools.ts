@@ -755,10 +755,10 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
     actorId,
     "recompute_bands",
     undefined,
-    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} prismGranted=${summary.prismGranted} prismRevoked=${summary.prismRevoked}`,
+    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} prismGranted=${summary.prismGranted} prismRevoked=${summary.prismRevoked} roleSyncPending=${summary.roleSyncPending}`,
   );
   await editOriginalResponse(interaction.token, {
-    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.`,
+    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.${summary.roleSyncPending > 0 ? ` ⚠️ ${summary.roleSyncPending} Discord role sync${summary.roleSyncPending === 1 ? "" : "s"} still pending (will retry next recompute).` : ""}`,
   });
 }
 

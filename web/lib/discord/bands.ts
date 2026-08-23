@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendDirectMessage, editOriginalResponse, getGuildId, addMemberRole, removeMemberRole, getRankEmoji, BRAND_COLOR } from "./rest";
+import { sendDirectMessage, editOriginalResponse, getGuildId, getMemberRoles, addMemberRole, removeMemberRole, getRankEmoji, BRAND_COLOR } from "./rest";
 import { getConfigNumber, getConfigValue } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { interactionUserId, type DiscordInteraction } from "./types";
@@ -19,8 +19,50 @@ type RecomputeSummary = {
   unchanged: number;
   prismGranted: number;
   prismRevoked: number;
+  // Count of players left with role_sync_pending=true after this run — see
+  // reconcileMemberRole and migration 0046_role_sync_pending.sql. Non-zero means at least one
+  // Discord role add/remove failed (rate limit or otherwise) and will retry on the next
+  // recompute; surfaced so /admin recompute-bands can flag it instead of it going unnoticed.
+  roleSyncPending: number;
 };
 type ChangeAction = "placed" | "promoted" | "demoted";
+
+// See migration 0046_role_sync_pending.sql. Reconciles a player's actual live Discord roles
+// against the single role (a band, Prism, or Unranked) they should hold, instead of trusting our
+// own band/is_prism columns to infer which role they currently wear and issuing a blind
+// remove-old/add-new pair. Two production bugs this replaces:
+//   1. A Prism holder's `band` column still reads their underlying band (Prism only overlays a
+//      role swap on top of it, never touching the column) — so "remove roleIdByBand.get(oldBand)"
+//      targeted a role the player never actually had equipped, and the real Prism role was never
+//      touched by a normal band-change path.
+//   2. Any transient Discord failure (rate limit, etc.) partway through a remove/add pair left
+//      Discord holding some stale combination of roles with no way to detect or retry it, since
+//      the DB's band/is_prism value had already committed to the new "target" state.
+// Fetching live roles and diffing against the tracked role-ID set (every configured band/Unranked/
+// Prism role) fixes both at once and is naturally idempotent — safe to re-run on a fresh retry
+// pass no matter what partial state a prior failed attempt left behind. Returns false (never
+// throws) so callers can set role_sync_pending for a later retry instead of wrongly assuming
+// success.
+async function reconcileMemberRole(
+  guildId: string,
+  discordId: string,
+  desiredRoleId: string | undefined,
+  roleIdByBand: Map<string, string>,
+): Promise<boolean> {
+  try {
+    const trackedRoleIds = new Set(roleIdByBand.values());
+    const currentRoleIds = await getMemberRoles(guildId, discordId);
+    const toRemove = currentRoleIds.filter((r) => trackedRoleIds.has(r) && r !== desiredRoleId);
+    await Promise.all(toRemove.map((roleId) => removeMemberRole(guildId, discordId, roleId)));
+    if (desiredRoleId && !currentRoleIds.includes(desiredRoleId)) {
+      await addMemberRole(guildId, discordId, desiredRoleId);
+    }
+    return true;
+  } catch (err) {
+    console.error(`Band recompute: failed to reconcile Discord role for ${discordId}`, err);
+    return false;
+  }
+}
 
 export type BandCutoffConfig = {
   graceGames: number;
@@ -252,7 +294,7 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
   const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisMmr, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
 
-  const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0 };
+  const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0, roleSyncPending: 0 };
 
   // Test-data players (dev panel) are synthetic and carry fake discord_ids that aren't real
   // guild members — role grant/revoke would just 404, and mixing them into the percentile pool
@@ -313,6 +355,10 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     }
   }
 
+  // Tracks every player whose band/is_prism actually changed this run, across both loops below —
+  // the final retry pass skips them since they already got a fresh reconcile attempt just now.
+  const handledIds = new Set<string>();
+
   for (const player of pool) {
     const pctile = percentileById.get(player.id)!;
     const change = computeBandChange(
@@ -332,8 +378,6 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 
     const { action, targetBand } = change;
 
-    const oldBand = action === "placed" ? null : (player.band as Band);
-
     // Peak MMR isn't tracked while unranked (see report.ts/adminTools.ts's write sites, which
     // skip the bump for an unplaced player) — so the moment a player actually places, seed it
     // from their current MMR rather than leaving it at whatever it was before (typically 0),
@@ -344,31 +388,24 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
       .from("crl6mansqueuebot_players")
       .update({ band: targetBand, is_placed: true, band_games_played: 0, ...placementPeakUpdate })
       .eq("id", player.id);
+    handledIds.add(player.id);
 
     if (guildId) {
-      try {
-        if (oldBand) {
-          const oldRoleId = roleIdByBand.get(oldBand);
-          if (oldRoleId) await removeMemberRole(guildId, player.discord_id, oldRoleId);
-        }
-        if (action === "placed") {
-          // "Unranked" was granted the moment this player first ever queued (see
-          // grantUnrankedRoleToNewPlayer below, called from queue.ts) — swap it out for their
-          // real computed band now that they've actually placed, same as any other band change.
-          const unrankedRoleId = roleIdByBand.get("Unranked");
-          if (unrankedRoleId) await removeMemberRole(guildId, player.discord_id, unrankedRoleId);
-        }
-        const newRoleId = roleIdByBand.get(targetBand);
-        if (newRoleId) await addMemberRole(guildId, player.discord_id, newRoleId);
-      } catch (err) {
-        console.error(`Band recompute: failed to sync Discord role for ${player.discord_id}`, err);
-      }
+      // Desired role here is always the plain band role, never Prism, even for a player who
+      // currently holds is_prism — a real band change means they've just left (or never held)
+      // Sapphire, Prism's only source band, so the Prism pass right below will independently
+      // compute willBePrism=false for them off this same mutated pool and reconcile them off
+      // Prism on its own pass. reconcileMemberRole strips any other tracked role they hold
+      // (their old band, Unranked, or a stale Prism role) as part of the same call, so the old
+      // separate "remove Unranked on placement" branch is subsumed by this too.
+      const desiredRoleId = roleIdByBand.get(targetBand);
+      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, roleIdByBand);
+      await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: !roleSynced }).eq("id", player.id);
+      player.role_sync_pending = !roleSynced;
     }
 
-
-    // Mutate the local pool object so the Prism pass below (and the `oldBand` lookup on a later
-    // iteration, if any) sees this player's just-written band/placement rather than the
-    // pre-recompute snapshot fetched at the top of this function.
+    // Mutate the local pool object so the Prism pass below sees this player's just-written
+    // band/placement rather than the pre-recompute snapshot fetched at the top of this function.
     player.band = targetBand;
     player.is_placed = true;
     if (action === "placed") player.peak_mmr = placementPeakUpdate.peak_mmr!;
@@ -447,28 +484,49 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
   for (const player of pool) {
     const willBePrism = newPrismIds.has(player.id);
     if (player.is_prism === willBePrism) continue;
+    handledIds.add(player.id);
 
     await supabase.from("crl6mansqueuebot_players").update({ is_prism: willBePrism }).eq("id", player.id);
+    player.is_prism = willBePrism;
 
     if (guildId) {
-      try {
-        const bandRoleId = player.band ? roleIdByBand.get(player.band as Band) : undefined;
-        const prismRoleId = roleIdByBand.get("Prism");
-        if (willBePrism) {
-          if (bandRoleId) await removeMemberRole(guildId, player.discord_id, bandRoleId);
-          if (prismRoleId) await addMemberRole(guildId, player.discord_id, prismRoleId);
-        } else {
-          if (prismRoleId) await removeMemberRole(guildId, player.discord_id, prismRoleId);
-          if (bandRoleId) await addMemberRole(guildId, player.discord_id, bandRoleId);
-        }
-      } catch (err) {
-        console.error(`Band recompute: failed to sync Prism role for ${player.discord_id}`, err);
-      }
+      const desiredRoleId = willBePrism
+        ? roleIdByBand.get("Prism")
+        : player.band
+          ? roleIdByBand.get(player.band as Band)
+          : undefined;
+      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, roleIdByBand);
+      await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: !roleSynced }).eq("id", player.id);
+      player.role_sync_pending = !roleSynced;
     }
 
     if (willBePrism) summary.prismGranted += 1;
     else summary.prismRevoked += 1;
   }
+
+  // Retry pass: catches anyone left with role_sync_pending=true from a PRIOR run (a Discord sync
+  // that failed — rate limit or otherwise) whose band/is_prism didn't change again *this* run, so
+  // neither loop above touched them — without this, a stuck pending flag would only ever clear
+  // itself if that player's band or Prism status happened to change again later. Their DB state
+  // already reflects the correct target; only Discord itself is stale, so this just re-runs the
+  // same reconcile against their current committed state.
+  if (guildId) {
+    for (const player of pool) {
+      if (!player.role_sync_pending || handledIds.has(player.id)) continue;
+      const desiredRoleId = player.is_prism
+        ? roleIdByBand.get("Prism")
+        : player.band
+          ? roleIdByBand.get(player.band as Band)
+          : undefined;
+      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, roleIdByBand);
+      if (roleSynced) {
+        await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: false }).eq("id", player.id);
+        player.role_sync_pending = false;
+      }
+    }
+  }
+
+  summary.roleSyncPending = pool.filter((p) => p.role_sync_pending).length;
 
   return summary;
 }

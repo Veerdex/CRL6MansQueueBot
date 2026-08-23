@@ -113,6 +113,15 @@ export async function getGuildId(): Promise<string> {
   return cachedGuildId;
 }
 
+// See bands.ts's reconcileMemberRole: fetches what the member actually holds right now, rather
+// than trusting our own band/is_prism columns to say which role they're wearing (a Prism holder's
+// `band` column still reads their underlying band, and a previously-failed add/remove leaves the
+// DB and Discord disagreeing) — the fix has to check reality, not just infer it.
+export async function getMemberRoles(guildId: string, userId: string): Promise<string[]> {
+  const member = (await discordFetch(`/guilds/${guildId}/members/${userId}`)) as { roles: string[] };
+  return member.roles;
+}
+
 export async function addMemberRole(guildId: string, userId: string, roleId: string) {
   await discordFetch(`/guilds/${guildId}/members/${userId}/roles/${roleId}`, { method: "PUT" });
 }
