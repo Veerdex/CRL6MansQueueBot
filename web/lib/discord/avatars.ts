@@ -1,6 +1,7 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, getGuildId } from "./rest";
+import { stripClanTag } from "./types";
 
 // Same pattern as seasonClose.ts's fetchAllPages/chunk — duplicated rather than imported since
 // it's a tiny, generic helper and seasonClose.ts keeps it module-private (see CLAUDE.md's note
@@ -28,9 +29,23 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 }
 
 type DiscordGuildMember = {
-  user: { id: string; avatar: string | null };
+  user: { id: string; avatar: string | null; username: string; global_name: string | null };
   avatar: string | null;
+  nick: string | null;
 };
+
+// Same nickname-first, tag-stripped preference as interactionDisplayName (types.ts) — kept in
+// sync deliberately, since this is the bulk/lazy path for players who haven't run a command
+// (and so haven't hit getOrCreatePlayer's live update) since setting or changing their nickname.
+function resolveDisplayName(member: DiscordGuildMember): string {
+  const candidates = [member.nick, member.user.global_name, member.user.username];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const stripped = stripClanTag(candidate);
+    if (stripped) return stripped;
+  }
+  return "Unknown";
+}
 
 // Builds a ready-to-use CDN URL so the website never needs Discord-specific URL logic: prefers
 // the member's per-server avatar, falls back to their account-wide avatar, then Discord's
@@ -66,37 +81,40 @@ async function listAllGuildMembers(guildId: string): Promise<DiscordGuildMember[
   }
 }
 
-export type AvatarRefreshSummary = { updated: number; skipped: number };
+export type AvatarRefreshSummary = { updated: number; skipped: number; renamed: number };
 
 // Daily job (see CLAUDE.md, "Match time stats" precedent for this project's cron pattern) —
-// re-fetches every real player's current server avatar and writes the CDN URL onto their row, so
-// a player who changes their pfp shows the new one on the website within a day without any
-// per-request Discord API calls. Test-data players are excluded — their discord_ids aren't real
-// guild members, same treatment as recomputeBands().
+// re-fetches every real player's current server avatar and nickname and writes them onto their
+// row, so a player who changes their pfp or nickname shows the new one on the website within a
+// day without any per-request Discord API calls (display_name otherwise only updates lazily, the
+// next time that player runs a command — see queue.ts's getOrCreatePlayer). Test-data players are
+// excluded — their discord_ids aren't real guild members, same treatment as recomputeBands().
 export async function refreshPlayerAvatars(): Promise<AvatarRefreshSummary> {
   const supabase = createAdminClient();
   const guildId = await getGuildId();
 
   const members = await listAllGuildMembers(guildId);
-  const avatarByDiscordId = new Map(members.map((m) => [m.user.id, buildAvatarUrl(guildId, m.user.id, m)]));
+  const memberByDiscordId = new Map(members.map((m) => [m.user.id, m]));
 
   const players = await fetchAllPages((from, to) =>
     supabase
       .from("crl6mansqueuebot_players")
-      .select("id, discord_id")
+      .select("id, discord_id, display_name")
       .eq("is_test_data", false)
       .range(from, to)
       .then(({ data }) => data ?? []),
   );
 
-  const summary: AvatarRefreshSummary = { updated: 0, skipped: 0 };
+  const summary: AvatarRefreshSummary = { updated: 0, skipped: 0, renamed: 0 };
   const updates = players.flatMap((p) => {
-    const avatarUrl = avatarByDiscordId.get(p.discord_id);
-    if (!avatarUrl) {
+    const member = memberByDiscordId.get(p.discord_id);
+    if (!member) {
       summary.skipped += 1;
       return [];
     }
-    return [{ id: p.id, avatarUrl }];
+    const avatarUrl = buildAvatarUrl(guildId, p.discord_id, member);
+    const displayName = resolveDisplayName(member);
+    return [{ id: p.id, avatarUrl, displayName, renamed: displayName !== p.display_name }];
   });
 
   // Per-row updates (not a bulk upsert) — same precedent as seasonClose.ts's MMR decay write,
@@ -105,13 +123,17 @@ export async function refreshPlayerAvatars(): Promise<AvatarRefreshSummary> {
   // at a reasonable fan-out rather than firing every request at once.
   for (const batch of chunk(updates, ID_CHUNK)) {
     await Promise.all(
-      batch.map(async ({ id, avatarUrl }) => {
-        const { error } = await supabase.from("crl6mansqueuebot_players").update({ avatar_url: avatarUrl }).eq("id", id);
+      batch.map(async ({ id, avatarUrl, displayName, renamed }) => {
+        const { error } = await supabase
+          .from("crl6mansqueuebot_players")
+          .update({ avatar_url: avatarUrl, display_name: displayName })
+          .eq("id", id);
         if (error) {
-          console.error(`Failed to write avatar for player ${id}`, error);
+          console.error(`Failed to refresh avatar/name for player ${id}`, error);
           return;
         }
         summary.updated += 1;
+        if (renamed) summary.renamed += 1;
       }),
     );
   }

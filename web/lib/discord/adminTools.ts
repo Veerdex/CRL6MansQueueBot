@@ -764,16 +764,23 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
 
 // ---------------------------------------------------------------------------
 // /admin refresh-avatars — manual trigger for the same refreshPlayerAvatars() the daily
-// pg_cron job calls (avatars.ts). Mainly useful right after the avatar_url column/cron
-// migrations are first applied, so avatars don't sit blank for up to a day waiting on the
-// next scheduled run.
+// pg_cron job calls (avatars.ts). Also re-syncs display_name from each player's current server
+// nickname (falling back to global_name/username, tag-stripped — see types.ts's
+// interactionDisplayName/stripClanTag) for anyone who hasn't run a command since renaming.
+// Mainly useful right after the avatar_url column/cron migrations are first applied, so avatars
+// don't sit blank for up to a day waiting on the next scheduled run.
 // ---------------------------------------------------------------------------
 
 async function processRefreshAvatars(interaction: DiscordInteraction, actorId: string) {
   const summary = await refreshPlayerAvatars();
-  await logAdminAction(actorId, "refresh_avatars", undefined, `updated=${summary.updated} skipped=${summary.skipped}`);
+  await logAdminAction(
+    actorId,
+    "refresh_avatars",
+    undefined,
+    `updated=${summary.updated} skipped=${summary.skipped} renamed=${summary.renamed}`,
+  );
   await editOriginalResponse(interaction.token, {
-    content: `Refreshed avatars — updated ${summary.updated}, skipped ${summary.skipped} (no guild member match).`,
+    content: `Refreshed avatars — updated ${summary.updated}, skipped ${summary.skipped} (no guild member match), renamed ${summary.renamed}.`,
   });
 }
 

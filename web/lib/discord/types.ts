@@ -10,6 +10,9 @@ export type DiscordUser = {
 export type DiscordMember = {
   user: DiscordUser;
   roles: string[];
+  // Per-server nickname — null when the member hasn't set one, in which case
+  // interactionDisplayName below falls back to their account-wide global_name/username.
+  nick: string | null;
 };
 
 // A command option is either a leaf param (`value` set) or a subcommand/subcommand-group node
@@ -52,9 +55,28 @@ export function interactionUserId(interaction: DiscordInteraction): string | nul
   return interaction.member?.user.id ?? interaction.user?.id ?? null;
 }
 
+// Strips a leading clan/team tag like "[BSU] PlayerName" -> "PlayerName" — common on this
+// server's nicknames. Only strips a single bracket group anchored at the very start (plus any
+// whitespace right after it), so brackets appearing later in a name are left alone. Exported for
+// avatars.ts's bulk nickname sync, which needs the exact same stripping applied to guild member
+// list results as interactionDisplayName applies to live interactions.
+export function stripClanTag(name: string): string {
+  return name.replace(/^\[[^\]]*\]\s*/, "").trim();
+}
+
+// Prefers the member's per-server nickname over their account-wide global_name/username — a
+// nickname is what this server actually knows a player by, and is also where clan tags like
+// "[BSU]" get set, hence the stripClanTag pass on every candidate. Falls through to the next
+// candidate if a tag-stripped value comes back empty (e.g. a nickname that was only a tag).
 export function interactionDisplayName(interaction: DiscordInteraction): string {
   const user = interaction.member?.user ?? interaction.user;
-  return user?.global_name ?? user?.username ?? "Unknown";
+  const candidates = [interaction.member?.nick, user?.global_name, user?.username];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const stripped = stripClanTag(candidate);
+    if (stripped) return stripped;
+  }
+  return "Unknown";
 }
 
 // Recursively finds a submitted modal field's value by custom_id — modal components nest one
