@@ -52,6 +52,23 @@
   }
 }
 
+/* Two red pulses (peaks at 25%/75%, back to normal at 50%/100%) for an invalid season-input
+   operation — arrow past the min/max season, or a typed value out of range. */
+@keyframes input-invalid-flash {
+  0%, 50%, 100% {
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  25%, 75% {
+    border-color: #ff4d4d;
+    box-shadow: 0 0 0 3px color-mix(in srgb, #ff4d4d 30%, transparent);
+  }
+}
+
+.field-invalid-flash {
+  animation: input-invalid-flash 0.6s ease-in-out;
+}
+
 html {
   color-scheme: dark;
 }
@@ -249,6 +266,13 @@ body::before {
   box-shadow: inset 3px 0 0 var(--gold);
 }
 
+/* Dim gold wash for a top-5-by-rank row (Top Players and Main) — independent of, and often
+   layered under, the live Prism holder's .top-cut achievement stripe above. No border accent of
+   its own so it doesn't read as the same "achievement" signal as Prism. */
+.gold-row {
+  background: color-mix(in srgb, var(--gold) 6%, transparent);
+}
+
 .animate-in {
   animation: fade-in 0.5s ease-out both;
 }
@@ -272,7 +296,8 @@ body::before {
   .animate-in,
   .animate-in-delay-1,
   .animate-in-delay-2,
-  .highlight-pulse {
+  .highlight-pulse,
+  .field-invalid-flash {
     animation: none;
   }
 

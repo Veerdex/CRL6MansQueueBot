@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import LeaderboardTable, { type MainBoardRow } from "./LeaderboardTable";
 import StatsBoard, { type StatsPlayer } from "./StatsBoard";
 import PlayerAvatar from "./PlayerAvatar";
@@ -9,7 +9,27 @@ import { getRankIconPath, getRankLabel, type DisplayBand } from "@/lib/leaderboa
 import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
-import type { SeasonHistoryRow } from "@/lib/supabase/types";
+import type { SeasonHistoryRow, SeasonRow } from "@/lib/supabase/types";
+
+// First N ranked rows (in caller-supplied order) that also meet the min-games gate get the dim
+// gold "topFive" row background — independent of, and unrelated to, prism_top_n/is_prism (the
+// live single Prism-holder achievement). Applies the same everywhere it's used: Top Players
+// (current season and any past season) and Main.
+const TOP_FIVE_COUNT = 5;
+
+// Marks the first TOP_FIVE_COUNT items (in order) that satisfy `isEligible`, skipping (not
+// renumbering) ineligible ones — so a player short of the games threshold doesn't let a 6th-place
+// player inherit the gold background. Written as a pure reduce (no cross-iteration variable
+// reassignment) since the render-time immutability lint rejects a plain mutable running counter.
+function markTopFive<T>(items: T[], isEligible: (item: T) => boolean): boolean[] {
+  return items.reduce<{ flags: boolean[]; remaining: number }>(
+    (acc, item) => {
+      const eligible = acc.remaining > 0 && isEligible(item);
+      return { flags: [...acc.flags, eligible], remaining: eligible ? acc.remaining - 1 : acc.remaining };
+    },
+    { flags: [], remaining: TOP_FIVE_COUNT },
+  ).flags;
+}
 
 // Hex, not rgb() — these get a hex alpha suffix appended below (e.g. `${color}2e`), which only
 // forms a valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid
@@ -48,12 +68,12 @@ type ViewMode = "top-players" | "main" | "all-time";
 
 interface UnifiedLeaderboardProps {
   players: PlayerWithGames[];
-  activeSeason: { id: string; season_number: number } | null;
-  previousSeason: { id: string; season_number: number } | null;
-  previousSeasonHistory: Map<string, SeasonHistoryRow>;
+  seasons: SeasonRow[];
+  seasonHistory: SeasonHistoryRow[];
   mmrScale: number;
   mmrShift: number;
   prismTopN: number;
+  top10MinGames: number;
 }
 
 function applyMMRTransform(mmr: number, scale: number, shift: number): number {
@@ -74,58 +94,164 @@ function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number 
 
 export default function UnifiedLeaderboard({
   players,
-  activeSeason,
-  previousSeason,
-  previousSeasonHistory,
+  seasons,
+  seasonHistory,
   mmrScale,
   mmrShift,
   prismTopN,
+  top10MinGames,
 }: UnifiedLeaderboardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("main");
 
   const eligiblePlayers = players.filter(({ player }) => player.total_games_played >= 1);
+  const playersById = useMemo(() => new Map(players.map((p) => [p.player.id, p.player])), [players]);
+
+  const sortedSeasons = useMemo(
+    () => [...seasons].sort((a, b) => a.season_number - b.season_number),
+    [seasons],
+  );
+  const minSeasonNumber = sortedSeasons[0]?.season_number ?? 1;
+  const maxSeasonNumber = sortedSeasons[sortedSeasons.length - 1]?.season_number ?? 1;
+  const activeSeasonNumber = seasons.find((s) => s.is_active)?.season_number ?? maxSeasonNumber;
+  const activeSeasonId = seasons.find((s) => s.is_active)?.id ?? null;
+
+  // Top Players season browser: number input + arrows, defaulting to the current season.
+  const [selectedSeasonNumber, setSelectedSeasonNumber] = useState(activeSeasonNumber);
+  const [seasonInputDraft, setSeasonInputDraft] = useState(String(activeSeasonNumber));
+  const seasonInputRef = useRef<HTMLInputElement>(null);
+
+  const selectedSeason = sortedSeasons.find((s) => s.season_number === selectedSeasonNumber) ?? null;
+  // No seasons at all (shouldn't happen in practice — a season is always active) falls back to
+  // the live board, same as before this feature existed.
+  const isCurrentSeason = selectedSeason?.is_active ?? true;
+
+  function flashInvalidSeasonInput() {
+    const el = seasonInputRef.current;
+    if (!el) return;
+    // Remove-then-reflow-then-add so a rapid repeat press restarts the animation instead of
+    // being a no-op (the browser otherwise treats re-adding an already-present class as nothing).
+    el.classList.remove("field-invalid-flash");
+    void el.offsetWidth;
+    el.classList.add("field-invalid-flash");
+  }
+
+  function goToSeason(seasonNumber: number) {
+    setSelectedSeasonNumber(seasonNumber);
+    setSeasonInputDraft(String(seasonNumber));
+  }
+
+  function handlePrevSeason() {
+    playTap();
+    if (selectedSeasonNumber <= minSeasonNumber) {
+      flashInvalidSeasonInput();
+      return;
+    }
+    goToSeason(selectedSeasonNumber - 1);
+  }
+
+  function handleNextSeason() {
+    playTap();
+    if (selectedSeasonNumber >= maxSeasonNumber) {
+      flashInvalidSeasonInput();
+      return;
+    }
+    goToSeason(selectedSeasonNumber + 1);
+  }
+
+  function commitSeasonInput(raw: string) {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) {
+      flashInvalidSeasonInput();
+      setSeasonInputDraft(String(selectedSeasonNumber));
+      return;
+    }
+    if (parsed < minSeasonNumber || parsed > maxSeasonNumber) {
+      flashInvalidSeasonInput();
+    }
+    goToSeason(Math.min(maxSeasonNumber, Math.max(minSeasonNumber, parsed)));
+  }
 
   // Top Players view: simplified list — unranked players are excluded, not just unbanded on
   // the Main board, since this view is specifically a ranking by band/MMR.
   const topPlayersRows = useMemo(() => {
-    return eligiblePlayers
+    const sorted = eligiblePlayers
       .filter(({ player }) => player.is_placed)
       .slice()
       .sort(compareLeaderboardRank)
-      .slice(0, 20)
-      .map((p, idx) => ({
-        position: idx + 1,
-        displayName: p.player.display_name,
-        avatarUrl: p.player.avatar_url,
-        band: p.player.is_placed ? p.player.band : null,
-        isPrism: p.player.is_prism,
-        mmr: p.player.mmr,
-      }));
-  }, [eligiblePlayers]);
+      .slice(0, 20);
+    const topFiveFlags = markTopFive(
+      sorted,
+      (p) => activeSeasonId !== null && filterGames(p.games, { seasonId: activeSeasonId }).length >= top10MinGames,
+    );
+    return sorted.map((p, idx) => ({
+      position: idx + 1,
+      displayName: p.player.display_name,
+      avatarUrl: p.player.avatar_url,
+      band: p.player.is_placed ? p.player.band : null,
+      isPrism: p.player.is_prism,
+      mmr: p.player.mmr,
+      topFive: topFiveFlags[idx],
+    }));
+  }, [eligiblePlayers, activeSeasonId, top10MinGames]);
+
+  // Past-season standings come from the archived season_history rows, ordered by the rank
+  // already computed at season-close time (see seasonClose.ts) rather than recomputed here.
+  // Band/avatar/display name follow the same precedent as Hall of Fame: since band is a live-only
+  // concept never archived per season, they're sourced from the player's current live row. There's
+  // no live Prism concept for a past season, so isPrism is always false here — only the topFive
+  // dim-gold background applies to historical standings.
+  const historicalTopPlayersRows = useMemo(() => {
+    if (!selectedSeason) return [];
+    const sorted = seasonHistory
+      .filter((h) => h.season_id === selectedSeason.id)
+      .sort((a, b) => a.season_rank - b.season_rank)
+      .slice(0, 20);
+    const topFiveFlags = markTopFive(sorted, (h) => h.season_games_played >= top10MinGames);
+    return sorted
+      .map((h, idx) => {
+        const player = playersById.get(h.player_id);
+        if (!player) return null;
+        return {
+          position: idx + 1,
+          displayName: player.display_name,
+          avatarUrl: player.avatar_url,
+          band: player.band,
+          isPrism: false,
+          mmr: h.mmr_at_close,
+          topFive: topFiveFlags[idx],
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+  }, [seasonHistory, selectedSeason, playersById, top10MinGames]);
+
+  const displayedTopPlayersRows = isCurrentSeason ? topPlayersRows : historicalTopPlayersRows;
 
   // Main view: current leaderboard
   const mainBoardRows = useMemo(() => {
-    const rows: MainBoardRow[] = eligiblePlayers
-      .slice()
-      .sort(compareLeaderboardRank)
-      .map(({ player, games }) => {
-        const rankStats = computeStats(filterGames(games, {}));
-        return {
-          playerId: player.id,
-          displayName: player.display_name,
-          avatarUrl: player.avatar_url,
-          band: player.is_placed ? player.band : null,
-          isPrism: player.is_prism,
-          mmr: player.mmr,
-          wins: rankStats.wins,
-          losses: rankStats.losses,
-          winRate: rankStats.winRate,
-          onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
-          coldStreak: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
-        };
-      });
+    const sorted = eligiblePlayers.slice().sort(compareLeaderboardRank);
+    const topFiveFlags = markTopFive(
+      sorted,
+      ({ games }) => activeSeasonId !== null && filterGames(games, { seasonId: activeSeasonId }).length >= top10MinGames,
+    );
+    const rows: MainBoardRow[] = sorted.map(({ player, games }, idx) => {
+      const rankStats = computeStats(filterGames(games, {}));
+      return {
+        playerId: player.id,
+        displayName: player.display_name,
+        avatarUrl: player.avatar_url,
+        band: player.is_placed ? player.band : null,
+        isPrism: player.is_prism,
+        mmr: player.mmr,
+        wins: rankStats.wins,
+        losses: rankStats.losses,
+        winRate: rankStats.winRate,
+        onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
+        coldStreak: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
+        topFive: topFiveFlags[idx],
+      };
+    });
     return rows;
-  }, [eligiblePlayers]);
+  }, [eligiblePlayers, activeSeasonId, top10MinGames]);
 
   // All-Time Stats view
   const statsPlayers = useMemo(() => {
@@ -170,14 +296,48 @@ export default function UnifiedLeaderboard({
       <div className="panel animate-in-delay-1 p-4 sm:p-6">
         {viewMode === "top-players" && (
           <div>
+            <div className="mb-4 flex items-center justify-center gap-2">
+              <span className="text-sm font-medium text-muted">Season</span>
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={handlePrevSeason}
+                aria-label="Previous season"
+              >
+                ‹
+              </button>
+              <input
+                ref={seasonInputRef}
+                type="number"
+                inputMode="numeric"
+                className="field w-16 py-1.5 text-center text-sm font-semibold"
+                value={seasonInputDraft}
+                onChange={(e) => setSeasonInputDraft(e.target.value)}
+                onBlur={(e) => commitSeasonInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                aria-label="Season number"
+              />
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={handleNextSeason}
+                aria-label="Next season"
+              >
+                ›
+              </button>
+            </div>
             <p className="mb-4 text-sm text-muted">
-              Top players by MMR ranking. Rank Queue standing only.
+              {isCurrentSeason
+                ? "Top players by MMR ranking. Rank Queue standing only."
+                : `Final standings for Season ${selectedSeasonNumber}.`}
             </p>
-            {topPlayersRows.length === 0 ? (
+            {displayedTopPlayersRows.length === 0 ? (
               <div className="py-10 text-center text-muted">No players yet.</div>
             ) : (
               <div className="space-y-2">
-                {topPlayersRows.map((row) => {
+                {displayedTopPlayersRows.map((row) => {
                   const displayBand: DisplayBand | null = row.band;
                   // Prism styling only kicks in once the player has a real band again this
                   // season — right after a season reset everyone's Unranked, Prism or not.
@@ -190,7 +350,7 @@ export default function UnifiedLeaderboard({
                   return (
                     <div
                       key={row.position}
-                      className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
+                      className={`row-hover flex items-center gap-4 rounded-lg px-4 py-3 ${row.topFive ? "gold-row" : ""}`}
                       style={rowGlow ? { backgroundImage: rowGlow } : undefined}
                     >
                       <div className={`min-w-fit text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-muted"}`}>

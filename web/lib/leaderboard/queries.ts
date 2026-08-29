@@ -75,6 +75,16 @@ export async function getSeasonHistoryMap(seasonId: string): Promise<Map<string,
   return map;
 }
 
+// Every archived season_history row across every closed season — powers the Top Players
+// season-history browser in UnifiedLeaderboard, which needs to look up any past season's
+// standings, not just the immediately-previous one.
+export async function getAllSeasonHistory(): Promise<SeasonHistoryRow[]> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase.from("crl6mansqueuebot_season_history").select("*");
+  if (error) throw error;
+  return data ?? [];
+}
+
 // Fetches every player plus their full chronological game history in two flat
 // queries (not N+1 per player, not embedded joins) — fine at this data volume
 // per CLAUDE.md's "small server, don't over-engineer" principle.

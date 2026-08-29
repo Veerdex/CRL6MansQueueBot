@@ -24,6 +24,10 @@ export interface MainBoardRow {
   winRate: number | null;
   onFire: boolean;
   coldStreak: boolean;
+  // First 5 ranked rows (in this board's own order) that also meet the top10_min_games
+  // games-this-season threshold — independent of, and may coexist with, isPrism. Drives a dim
+  // gold row background only, never the gold text/border that isPrism gets.
+  topFive: boolean;
 }
 
 const PAGE_SIZE = 20;
@@ -163,7 +167,7 @@ export default function LeaderboardTable({
                     ref={isHighlighted ? highlightRef : null}
                     className={`row-hover cursor-pointer border-b border-border text-foreground last:border-b-0 ${
                       showPrismStyling ? "top-cut" : ""
-                    } ${isHighlighted ? "highlight-pulse" : ""}`}
+                    } ${row.topFive ? "gold-row" : ""} ${isHighlighted ? "highlight-pulse" : ""}`}
                     style={{ backgroundImage: backgroundGradient }}
                     onClick={() => goToPlayer(row.playerId)}
                   >
