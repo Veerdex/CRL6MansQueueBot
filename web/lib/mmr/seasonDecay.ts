@@ -10,14 +10,15 @@
 //     A hyperbolic (Michaelis-Menten style) decay toward 0, scaled by the pool median. Strictly
 //     increasing in mmr and safe from crossing 0 or reordering players *only when median > 0* —
 //     see computeSafeMedian below for why the median fed into this can't be trusted as-is.
-//   mmr < 0: new = mmr / 3
-//     Negative MMR (no floor during normal play — see CLAUDE.md, "MMR / Elo") recovers toward
-//     0 at a fixed 3x-closer rate each season, independent of the median.
+//   mmr < 0: new = mmr / 2
+//     Negative MMR (no floor during normal play — see CLAUDE.md, "MMR / Elo") halves toward 0
+//     each season, independent of the median and of decay_factor (which only ever appears in the
+//     mmr >= 0 branch, so tuning it cannot move a below-zero player at all).
 // Both pieces are strictly increasing in `mmr` and agree at the boundary, so the combined
 // function is strictly increasing across the whole domain — it never reorders players by MMR.
 
 export function decayMmr(mmr: number, median: number, decayFactor: number): number {
-  if (mmr < 0) return mmr / 3;
+  if (mmr < 0) return mmr / 2;
   if (mmr === 0) return 0;
   return (mmr * median) / (median + decayFactor * mmr);
 }
@@ -34,7 +35,7 @@ export function decayMmr(mmr: number, median: number, decayFactor: number): numb
 // Fix: shift every value up by the pool's own minimum (so the lowest player sits at exactly 0)
 // before taking the median, guaranteeing a non-negative scaling constant. The shift is used only
 // to derive this one constant — decayMmr still runs on each player's real, unshifted mmr, so the
-// mmr<0 branch's "/3, recovers toward 0" behavior is completely unaffected by this. For a pool
+// mmr<0 branch's "/2, recovers toward 0" behavior is completely unaffected by this. For a pool
 // that's already all non-negative, the shift is 0 and this is identical to a plain median — no
 // behavior change for a community that was never hitting the bug.
 export function computeSafeMedian(mmrs: number[]): number {

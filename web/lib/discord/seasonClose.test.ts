@@ -51,9 +51,10 @@ describe("decayMmr", () => {
     expect(decayMmr(0, 25, 0.25)).toBe(0);
   });
 
-  it("recovers a negative player 3x closer to 0, independent of median", () => {
-    expect(decayMmr(-30, 25, 0.25)).toBeCloseTo(-10, 10);
-    expect(decayMmr(-30, -9999, 0.25)).toBeCloseTo(-10, 10); // median never consulted for mmr < 0
+  it("halves a negative player toward 0, independent of median and decay_factor", () => {
+    expect(decayMmr(-30, 25, 0.25)).toBeCloseTo(-15, 10);
+    expect(decayMmr(-30, -9999, 0.25)).toBeCloseTo(-15, 10); // median never consulted for mmr < 0
+    expect(decayMmr(-30, 25, 0.5)).toBeCloseTo(-15, 10); // decay_factor never consulted either
   });
 
   it("never reorders players when median is safe (positive)", () => {
