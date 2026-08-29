@@ -62,10 +62,11 @@ export default async function MatchTimesPage() {
 
   const supercharged = timeOfDay.map((row) => (superchargedDays > 0 ? row.supercharged_count / superchargedDays : 0));
   const nonSupercharged = timeOfDay.map((row) => (nonSuperchargedDays > 0 ? row.non_supercharged_count / nonSuperchargedDays : 0));
-  // "Overall" is the sum of the two per-kind averages (not total count / total days) — an
-  // average day's expected match count in this segment, whether or not that particular day
-  // turns out to be supercharged.
-  const overall = supercharged.map((v, i) => v + nonSupercharged[i]);
+  // "Overall" is the weighted average of the two per-kind averages, weighted by how many days of
+  // each kind were tracked (e.g. 10 non-supercharged days gives that average a weight of 10) —
+  // not a plain sum of the two averages, which double-counts when the day-type split is uneven.
+  // Weighting each average by its own day-count algebraically collapses to raw total / total days.
+  const overall = rawOverall.map((v) => (totalDays > 0 ? v / totalDays : 0));
   const segmentLabels = timeOfDay.map((row) => segmentLabel(row.segment_index));
 
   const weeklyLabels = dayOfWeek.map((row) => DAY_NAMES[row.day_of_week]);

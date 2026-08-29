@@ -48,10 +48,13 @@ export default function LineChart({ series, xLabels, xLabelStride = 1, height = 
   return (
     <div className="w-full">
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full" role="img" aria-label="Line chart">
-        {yTicks.map((tick) => {
+        {yTicks.map((tick, i) => {
           const [, y] = pointToCoords(0, tick);
           return (
-            <g key={tick}>
+            // Keyed by index, not `tick`: rounding can make two grid lines share the same
+            // displayed value when maxValue is small (e.g. maxValue=1 rounds to [0,0,1,1,1]),
+            // but each is still a distinct row position.
+            <g key={i}>
               <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="currentColor" className="text-foreground/10" strokeWidth={1} />
               <text x={paddingLeft - 6} y={y + 3} textAnchor="end" className="fill-muted text-[9px]">
                 {tick}
