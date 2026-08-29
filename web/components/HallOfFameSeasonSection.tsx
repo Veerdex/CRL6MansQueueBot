@@ -1,9 +1,9 @@
 import HallOfFameSlotCard from "./HallOfFameSlotCard";
 import type { HallOfFameSeason } from "@/lib/leaderboard/hallOfFame";
 
-// The active season's whole block is desaturated + dimmed ("greyed out") to signal its top 5
-// aren't final yet — standing can still change as more games get reported this season, unlike a
-// closed season's archival season_history snapshot.
+// The active season's whole block is desaturated + dimmed ("greyed out") to signal its standings
+// aren't final yet — the top 5 (plus games/streak) can still change as more games get reported
+// this season, unlike a closed season's archival season_history snapshot.
 export default function HallOfFameSeasonSection({
   season,
   mmrScale,
@@ -13,6 +13,12 @@ export default function HallOfFameSeasonSection({
   mmrScale: number;
   mmrShift: number;
 }) {
+  // Fixed slot order from getHallOfFameData/buildSlots: rank1-3, rank4-5, games, streak — split
+  // into two rows on their own lines: podium on top, everything else (same smaller size tier)
+  // together below (literal request).
+  const podium = season.slots.slice(0, 3);
+  const rest = season.slots.slice(3, 7);
+
   return (
     <section className={`panel p-6 ${season.isActive ? "grayscale opacity-60" : ""}`}>
       <div className="mb-4 text-center">
@@ -21,9 +27,13 @@ export default function HallOfFameSeasonSection({
           <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-muted">In progress — not yet confirmed</p>
         )}
       </div>
-      <div className="flex flex-wrap items-start justify-center gap-4">
-        {season.slots.map((slot, i) => (
-          <HallOfFameSlotCard key={i} slot={slot} mmrScale={mmrScale} mmrShift={mmrShift} />
+      <div className="flex flex-col items-center gap-4">
+        {[podium, rest].map((row, rowIndex) => (
+          <div key={rowIndex} className="flex flex-wrap items-start justify-center gap-4">
+            {row.map((slot, i) => (
+              <HallOfFameSlotCard key={i} slot={slot} mmrScale={mmrScale} mmrShift={mmrShift} />
+            ))}
+          </div>
         ))}
       </div>
     </section>

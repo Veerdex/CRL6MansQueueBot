@@ -5,13 +5,29 @@
 // `avatarUrl` comes straight from players.avatar_url (refreshed daily — see
 // lib/discord/avatars.ts); a plain `<img>`, not next/image, since the URL is Discord's CDN and
 // this project avoids adding a remote-image allowlist for a single use case.
-export default function PlayerAvatar({ avatarUrl, alt }: { avatarUrl: string | null; alt: string }) {
-  const sizeStyle = { width: "2.2em", height: "2.2em" };
+export default function PlayerAvatar({
+  avatarUrl,
+  alt,
+  glow = false,
+  scale = 1,
+}: {
+  avatarUrl: string | null;
+  alt: string;
+  // Prism's golden halo (see CLAUDE.md, "Bands / ranks") — deliberately independent of band color,
+  // so it shows the same whether the player is Unranked or top band.
+  glow?: boolean;
+  // Multiplies the base 2.2em size — used by Hall of Fame's tiered slot-card sizing, where a
+  // single call site renders several sizes side by side (see HallOfFameSlotCard).
+  scale?: number;
+}) {
+  const size = `${2.2 * scale}em`;
+  const sizeStyle = { width: size, height: size };
+  const glowClass = glow ? "avatar-prism-glow" : "";
 
   if (!avatarUrl) {
     return (
       <span
-        className="mr-1.5 inline-block shrink-0 rounded-full bg-surface-2 align-middle"
+        className={`mr-1.5 inline-block shrink-0 rounded-full bg-surface-2 align-middle ${glowClass}`}
         style={sizeStyle}
         aria-hidden="true"
       />
@@ -22,7 +38,7 @@ export default function PlayerAvatar({ avatarUrl, alt }: { avatarUrl: string | n
     <img
       src={avatarUrl}
       alt={alt}
-      className="mr-1.5 inline-block shrink-0 rounded-full align-middle object-cover"
+      className={`mr-1.5 inline-block shrink-0 rounded-full align-middle object-cover ${glowClass}`}
       style={sizeStyle}
     />
   );

@@ -89,6 +89,13 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   band_cutoff_emerald_pctile: 70,
   band_cutoff_sapphire_pctile: 90,
   season_rank_display_min_games: 10,
+  // How long the website's season-close Hall of Fame popup keeps appearing — see app/page.tsx,
+  // isWithinPopupWindow(). Counted from UTC midnight of the season's end_date, not from the close
+  // itself (end_date is a date, so the close time isn't stored), so the popup is actually visible
+  // for somewhere in (value - 24, value] hours after the season really ended. 48 = at least one
+  // full day for everyone, at most two. Set 24 for close-day-only, accepting that a season closed
+  // late in the UTC day then gets almost no window at all.
+  hof_popup_window_hours: 48,
   bot_paused: 0,
   mmr_scale: 1,
   mmr_shift: 0,

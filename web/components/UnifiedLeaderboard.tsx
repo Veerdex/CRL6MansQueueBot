@@ -357,9 +357,13 @@ export default function UnifiedLeaderboard({
                         #{row.position}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-lg font-bold text-foreground truncate">
-                          <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
-                          {formatDisplayName(row.displayName)}
+                        <div className="flex items-center text-lg font-bold text-foreground">
+                          <PlayerAvatar
+                            avatarUrl={row.avatarUrl}
+                            alt={row.displayName}
+                            glow={row.isPrism}
+                          />
+                          <span className="truncate">{formatDisplayName(row.displayName)}</span>
                         </div>
                       </div>
                       <div className="text-right">
