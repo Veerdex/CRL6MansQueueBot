@@ -9,8 +9,8 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // Win-streak MMR bonus — see CLAUDE.md, "MMR / Elo" (streak bonus) and "Bands / ranks" for the
 // precedent this mirrors: streaks are computed live from report history, not stored as a counter
 // on the players row (same approach the leaderboard's win-streak columns already use, see
-// web/lib/leaderboard/queries.ts's getAllPlayersWithGames). Rank Queue only — Universal Queue
-// never participates in this feature. Test-data series are excluded, same as bands.ts/seasonClose.ts.
+// web/lib/leaderboard/queries.ts's getAllPlayersWithGames). Test-data series are excluded, same
+// as bands.ts/seasonClose.ts.
 
 export const ON_FIRE_EMOJI = "🔥";
 // Amber "on a streak!" announcement embed threshold (report.ts) — separate from FLAME_THRESHOLD

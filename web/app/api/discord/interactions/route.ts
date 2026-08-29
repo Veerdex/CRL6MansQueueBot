@@ -86,7 +86,7 @@ export async function POST(request: Request) {
       return NextResponse.json(handleDraftPickMultiButton(interaction, arg1, interaction.data?.values ?? []));
     }
 
-    if (action === "notification" && (arg1 === "rank" || arg1 === "universal")) {
+    if (action === "notification" && arg1 === "rank") {
       return NextResponse.json(handleNotificationButton(interaction, arg1));
     }
 
@@ -248,10 +248,6 @@ export async function POST(request: Request) {
 
     if (commandName === "test-rank-match") {
       return NextResponse.json(handleTestMatchCommand(interaction, "rank"));
-    }
-
-    if (commandName === "test-universal-match") {
-      return NextResponse.json(handleTestMatchCommand(interaction, "universal"));
     }
 
     if (commandName === "end-test") {

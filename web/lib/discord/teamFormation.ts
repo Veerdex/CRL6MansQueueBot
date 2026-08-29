@@ -703,8 +703,8 @@ async function beginCaptainsDraft(supabase: AdminClient, guildId: string, series
 }
 
 // Auto-plays a captains-draft pick on behalf of a synthetic test player (is_test_data) whose
-// turn it is — used by /test-rank-match and /test-universal-match (testMatch.ts), where fake
-// lobby members have no real Discord account to click a "Choose" button with. No-ops the
+// turn it is — used by /test-rank-match (testMatch.ts), where fake lobby members have no real
+// Discord account to click a "Choose" button with. No-ops the
 // instant the turn belongs to a real player, so this has zero effect on ordinary matches.
 // Re-fetches fresh state on every call rather than threading it through the caller, and
 // recurses so a fake captain's back-to-back picks (Captain B picks twice in a row) both

@@ -150,136 +150,125 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
   const loserLines: string[] = [];
   const pushLine = (sp: SeriesPlayerRow, line: string) => (sp.team === newWinner ? winnerLines : loserLines).push(line);
 
-  if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
-      getConfigNumber("k_factor", 32),
-      getConfigNumber("s_scale", 400),
-      getConfigNumber("provisional_games", 10),
-      getConfigNumber("provisional_k_multiplier", 1.75),
-      getConfigNumber("mmr_scale", 1),
-      getConfigNumber("mmr_skew_factor", 0.5),
-      getConfigNumber("mmr_min_delta", 2),
-      getConfigNumber("streak_bonus_enabled", 1),
-      getConfigNumber("mmr_confidence_multiplier", 1),
-    ]);
-    const streakBonusEnabled = streakBonusEnabledRaw === 1;
-    // Same locked-in-at-pop/vote-resolution multipliers the original report used.
-    // series_length_k_multiplier is passed as seriesLengthMultiplier below, not folded into
-    // effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
+  const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
+    getConfigNumber("k_factor", 32),
+    getConfigNumber("s_scale", 400),
+    getConfigNumber("provisional_games", 10),
+    getConfigNumber("provisional_k_multiplier", 1.75),
+    getConfigNumber("mmr_scale", 1),
+    getConfigNumber("mmr_skew_factor", 0.5),
+    getConfigNumber("mmr_min_delta", 2),
+    getConfigNumber("streak_bonus_enabled", 1),
+    getConfigNumber("mmr_confidence_multiplier", 1),
+  ]);
+  const streakBonusEnabled = streakBonusEnabledRaw === 1;
+  // Same locked-in-at-pop/vote-resolution multipliers the original report used.
+  // series_length_k_multiplier is passed as seriesLengthMultiplier below, not folded into
+  // effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
+  const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
-    const eloInputs = seriesPlayers.map((sp) => {
-      const p = playersById.get(sp.player_id)!;
-      return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
-    });
-    const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
-    const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
+  const eloInputs = seriesPlayers.map((sp) => {
+    const p = playersById.get(sp.player_id)!;
+    return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
+  });
+  const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
+  const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
 
-    // getPriorRankWinStreak/getPriorRankLossStreak always exclude this series by id (see
-    // streaks.ts), so it doesn't matter that winner_team above was already flipped — this
-    // series is filtered out of the history entirely either way.
-    const bonusByPlayer = new Map<string, number>();
-    if (streakBonusEnabled) {
-      await Promise.all(
-        seriesPlayers.map(async (sp) => {
-          if (sp.team !== newWinner) return;
-          const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
-          const expected = newResultsById.get(sp.player_id)!.expected;
-          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
-        }),
-      );
-    }
-
-    const finalDeltaByPlayer = new Map<string, number>();
-    const correctedMmrByPlayer = new Map<string, number>();
-    for (const sp of seriesPlayers) {
-      const p = playersById.get(sp.player_id)!;
-      const oldDelta = sp.mmr_delta ?? 0;
-      const newResult = newResultsById.get(sp.player_id)!;
-      const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
-      finalDeltaByPlayer.set(sp.player_id, newDelta);
-      correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
-    }
-
-    // peak_mmr normally only ever rises (Math.max against the stored value), but a correction is
-    // exactly the moment a stored peak might be provably wrong: if it drops a currently-placed
-    // player's mmr below their recorded peak, that peak may have been set by the very result now
-    // being corrected. For just those candidates, a full history replay determines each player's
-    // true lifetime peak from current data and is allowed to lower the stored value — see
-    // lib/mmr/peakMmrRecompute.ts's header for why the full player population is required.
-    const peakCandidates = seriesPlayers.filter((sp) => {
-      const p = playersById.get(sp.player_id)!;
-      return p.is_placed && correctedMmrByPlayer.get(sp.player_id)! < p.peak_mmr;
-    });
-    let reconstructedPeaks: Map<string, number> | null = null;
-    if (peakCandidates.length > 0) {
-      const { recomputeTruePeakMmr } = await import("@/lib/mmr/peakMmrRecompute");
-      reconstructedPeaks = (await recomputeTruePeakMmr(supabase)).peakMmrByPlayer;
-    }
-
+  // getPriorRankWinStreak/getPriorRankLossStreak always exclude this series by id (see
+  // streaks.ts), so it doesn't matter that winner_team above was already flipped — this
+  // series is filtered out of the history entirely either way.
+  const bonusByPlayer = new Map<string, number>();
+  if (streakBonusEnabled) {
     await Promise.all(
       seriesPlayers.map(async (sp) => {
-        const p = playersById.get(sp.player_id)!;
-        const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
-        const newDelta = finalDeltaByPlayer.get(sp.player_id)!;
-        const isCandidate = reconstructedPeaks !== null && peakCandidates.includes(sp);
-        const peakMmr = isCandidate
-          ? Math.max(reconstructedPeaks!.get(p.id) ?? 0, correctedMmr, 0)
-          : p.is_placed
-            ? Math.max(p.peak_mmr, correctedMmr)
-            : p.peak_mmr;
-
-        await supabase
-          .from("crl6mansqueuebot_players")
-          .update({ mmr: correctedMmr, peak_mmr: peakMmr })
-          .eq("id", p.id);
-        await supabase.from("crl6mansqueuebot_series_players").update({ mmr_delta: newDelta }).eq("series_id", series.id).eq("player_id", p.id);
+        if (sp.team !== newWinner) return;
+        const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
+        const expected = newResultsById.get(sp.player_id)!.expected;
+        bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
       }),
     );
+  }
 
-    // Correcting the winner can push a player across a band threshold — recompute now, same
-    // as report.ts's live recompute, rather than waiting for the next daily cron tick.
-    await recomputeBands();
-    const { data: refreshedBands } = await supabase.from("crl6mansqueuebot_players").select("id, band, is_prism").in("id", seriesPlayers.map((sp) => sp.player_id));
-    for (const rb of refreshedBands ?? []) {
-      const p = playersById.get(rb.id);
-      if (p) {
-        p.band = rb.band;
-        p.is_prism = rb.is_prism;
-      }
-    }
+  const finalDeltaByPlayer = new Map<string, number>();
+  const correctedMmrByPlayer = new Map<string, number>();
+  for (const sp of seriesPlayers) {
+    const p = playersById.get(sp.player_id)!;
+    const oldDelta = sp.mmr_delta ?? 0;
+    const newResult = newResultsById.get(sp.player_id)!;
+    const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+    finalDeltaByPlayer.set(sp.player_id, newDelta);
+    correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
+  }
 
-    // winner_team is already flipped in the DB (top of this function), so this now reflects
-    // each player's streak *as corrected* — see getStreakIds' doc comment: no exclusion param,
-    // meant to be called only after the relevant series has fully settled.
-    const streakIds = await getStreakIds(supabase, seriesPlayers.map((sp) => sp.player_id));
+  // peak_mmr normally only ever rises (Math.max against the stored value), but a correction is
+  // exactly the moment a stored peak might be provably wrong: if it drops a currently-placed
+  // player's mmr below their recorded peak, that peak may have been set by the very result now
+  // being corrected. For just those candidates, a full history replay determines each player's
+  // true lifetime peak from current data and is allowed to lower the stored value — see
+  // lib/mmr/peakMmrRecompute.ts's header for why the full player population is required.
+  const peakCandidates = seriesPlayers.filter((sp) => {
+    const p = playersById.get(sp.player_id)!;
+    return p.is_placed && correctedMmrByPlayer.get(sp.player_id)! < p.peak_mmr;
+  });
+  let reconstructedPeaks: Map<string, number> | null = null;
+  if (peakCandidates.length > 0) {
+    const { recomputeTruePeakMmr } = await import("@/lib/mmr/peakMmrRecompute");
+    reconstructedPeaks = (await recomputeTruePeakMmr(supabase)).peakMmrByPlayer;
+  }
 
-    for (const sp of seriesPlayers) {
+  await Promise.all(
+    seriesPlayers.map(async (sp) => {
       const p = playersById.get(sp.player_id)!;
-      const delta = finalDeltaByPlayer.get(sp.player_id)!;
       const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
-      const sign = delta >= 0 ? "+" : "";
-      const emoji = emojiByBand.get(p.band) || "❓";
-      const displayNewMmr = await getDisplayMMR(correctedMmr);
-      const displayDelta = delta * mmrScale;
-      const onFire = streakIds.onFireIds.has(p.id);
-      const cold = streakIds.coldIds.has(p.id);
-      pushLine(sp, `${mention(p.discord_id, { onFire, cold, prism: p.is_prism })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`);
-    }
-  } else {
-    // Universal Queue: no MMR/streak/band effect either way — the winner flip above is
-    // purely cosmetic for these, same as report.ts's own Universal Queue branch.
-    for (const sp of seriesPlayers) {
-      const p = playersById.get(sp.player_id)!;
-      const emoji = emojiByBand.get(p.band) || "❓";
-      pushLine(sp, `${mention(p.discord_id, { prism: p.is_prism })} ${emoji}`);
+      const newDelta = finalDeltaByPlayer.get(sp.player_id)!;
+      const isCandidate = reconstructedPeaks !== null && peakCandidates.includes(sp);
+      const peakMmr = isCandidate
+        ? Math.max(reconstructedPeaks!.get(p.id) ?? 0, correctedMmr, 0)
+        : p.is_placed
+          ? Math.max(p.peak_mmr, correctedMmr)
+          : p.peak_mmr;
+
+      await supabase
+        .from("crl6mansqueuebot_players")
+        .update({ mmr: correctedMmr, peak_mmr: peakMmr })
+        .eq("id", p.id);
+      await supabase.from("crl6mansqueuebot_series_players").update({ mmr_delta: newDelta }).eq("series_id", series.id).eq("player_id", p.id);
+    }),
+  );
+
+  // Correcting the winner can push a player across a band threshold — recompute now, same
+  // as report.ts's live recompute, rather than waiting for the next daily cron tick.
+  await recomputeBands();
+  const { data: refreshedBands } = await supabase.from("crl6mansqueuebot_players").select("id, band, is_prism").in("id", seriesPlayers.map((sp) => sp.player_id));
+  for (const rb of refreshedBands ?? []) {
+    const p = playersById.get(rb.id);
+    if (p) {
+      p.band = rb.band;
+      p.is_prism = rb.is_prism;
     }
   }
 
+  // winner_team is already flipped in the DB (top of this function), so this now reflects
+  // each player's streak *as corrected* — see getStreakIds' doc comment: no exclusion param,
+  // meant to be called only after the relevant series has fully settled.
+  const streakIds = await getStreakIds(supabase, seriesPlayers.map((sp) => sp.player_id));
+
+  for (const sp of seriesPlayers) {
+    const p = playersById.get(sp.player_id)!;
+    const delta = finalDeltaByPlayer.get(sp.player_id)!;
+    const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
+    const sign = delta >= 0 ? "+" : "";
+    const emoji = emojiByBand.get(p.band) || "❓";
+    const displayNewMmr = await getDisplayMMR(correctedMmr);
+    const displayDelta = delta * mmrScale;
+    const onFire = streakIds.onFireIds.has(p.id);
+    const cold = streakIds.coldIds.has(p.id);
+    pushLine(sp, `${mention(p.discord_id, { onFire, cold, prism: p.is_prism })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`);
+  }
+
   // Mirrors /admin correct-report's own prediction-record update.
-  const predictionTable = series.queue_type === "rank" ? "crl6mansqueuebot_rank_game_predictions" : "crl6mansqueuebot_universal_game_predictions";
   const newActualWinner = newWinner === "A" ? "blue" : "orange";
-  await (supabase as any).from(predictionTable).update({ actual_winner: newActualWinner }).eq("series_id", series.id);
+  await (supabase as any).from("crl6mansqueuebot_rank_game_predictions").update({ actual_winner: newActualWinner }).eq("series_id", series.id);
 
   const reportChannelId = await getReportChannelId(supabase);
   if (reportChannelId) {

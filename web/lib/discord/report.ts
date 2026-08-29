@@ -165,7 +165,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   // 0032_series_players_mmr_before.sql) — captures each player's mmr as it stood right before
   // this report is applied, so History's win-odds bar/badges reflect what it actually looked
   // like at match time instead of drifting with every later game. Written unconditionally
-  // (rank/universal/test) since it's just a snapshot, not stat-bearing.
+  // (rank/test) since it's just a snapshot, not stat-bearing.
   await Promise.all(
     allSeriesPlayers.map((sp) =>
       supabase
@@ -178,16 +178,15 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
   // Report summary is split by winning/losing team (not one flat list) — each line shows the
   // player's MMR delta and their resulting MMR/band, per CLAUDE.md's "Reporting & disputes".
-  // For Rank Queue series, bands.ts's recomputeBands() runs right below against the full placed
-  // pool (not just these 6 — see bands.ts's doc comment for why), so this reflects this exact
-  // game's result, not a stale daily-cron snapshot. Universal Queue lines below don't touch band
-  // at all (no MMR change to recompute against).
+  // bands.ts's recomputeBands() runs right below against the full placed pool (not just these 6
+  // — see bands.ts's doc comment for why), so this reflects this exact game's result, not a
+  // stale daily-cron snapshot.
   const winnerLines: string[] = [];
   const loserLines: string[] = [];
   const pushLine = (sp: (typeof allSeriesPlayers)[number], line: string) => (sp.team === winner ? winnerLines : loserLines).push(line);
-  // Populated only for Rank Queue series — see CLAUDE.md, "MMR / Elo" (streak bonus). One line
-  // per player whose win streak just reached the announcement threshold, rendered as a second,
-  // amber-colored embed alongside the main report summary.
+  // See CLAUDE.md, "MMR / Elo" (streak bonus). One line per player whose win streak just reached
+  // the announcement threshold, rendered as a second, amber-colored embed alongside the main
+  // report summary.
   const streakAnnounceLines: string[] = [];
 
   // Pre-fetch all rank emoji to avoid async calls in loops.
@@ -197,14 +196,14 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   }
 
   if (series.is_test_data) {
-    // Test matches (/test-rank-match, /test-universal-match) never touch real player stats,
-    // even when queue_type is "rank" — see CLAUDE.md, "Flag as test data".
+    // Test matches (/test-rank-match) never touch real player stats — see CLAUDE.md, "Flag as
+    // test data".
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
       const emoji = emojiByBand.get(p.band) || "❓";
       pushLine(sp, `${mention(p.discord_id, { prism: p.is_prism })} — test match, no stat changes ${emoji}`);
     }
-  } else if (series.queue_type === "rank") {
+  } else {
     const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
@@ -332,20 +331,6 @@ async function processReport(interaction: DiscordInteraction, result: string | n
         `${mention(p.discord_id, { onFire, cold, prism: p.is_prism })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
       );
     }
-  } else {
-    // Universal Queue: still counts toward total_games_played (placement/lifetime), never
-    // touches MMR — see CLAUDE.md, "Queueing".
-    await Promise.all(
-      allSeriesPlayers.map((sp) => {
-        const p = playersById.get(sp.player_id)!;
-        return supabase.from("crl6mansqueuebot_players").update({ total_games_played: p.total_games_played + 1 }).eq("id", p.id);
-      }),
-    );
-    for (const sp of allSeriesPlayers) {
-      const p = playersById.get(sp.player_id)!;
-      const emoji = emojiByBand.get(p.band) || "❓";
-      pushLine(sp, `${mention(p.discord_id, { prism: p.is_prism })} ${emoji}`);
-    }
   }
 
   // Record game prediction if all players are placed (>= 10 games played)
@@ -366,15 +351,10 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     const sPrediction = 400;
     const teamBlueWinProbability = (1 / (1 + Math.pow(10, (teamBAvgMmr - teamAAvgMmr) / sPrediction))) * 100;
 
-    const predictionTable =
-      series.queue_type === "rank"
-        ? "crl6mansqueuebot_rank_game_predictions"
-        : "crl6mansqueuebot_universal_game_predictions";
-
     const actualWinner = winner === "A" ? "blue" : "orange";
 
     await (supabase as any)
-      .from(predictionTable)
+      .from("crl6mansqueuebot_rank_game_predictions")
       .insert({
         series_id: series.id,
         reported_at: new Date().toISOString(),

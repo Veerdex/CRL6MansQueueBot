@@ -170,43 +170,27 @@ export interface MMRDistributionPlayer {
 
 export interface MMRDistributionStats {
   players: MMRDistributionPlayer[];
-  totalMatchesPlayed: number;
-  rankMatchesPlayed: number;
-  universalMatchesPlayed: number;
+  matchesPlayed: number;
 }
 
-// Powers the MMR distribution graph on the hidden match-time-stats page. Match counts use
-// head:true counts rather than fetching rows — CLAUDE.md's seasonClose.ts note documents that
+// Powers the MMR distribution graph on the hidden match-time-stats page. Match count uses a
+// head:true count rather than fetching rows — CLAUDE.md's seasonClose.ts note documents that
 // PostgREST silently truncates unbounded selects past a project row cap, and a plain fetch-then-
 // .length count would walk straight into that with no error.
 export async function getMMRDistributionStats(): Promise<MMRDistributionStats> {
   const supabase = createServerClient();
-  const [playersResult, totalCount, rankCount, universalCount] = await Promise.all([
+  const [playersResult, matchCount] = await Promise.all([
     supabase
       .from("crl6mansqueuebot_players")
       .select("mmr, band, is_placed, is_prism, total_games_played, rank_games_played")
       .eq("is_test_data", false),
     supabase.from("crl6mansqueuebot_series").select("*", { count: "exact", head: true }).eq("status", "reported").eq("is_test_data", false),
-    supabase
-      .from("crl6mansqueuebot_series")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "reported")
-      .eq("is_test_data", false)
-      .eq("queue_type", "rank"),
-    supabase
-      .from("crl6mansqueuebot_series")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "reported")
-      .eq("is_test_data", false)
-      .eq("queue_type", "universal"),
   ]);
   if (playersResult.error) throw playersResult.error;
-  if (totalCount.error) throw totalCount.error;
-  if (rankCount.error) throw rankCount.error;
-  if (universalCount.error) throw universalCount.error;
+  if (matchCount.error) throw matchCount.error;
 
   // Same "eligible player" convention UnifiedLeaderboard.tsx uses: only count players who've
-  // actually played at least one game (any queue) toward any aggregate.
+  // actually played at least one game toward any aggregate.
   const players = (playersResult.data ?? [])
     .filter((p) => p.total_games_played >= 1)
     .map((p) => ({
@@ -219,9 +203,7 @@ export async function getMMRDistributionStats(): Promise<MMRDistributionStats> {
 
   return {
     players,
-    totalMatchesPlayed: totalCount.count ?? 0,
-    rankMatchesPlayed: rankCount.count ?? 0,
-    universalMatchesPlayed: universalCount.count ?? 0,
+    matchesPlayed: matchCount.count ?? 0,
   };
 }
 
@@ -230,13 +212,10 @@ export interface SeriesLengthStats {
   total: number;
 }
 
-// Powers the series-length bar chart on the hidden match-time-stats page. Rank Queue only — the
-// series-length K-factor multiplier (see teamFormation.ts's SERIES_LENGTH_K_MULTIPLIERS) only
-// ever affects Elo, which Universal Queue never runs, so a Universal-scoped "weighted share"
-// would be meaningless. A series only has series_length set if the pre-vote was enabled and it
-// actually resolved (see CLAUDE.md, "Team formation (on pop)") — series formed before the
-// feature existed, or while it was off, are simply excluded rather than counted as some default
-// length.
+// Powers the series-length bar chart on the hidden match-time-stats page. A series only has
+// series_length set if the pre-vote was enabled and it actually resolved (see CLAUDE.md, "Team
+// formation (on pop)") — series formed before the feature existed, or while it was off, are
+// simply excluded rather than counted as some default length.
 export async function getSeriesLengthStats(): Promise<SeriesLengthStats> {
   const supabase = createServerClient();
   const { data, error } = await supabase

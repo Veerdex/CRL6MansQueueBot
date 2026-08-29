@@ -109,7 +109,7 @@ async function processHelp(interaction: DiscordInteraction) {
 
   const lines = [
     "**Commands**",
-    "`/q` or `/queue` — join the queue mapped to the current channel (e.g. #universal-queue, #rank-queue).",
+    "`/q` or `/queue` — join the queue mapped to the current channel (e.g. #rank-queue).",
     "`/l` or `/leave` — leave that queue.",
     "`/status` — show who's currently in the queue mapped to the current channel.",
     "`/profile [target:]` — show a player's band, MMR, streak, wins/losses, and leaderboard rank. Defaults to yourself. Ephemeral.",
@@ -134,14 +134,14 @@ async function processHelp(interaction: DiscordInteraction) {
     const adminLines = [
       "**Admin commands**",
       "`/chances [id:]` — see a team's live win chance for the current (or, with id:, any) active match. Ephemeral.",
-      "`/setqueuechannel queue_type:<rank|universal>` — post the persistent queue message in the current channel.",
+      "`/setqueuechannel queue_type:<rank>` — post the persistent queue message in the current channel.",
       "`/setlobbychannel channel:<#voice>` — move players into this voice channel when their match ends, instead of dropping them out of voice.",
       "`/add-admin-role role:<@role>` — grant a role admin access and match-channel visibility.",
       "`/remove-admin-role role:<@role>` — revoke a role's admin access.",
       "`/list-admin-roles` — list roles with admin access.",
       "`/newseason` — close the current season (if any) and start the next one.",
       "`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role>` — map a band (or the Unranked role, or the season-end Prism Top-N role) to a Discord role for auto role-sync.",
-      "`/test-rank-match` / `/test-universal-match` — spin up a simulated match (you + 5 test bots) to try the flow yourself.",
+      "`/test-rank-match` — spin up a simulated match (you + 5 test bots) to try the flow yourself.",
       "`/end-test` — run inside a test match's channel to tear it down (category, voice channels, text channel, and its test data).",
     ];
     await sendFollowupMessage(interaction.token, { content: adminLines.join("\n") });
@@ -149,7 +149,7 @@ async function processHelp(interaction: DiscordInteraction) {
 }
 
 // ---------------------------------------------------------------------------
-// /setmentionrole queue_type:<rank|universal> role:<@role> — admin-gated,
+// /setmentionrole queue_type:<rank> role:<@role> — admin-gated,
 // sets the role to mention when the first player joins an empty queue.
 // ---------------------------------------------------------------------------
 
@@ -166,8 +166,8 @@ async function processSetMentionRole(interaction: DiscordInteraction, queueType:
     await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
     return;
   }
-  if (queueType !== "rank" && queueType !== "universal") {
-    await editOriginalResponse(interaction.token, { content: "Queue type must be 'rank' or 'universal'." });
+  if (queueType !== "rank") {
+    await editOriginalResponse(interaction.token, { content: "Queue type must be 'rank'." });
     return;
   }
   if (!roleId) {
@@ -191,10 +191,10 @@ async function processSetMentionRole(interaction: DiscordInteraction, queueType:
 
   await supabase.from("crl6mansqueuebot_queue_mention_roles").upsert({ queue_type: queueType, role_id: roleId, set_by: actorId } as any);
   await logAdminAction(actorId, "set_mention_role", `${queueType}_queue`, undefined, [
-    { field: `${queueType === "rank" ? "Rank" : "Universal"} Queue mention role`, before: existing?.role_id ? `<@&${existing.role_id}>` : null, after: `<@&${roleId}>` },
+    { field: `Rank Queue mention role`, before: existing?.role_id ? `<@&${existing.role_id}>` : null, after: `<@&${roleId}>` },
   ]);
   await editOriginalResponse(interaction.token, {
-    content: `<@&${roleId}> will be mentioned when the first player joins the ${queueType === "rank" ? "Rank" : "Universal"} Queue.`,
+    content: `<@&${roleId}> will be mentioned when the first player joins the Rank Queue.`,
   });
 }
 

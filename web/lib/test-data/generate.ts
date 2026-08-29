@@ -56,14 +56,13 @@ function buildOutcomes(
   for (let i = 0; i < spec.previousSeasonGames + spec.currentSeasonGames; i++) {
     outcomes.push({
       season: i < spec.previousSeasonGames ? "previous" : "current",
-      queueType: rng() < 0.7 ? "rank" : "universal",
+      queueType: "rank",
       win: rng() < spec.winRate,
     });
   }
   // Guarantee an observable, hand-verifiable finish: the last three games are
-  // Rank Queue wins, so every seeded player ends on at least a 3-game streak.
+  // wins, so every seeded player ends on at least a 3-game streak.
   for (let i = Math.max(0, outcomes.length - 3); i < outcomes.length; i++) {
-    outcomes[i].queueType = "rank";
     outcomes[i].win = true;
   }
   return outcomes;

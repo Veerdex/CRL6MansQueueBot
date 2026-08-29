@@ -9,7 +9,6 @@ import type { QueueType } from "@/lib/supabase/types";
 
 const QUEUE_LABELS: Record<QueueType, string> = {
   rank: "Rank Queue",
-  universal: "Universal Queue",
 };
 
 const NOTIFICATION_MESSAGE_CONTENT = {
@@ -29,12 +28,6 @@ const NOTIFICATION_MESSAGE_CONTENT = {
           style: 1,
           custom_id: "notification:rank",
           label: "🎮 Rank Queue Notifications",
-        },
-        {
-          type: 2,
-          style: 1,
-          custom_id: "notification:universal",
-          label: "🎮 Universal Queue Notifications",
         },
       ],
     },
@@ -118,8 +111,8 @@ async function processSetNotificationRole(
     return;
   }
 
-  if (queueTypeRaw !== "rank" && queueTypeRaw !== "universal") {
-    await editOriginalResponse(interaction.token, { content: "Invalid queue_type. Use 'rank' or 'universal'." });
+  if (queueTypeRaw !== "rank") {
+    await editOriginalResponse(interaction.token, { content: "Invalid queue_type. Use 'rank'." });
     return;
   }
 

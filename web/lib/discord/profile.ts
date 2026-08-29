@@ -69,7 +69,7 @@ async function processProfile(interaction: DiscordInteraction, targetDiscordIdOp
   const eligible = allPlayers.filter((p) => p.player.total_games_played >= 1).sort(compareLeaderboardRank);
   const rank = eligible.findIndex((p) => p.player.id === entry.player.id) + 1;
 
-  const rankStats = computeStats(filterGames(entry.games, { queueType: "rank" }));
+  const rankStats = computeStats(filterGames(entry.games, {}));
   const { player } = entry;
   const band: DisplayBand | null = player.is_placed ? player.band : null;
 

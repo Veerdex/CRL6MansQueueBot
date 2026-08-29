@@ -109,7 +109,7 @@ export default function UnifiedLeaderboard({
       .slice()
       .sort(compareLeaderboardRank)
       .map(({ player, games }) => {
-        const rankStats = computeStats(filterGames(games, { queueType: "rank" }));
+        const rankStats = computeStats(filterGames(games, {}));
         return {
           playerId: player.id,
           displayName: player.display_name,

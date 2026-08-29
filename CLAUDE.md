@@ -35,10 +35,7 @@ Implemented and deployed: leaderboard, queue system, team formation, Elo engine,
 
 ## Core queue and series rules
 
-- Two queues exist: Universal and Rank.
-- Universal Queue is unranked. Its games count toward general and lifetime games played, but never change MMR or placement progress.
-- Rank Queue is available immediately and is the only queue that changes MMR and advances placement games.
-- A player may join both queues. When one reaches six, remove all six players from the other queue and lock them from queueing until resolution.
+- One queue exists: Rank Queue. It is available immediately, has no placement requirement, and every reported series changes MMR and advances placement games.
 - Queue joins/leaves must use atomic RPC/check-and-write behavior so simultaneous joins cannot exceed six.
 - A series expires after two unreported hours and is voided with no MMR change.
 - `/cancel` voids a forming or active series after four of six votes. Every sub-threshold vote gets a small public progress announcement.
@@ -136,7 +133,6 @@ Then read only the relevant section and confirm it against current code, since t
 - Run the relevant unit tests, type checks, lint, and build commands available in the repository.
 - Verify command registration and interaction dispatch together.
 - Verify new migrations/types align with application queries.
-- Check both Rank and Universal behavior when changing shared series logic.
 - Check normal, bonus-day, test-data, timeout, double-click, and concurrent-settlement paths where applicable.
 - Summarize changed files, behavior, validation results, and any migration or deployment step the user must perform.
 

@@ -8,9 +8,7 @@ import type { MMRDistributionPlayer } from "@/lib/leaderboard/queries";
 
 interface MMRDistributionPanelProps {
   players: MMRDistributionPlayer[];
-  totalMatchesPlayed: number;
-  rankMatchesPlayed: number;
-  universalMatchesPlayed: number;
+  matchesPlayed: number;
   mmrScale: number;
   mmrShift: number;
 }
@@ -31,9 +29,7 @@ function median(sorted: number[]): number {
 
 export default function MMRDistributionPanel({
   players,
-  totalMatchesPlayed,
-  rankMatchesPlayed,
-  universalMatchesPlayed,
+  matchesPlayed,
   mmrScale,
   mmrShift,
 }: MMRDistributionPanelProps) {
@@ -49,9 +45,9 @@ export default function MMRDistributionPanel({
   // labels — a display density preference, not a preview of a server config value.
   const [density, setDensity] = useState(DEFAULT_DENSITY);
 
-  // Universal-only players sit at exactly MMR 0 forever (Universal never moves MMR) — including
-  // them in the histogram would produce a fake spike at zero, so the charted population is
-  // Rank-Queue participants only. Per-band counts below use the full eligible set instead, since
+  // Unplaced/never-played players sit at exactly MMR 0 forever — including them in the
+  // histogram would produce a fake spike at zero, so the charted population is players with at
+  // least one Rank Queue game. Per-band counts below use the full eligible set instead, since
   // Unranked players are honestly part of that breakdown.
   const rankPlayers = useMemo(() => players.filter((p) => p.rankGamesPlayed >= 1), [players]);
 
@@ -100,13 +96,13 @@ export default function MMRDistributionPanel({
     <div>
       <h2 className="mb-1 text-lg font-bold text-foreground">MMR Distribution</h2>
       <p className="mb-4 text-sm text-muted">
-        Rank Queue players only (Universal Queue never moves MMR). The <code>mmr_scale</code>/<code>mmr_shift</code> sliders
+        Players with at least one Rank Queue game. The <code>mmr_scale</code>/<code>mmr_shift</code> sliders
         below only preview how the displayed numbers would read under a different value; nothing is written. Density just
         changes how finely the same players are grouped into bars.
       </p>
 
       {rankPlayers.length === 0 ? (
-        <p className="mb-4 text-sm text-muted">No Rank Queue players yet.</p>
+        <p className="mb-4 text-sm text-muted">No players yet.</p>
       ) : (
         <BarChart bars={bars} connected maxLabels={DEFAULT_DENSITY} />
       )}
@@ -170,9 +166,7 @@ export default function MMRDistributionPanel({
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Total Matches" value={totalMatchesPlayed} />
-        <StatCard label="Rank Matches" value={rankMatchesPlayed} />
-        <StatCard label="Universal Matches" value={universalMatchesPlayed} />
+        <StatCard label="Matches Played" value={matchesPlayed} />
         <StatCard label="Rank Players" value={rankPlayers.length} />
         <StatCard label="Average MMR" value={Math.round(applyTransform(rawAvg, scale, shift))} />
         <StatCard label="Median MMR" value={Math.round(applyTransform(rawMedian, scale, shift))} />

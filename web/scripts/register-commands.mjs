@@ -96,7 +96,6 @@ const commands = [
         required: true,
         choices: [
           { name: "rank", value: "rank" },
-          { name: "universal", value: "universal" },
         ],
       },
     ],
@@ -168,7 +167,6 @@ const commands = [
         required: true,
         choices: [
           { name: "rank", value: "rank" },
-          { name: "universal", value: "universal" },
         ],
       },
       {
@@ -196,7 +194,6 @@ const commands = [
         required: true,
         choices: [
           { name: "rank", value: "rank" },
-          { name: "universal", value: "universal" },
         ],
       },
       {
@@ -522,7 +519,6 @@ const commands = [
         required: true,
         choices: [
           { name: "rank", value: "rank" },
-          { name: "universal", value: "universal" },
         ],
       },
       {
@@ -928,11 +924,6 @@ const commands = [
   {
     name: "test-rank-match",
     description: "Admin: spin up a simulated Rank Queue match (you + 5 test bots) to try the flow yourself.",
-    type: 1,
-  },
-  {
-    name: "test-universal-match",
-    description: "Admin: spin up a simulated Universal Queue match (you + 5 test bots) to try the flow yourself.",
     type: 1,
   },
   {

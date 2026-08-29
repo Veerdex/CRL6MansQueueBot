@@ -6,10 +6,8 @@ import SearchBar from "./SearchBar";
 import PlayerAvatar from "./PlayerAvatar";
 import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
-import type { QueueType } from "@/lib/supabase/types";
 import type { HeadToHeadGame, HeadToHeadPlayerInfo } from "@/lib/leaderboard/headToHead";
 
-type QueueFilter = QueueType | "all";
 type Relation = "with" | "against";
 type SortKey = "gamesPlayed" | "diff" | "winRate";
 
@@ -18,8 +16,6 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "diff", label: "+/-" },
   { key: "winRate", label: "Win rate" },
 ];
-
-const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
 
 export default function HeadToHeadBoard({
   target,
@@ -31,7 +27,6 @@ export default function HeadToHeadBoard({
   players: HeadToHeadPlayerInfo[];
 }) {
   const router = useRouter();
-  const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [relation, setRelation] = useState<Relation>("with");
   const [sortKey, setSortKey] = useState<SortKey>("gamesPlayed");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -40,13 +35,12 @@ export default function HeadToHeadBoard({
 
   const playersById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
 
-  // Recomputed client-side on every filter/relation toggle from the full game list handed down
-  // by the server — same "fetch once, filter client-side" shape StatsBoard already uses for its
-  // queue/season filters, so toggling here needs no round trip.
+  // Recomputed client-side on every relation toggle from the full game list handed down by the
+  // server — same "fetch once, filter client-side" shape StatsBoard already uses for its season
+  // filter, so toggling here needs no round trip.
   const rows = useMemo(() => {
     const acc = new Map<string, { gamesPlayed: number; wins: number; losses: number }>();
     for (const game of games) {
-      if (queueFilter !== "all" && game.queueType !== queueFilter) continue;
       const ids = relation === "with" ? game.teammateIds : game.opponentIds;
       for (const id of ids) {
         const entry = acc.get(id) ?? { gamesPlayed: 0, wins: 0, losses: 0 };
@@ -67,7 +61,7 @@ export default function HeadToHeadBoard({
         winRate: stats.gamesPlayed > 0 ? stats.wins / stats.gamesPlayed : null,
       };
     });
-  }, [games, queueFilter, relation, playersById]);
+  }, [games, relation, playersById]);
 
   const sortedRows = useMemo(() => {
     const withSortValue = rows.map((row) => {
@@ -93,11 +87,6 @@ export default function HeadToHeadBoard({
       setSortKey(key);
       setSortDir("desc");
     }
-  }
-
-  function selectQueueFilter(q: QueueFilter) {
-    playTap();
-    setQueueFilter(q);
   }
 
   function selectRelation(r: Relation) {
@@ -163,19 +152,6 @@ export default function HeadToHeadBoard({
               onClick={() => selectRelation(r)}
             >
               {r}
-            </button>
-          ))}
-        </div>
-        <div className="segmented">
-          {QUEUE_OPTIONS.map((q) => (
-            <button
-              key={q}
-              type="button"
-              data-active={queueFilter === q}
-              className="segmented-btn capitalize"
-              onClick={() => selectQueueFilter(q)}
-            >
-              {q}
             </button>
           ))}
         </div>

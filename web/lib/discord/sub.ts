@@ -64,8 +64,8 @@ async function resolveSeriesForCommand(
     return data;
   }
   // Resolved by the caller's own membership, not the channel — queue_channel_id is a shared
-  // rank/universal queue channel, so multiple concurrently active series can share it. See
-  // CLAUDE.md, "Queue channels".
+  // queue channel, so multiple concurrently active series can share it. See CLAUDE.md, "Queue
+  // channels".
   return getLockedSeriesForPlayer(supabase, playerId);
 }
 

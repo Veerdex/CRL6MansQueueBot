@@ -117,12 +117,8 @@ export default async function InfoPage() {
         <Section title="Queueing">
           <ul className="list-disc space-y-1.5 pl-5">
             <li>
-              <strong>Universal Queue</strong> is open to everyone and is <em>fully unranked</em> — results
-              there never change your MMR.
-            </li>
-            <li>
-              <strong>Rank Queue</strong> is also open to everyone, no placement requirement — this is the
-              queue that moves your MMR and band.
+              <strong>Rank Queue</strong> is open to everyone, no placement requirement — every match moves
+              your MMR and band.
             </li>
             <li>
               Join with <strong>/q</strong> (or <strong>/queue</strong>), leave with <strong>/l</strong> (or{" "}
@@ -209,9 +205,6 @@ export default async function InfoPage() {
             <li>
               What matters is when your match <em>pops</em> (fills to 6/6) — if that happens inside the
               window, you keep the bonus even if you don&apos;t report until after it closes.
-            </li>
-            <li>
-              <em>Universal Queue is never affected</em> — it doesn&apos;t touch MMR at all.
             </li>
             <li>The win-streak bonus above stacks with the Bonus Range.</li>
           </ul>

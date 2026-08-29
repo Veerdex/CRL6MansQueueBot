@@ -16,9 +16,9 @@ function game(overrides: Partial<CompletedGame> = {}): CompletedGame {
 
 describe("filterGames", () => {
   const games = [
-    game({ seriesId: "1", seasonId: "s1", queueType: "rank" }),
-    game({ seriesId: "2", seasonId: "s1", queueType: "universal" }),
-    game({ seriesId: "3", seasonId: "s2", queueType: "rank" }),
+    game({ seriesId: "1", seasonId: "s1" }),
+    game({ seriesId: "2", seasonId: "s1" }),
+    game({ seriesId: "3", seasonId: "s2" }),
   ];
 
   it("returns all games with no filter", () => {
@@ -28,20 +28,6 @@ describe("filterGames", () => {
   it("filters by seasonId", () => {
     const result = filterGames(games, { seasonId: "s1" });
     expect(result.map((g) => g.seriesId)).toEqual(["1", "2"]);
-  });
-
-  it("filters by queueType", () => {
-    const result = filterGames(games, { queueType: "rank" });
-    expect(result.map((g) => g.seriesId)).toEqual(["1", "3"]);
-  });
-
-  it("treats queueType 'all' as no filter", () => {
-    expect(filterGames(games, { queueType: "all" })).toHaveLength(3);
-  });
-
-  it("combines seasonId and queueType filters", () => {
-    const result = filterGames(games, { seasonId: "s1", queueType: "rank" });
-    expect(result.map((g) => g.seriesId)).toEqual(["1"]);
   });
 });
 

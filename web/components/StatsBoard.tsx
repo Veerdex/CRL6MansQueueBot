@@ -7,7 +7,6 @@ import type { CompletedGame } from "@/lib/leaderboard/queries";
 import { computeStats, filterGames } from "@/lib/leaderboard/stats";
 import { formatDisplayName } from "@/lib/leaderboard/formatName";
 import { playTap } from "@/lib/sound";
-import type { QueueType } from "@/lib/supabase/types";
 
 export interface StatsPlayer {
   playerId: string;
@@ -26,7 +25,6 @@ export interface SeasonRef {
   seasonNumber: number;
 }
 
-type QueueFilter = QueueType | "all";
 type SortKey =
   | "gamesPlayed"
   | "wins"
@@ -45,10 +43,8 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "currentStreak", label: "Current streak" },
 ];
 
-// Peak MMR only makes sense for Rank Queue (Universal Queue never moves MMR — see CLAUDE.md,
-// "Queueing"), and only on the All-Time board (a season-scoped "peak" would need a separate
-// per-season high-water mark this codebase doesn't track). Reuses the existing queue-filter
-// control rather than adding new UI — the column simply isn't there under "All"/"Universal".
+// Peak MMR is only meaningful on the All-Time board (a season-scoped "peak" would need a
+// separate per-season high-water mark this codebase doesn't track).
 const PEAK_COLUMN: { key: SortKey; label: string } = { key: "peakMmr", label: "Peak" };
 
 // peak_mmr only starts accumulating once a player claims their rank (crosses
@@ -57,8 +53,6 @@ const PEAK_COLUMN: { key: SortKey; label: string } = { key: "peakMmr", label: "P
 // elsewhere, so treat anything within this epsilon of 0 as "no peak yet" rather than exact
 // equality — matches how CLAUDE.md's peak_mmr backfill script itself reasons about the value.
 const NO_PEAK_EPSILON = 0.01;
-
-const QUEUE_OPTIONS: QueueFilter[] = ["all", "rank", "universal"];
 
 function applyMMRTransform(mmr: number, scale: number, shift: number): number {
   return mmr * scale + shift;
@@ -79,7 +73,6 @@ export default function StatsBoard({
   mmrScale?: number;
   mmrShift?: number;
 }) {
-  const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [seasonScope, setSeasonScope] = useState<"current" | "previous">("current");
   const [sortKey, setSortKey] = useState<SortKey>("gamesPlayed");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -93,7 +86,6 @@ export default function StatsBoard({
     return players.map((p) => {
       const scoped = filterGames(p.games, {
         seasonId: mode === "season" ? selectedSeasonId : undefined,
-        queueType: queueFilter,
       });
       const stats = computeStats(scoped);
       return {
@@ -104,9 +96,9 @@ export default function StatsBoard({
         ...stats,
       };
     });
-  }, [players, queueFilter, selectedSeasonId, mode]);
+  }, [players, selectedSeasonId, mode]);
 
-  const showPeakColumn = mode === "all-time" && queueFilter === "rank";
+  const showPeakColumn = mode === "all-time";
   const columns = showPeakColumn ? [...COLUMNS, PEAK_COLUMN] : COLUMNS;
 
   const sortedRows = useMemo(() => {
@@ -160,11 +152,6 @@ export default function StatsBoard({
     if (scope === "previous" && !previousSeason) return;
     playTap();
     setSeasonScope(scope);
-  }
-
-  function selectQueueFilter(q: QueueFilter) {
-    playTap();
-    setQueueFilter(q);
   }
 
   function handleSearch(playerId: string | null) {
@@ -231,19 +218,6 @@ export default function StatsBoard({
             </button>
           </div>
         )}
-        <div className="segmented">
-          {QUEUE_OPTIONS.map((q) => (
-            <button
-              key={q}
-              type="button"
-              data-active={queueFilter === q}
-              className="segmented-btn capitalize"
-              onClick={() => selectQueueFilter(q)}
-            >
-              {q}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="mb-4 w-full max-w-sm">

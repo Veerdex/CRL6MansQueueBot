@@ -121,9 +121,9 @@ export async function POST(request: Request) {
     .select("*")
     .eq("status", "reported")
     .lt("reported_at", reportedCutoff)
-    // queue_channel_id deliberately excluded — it's the shared rank/universal queue channel,
-    // always populated and never cleared, not a per-match resource deleteMatchChannels cleans
-    // up. Including it here would re-match (and no-op re-sweep) every reported series forever.
+    // queue_channel_id deliberately excluded — it's the shared queue channel, always populated
+    // and never cleared, not a per-match resource deleteMatchChannels cleans up. Including it
+    // here would re-match (and no-op re-sweep) every reported series forever.
     .or("category_id.not.is.null,voice_channel_a_id.not.is.null,voice_channel_b_id.not.is.null");
 
   if (orphanError) {
@@ -141,7 +141,7 @@ export async function POST(request: Request) {
   const queueTimeoutMinutes = await getConfigNumber("queue_member_timeout_minutes", 30);
   const queueCutoff = new Date(Date.now() - queueTimeoutMinutes * 60 * 1000).toISOString();
 
-  const queueTypes = ["rank" as const, "universal" as const];
+  const queueTypes = ["rank" as const];
   let queueMembersRemoved = 0;
 
   for (const queueType of queueTypes) {
@@ -173,7 +173,7 @@ export async function POST(request: Request) {
 
     if (deleted && deleted.length > 0) {
       queueMembersRemoved += deleted.length;
-      const queueLabel = queueType === "rank" ? "Rank Queue" : "Universal Queue";
+      const queueLabel = "Rank Queue";
 
       // Send DMs to all removed players
       await Promise.all(

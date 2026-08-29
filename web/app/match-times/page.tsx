@@ -120,9 +120,7 @@ export default async function MatchTimesPage() {
       <div className="panel animate-in-delay-2 p-4 sm:p-6">
         <MMRDistributionPanel
           players={distribution.players}
-          totalMatchesPlayed={distribution.totalMatchesPlayed}
-          rankMatchesPlayed={distribution.rankMatchesPlayed}
-          universalMatchesPlayed={distribution.universalMatchesPlayed}
+          matchesPlayed={distribution.matchesPlayed}
           mmrScale={mmrScale}
           mmrShift={mmrShift}
         />

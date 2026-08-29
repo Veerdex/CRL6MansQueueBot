@@ -315,29 +315,23 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
       if (!p) return Promise.resolve(null);
       const update: Partial<Pick<PlayerRow, "total_games_played" | "mmr" | "rank_games_played" | "band_games_played">> = {
         total_games_played: Math.max(0, p.total_games_played - 1),
+        mmr: p.mmr - sp.mmr_delta,
+        rank_games_played: Math.max(0, p.rank_games_played - 1),
+        band_games_played: Math.max(0, p.band_games_played - 1),
       };
-      if (series.queue_type === "rank") {
-        update.mmr = p.mmr - sp.mmr_delta;
-        update.rank_games_played = Math.max(0, p.rank_games_played - 1);
-        update.band_games_played = Math.max(0, p.band_games_played - 1);
-      }
       return supabase.from("crl6mansqueuebot_players").update(update).eq("id", p.id);
     }),
   );
 
-  if (series.queue_type === "rank") {
-    // Unwinding MMR can push a player's band back down just as easily as correcting a winner
-    // can push it up — same live recompute as report.ts/correct-report, rather than leaving it
-    // to the next daily cron tick.
-    await recomputeBands();
-  }
+  // Unwinding MMR can push a player's band back down just as easily as correcting a winner
+  // can push it up — same live recompute as report.ts/correct-report, rather than leaving it
+  // to the next daily cron tick.
+  await recomputeBands();
 
   // Delete prediction record if it exists
-  const predictionTable =
-    series.queue_type === "rank" ? "crl6mansqueuebot_rank_game_predictions" : "crl6mansqueuebot_universal_game_predictions";
-  await supabase.from(predictionTable).delete().eq("series_id", series.id);
+  await supabase.from("crl6mansqueuebot_rank_game_predictions").delete().eq("series_id", series.id);
 
-  await logAdminAction(actorId, "unreport", series.id, `queue_type=${series.queue_type} players=${players.length}`);
+  await logAdminAction(actorId, "unreport", series.id, `players=${players.length}`);
   const matchNumber = series.match_number;
   const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
   await editOriginalResponse(interaction.token, {
@@ -406,111 +400,108 @@ async function processCorrectReport(
     .in("id", seriesPlayers.map((sp) => sp.player_id));
   const playersById = new Map((playerRows ?? []).map((p) => [p.id, p]));
 
-  // Only recalculate MMR if this is a Rank Queue series
-  if (series.queue_type === "rank") {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
-      getConfigNumber("k_factor", 32),
-      getConfigNumber("s_scale", 400),
-      getConfigNumber("provisional_games", 10),
-      getConfigNumber("provisional_k_multiplier", 1.75),
-      getConfigNumber("mmr_skew_factor", 0.5),
-      getConfigNumber("mmr_min_delta", 2),
-      getConfigNumber("streak_bonus_enabled", 1),
-      getConfigNumber("mmr_confidence_multiplier", 1),
-    ]);
-    const streakBonusEnabled = streakBonusEnabledRaw === 1;
-    // Same locked-in-at-pop/vote-resolution multipliers the original report used — a correction
-    // reuses them rather than re-evaluating "now" so it stays consistent with whatever the
-    // original settle applied. series_length_k_multiplier is passed as seriesLengthMultiplier
-    // below, not folded into effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
-    const effectiveKFactor = kFactor * series.bonus_day_multiplier;
+  const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
+    getConfigNumber("k_factor", 32),
+    getConfigNumber("s_scale", 400),
+    getConfigNumber("provisional_games", 10),
+    getConfigNumber("provisional_k_multiplier", 1.75),
+    getConfigNumber("mmr_skew_factor", 0.5),
+    getConfigNumber("mmr_min_delta", 2),
+    getConfigNumber("streak_bonus_enabled", 1),
+    getConfigNumber("mmr_confidence_multiplier", 1),
+  ]);
+  const streakBonusEnabled = streakBonusEnabledRaw === 1;
+  // Same locked-in-at-pop/vote-resolution multipliers the original report used — a correction
+  // reuses them rather than re-evaluating "now" so it stays consistent with whatever the
+  // original settle applied. series_length_k_multiplier is passed as seriesLengthMultiplier
+  // below, not folded into effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
+  const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
-    const eloInputs = seriesPlayers.map((sp) => {
-      const p = playersById.get(sp.player_id)!;
-      return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
-    });
+  const eloInputs = seriesPlayers.map((sp) => {
+    const p = playersById.get(sp.player_id)!;
+    return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
+  });
 
-    const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
-    const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
+  const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
+  const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
-    // Same win-streak MMR bonus report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"
-    // — streak bonus), recomputed here since correcting the winner changes who it even applies
-    // to. This series is excluded from its own streak lookup (same reasoning as report.ts — it's
-    // already status='reported'). Doesn't attempt to re-fire the announcement embed or account
-    // for any later games that may have been played (and reported) since this series — a known,
-    // accepted limitation of correcting a match after the fact.
-    const bonusByPlayer = new Map<string, number>();
-    if (streakBonusEnabled) {
-      await Promise.all(
-        seriesPlayers.map(async (sp) => {
-          if (sp.team !== winnerTeam) return;
-          const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
-          const expected = newResultsById.get(sp.player_id)!.expected;
-          bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
-        }),
-      );
-    }
-
-    // Reverse old delta, apply new delta for each player. peak_mmr normally only ever rises
-    // (Math.max against the stored value — same "not tracked while unranked" rule as report.ts's
-    // own write). A correction is exactly the moment a stored peak might be provably wrong,
-    // though: if it drops a currently-placed player's mmr below their recorded peak, that peak
-    // may have been set by the very result now being corrected. For just those candidates, a
-    // full history replay (peakMmrRecompute.ts) determines each player's true lifetime peak from
-    // current data and is allowed to lower the stored value — see that module's header for why
-    // the full player population (not just these candidates) is required to get season-close
-    // decay right.
-    const correctedMmrByPlayer = new Map<string, number>();
-    const newDeltaByPlayer = new Map<string, number>();
-    for (const sp of seriesPlayers) {
-      const p = playersById.get(sp.player_id)!;
-      const oldDelta = sp.mmr_delta ?? 0;
-      const newResult = newResultsById.get(sp.player_id)!;
-      const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
-      newDeltaByPlayer.set(sp.player_id, newDelta);
-      correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
-    }
-
-    const peakCandidates = seriesPlayers.filter((sp) => {
-      const p = playersById.get(sp.player_id)!;
-      return p.is_placed && correctedMmrByPlayer.get(sp.player_id)! < p.peak_mmr;
-    });
-    let reconstructedPeaks: Map<string, number> | null = null;
-    if (peakCandidates.length > 0) {
-      const { recomputeTruePeakMmr } = await import("@/lib/mmr/peakMmrRecompute");
-      reconstructedPeaks = (await recomputeTruePeakMmr(supabase)).peakMmrByPlayer;
-    }
-
+  // Same win-streak MMR bonus report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"
+  // — streak bonus), recomputed here since correcting the winner changes who it even applies
+  // to. This series is excluded from its own streak lookup (same reasoning as report.ts — it's
+  // already status='reported'). Doesn't attempt to re-fire the announcement embed or account
+  // for any later games that may have been played (and reported) since this series — a known,
+  // accepted limitation of correcting a match after the fact.
+  const bonusByPlayer = new Map<string, number>();
+  if (streakBonusEnabled) {
     await Promise.all(
       seriesPlayers.map(async (sp) => {
-        const p = playersById.get(sp.player_id)!;
-        const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
-        const newDelta = newDeltaByPlayer.get(sp.player_id)!;
-        const isCandidate = reconstructedPeaks !== null && peakCandidates.includes(sp);
-        const peakMmr = isCandidate
-          ? Math.max(reconstructedPeaks!.get(p.id) ?? 0, correctedMmr, 0)
-          : p.is_placed
-            ? Math.max(p.peak_mmr, correctedMmr)
-            : p.peak_mmr;
-
-        await supabase
-          .from("crl6mansqueuebot_players")
-          .update({ mmr: correctedMmr, peak_mmr: peakMmr })
-          .eq("id", p.id);
-
-        await supabase
-          .from("crl6mansqueuebot_series_players")
-          .update({ mmr_delta: newDelta })
-          .eq("series_id", series.id)
-          .eq("player_id", p.id);
+        if (sp.team !== winnerTeam) return;
+        const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
+        const expected = newResultsById.get(sp.player_id)!.expected;
+        bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
       }),
     );
-
-    // Correcting the winner can push a player's MMR across a band threshold — recompute now,
-    // same as report.ts's live recompute (see CLAUDE.md, "Reporting & disputes"), rather than
-    // leaving it to the next daily cron tick.
-    await recomputeBands();
   }
+
+  // Reverse old delta, apply new delta for each player. peak_mmr normally only ever rises
+  // (Math.max against the stored value — same "not tracked while unranked" rule as report.ts's
+  // own write). A correction is exactly the moment a stored peak might be provably wrong,
+  // though: if it drops a currently-placed player's mmr below their recorded peak, that peak
+  // may have been set by the very result now being corrected. For just those candidates, a
+  // full history replay (peakMmrRecompute.ts) determines each player's true lifetime peak from
+  // current data and is allowed to lower the stored value — see that module's header for why
+  // the full player population (not just these candidates) is required to get season-close
+  // decay right.
+  const correctedMmrByPlayer = new Map<string, number>();
+  const newDeltaByPlayer = new Map<string, number>();
+  for (const sp of seriesPlayers) {
+    const p = playersById.get(sp.player_id)!;
+    const oldDelta = sp.mmr_delta ?? 0;
+    const newResult = newResultsById.get(sp.player_id)!;
+    const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+    newDeltaByPlayer.set(sp.player_id, newDelta);
+    correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
+  }
+
+  const peakCandidates = seriesPlayers.filter((sp) => {
+    const p = playersById.get(sp.player_id)!;
+    return p.is_placed && correctedMmrByPlayer.get(sp.player_id)! < p.peak_mmr;
+  });
+  let reconstructedPeaks: Map<string, number> | null = null;
+  if (peakCandidates.length > 0) {
+    const { recomputeTruePeakMmr } = await import("@/lib/mmr/peakMmrRecompute");
+    reconstructedPeaks = (await recomputeTruePeakMmr(supabase)).peakMmrByPlayer;
+  }
+
+  await Promise.all(
+    seriesPlayers.map(async (sp) => {
+      const p = playersById.get(sp.player_id)!;
+      const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
+      const newDelta = newDeltaByPlayer.get(sp.player_id)!;
+      const isCandidate = reconstructedPeaks !== null && peakCandidates.includes(sp);
+      const peakMmr = isCandidate
+        ? Math.max(reconstructedPeaks!.get(p.id) ?? 0, correctedMmr, 0)
+        : p.is_placed
+          ? Math.max(p.peak_mmr, correctedMmr)
+          : p.peak_mmr;
+
+      await supabase
+        .from("crl6mansqueuebot_players")
+        .update({ mmr: correctedMmr, peak_mmr: peakMmr })
+        .eq("id", p.id);
+
+      await supabase
+        .from("crl6mansqueuebot_series_players")
+        .update({ mmr_delta: newDelta })
+        .eq("series_id", series.id)
+        .eq("player_id", p.id);
+    }),
+  );
+
+  // Correcting the winner can push a player's MMR across a band threshold — recompute now,
+  // same as report.ts's live recompute (see CLAUDE.md, "Reporting & disputes"), rather than
+  // leaving it to the next daily cron tick.
+  await recomputeBands();
 
   // Update the series winner
   await supabase
@@ -519,11 +510,9 @@ async function processCorrectReport(
     .eq("id", series.id);
 
   // Update prediction record if it exists
-  const predictionTable =
-    series.queue_type === "rank" ? "crl6mansqueuebot_rank_game_predictions" : "crl6mansqueuebot_universal_game_predictions";
   const newActualWinner = winnerTeam === "A" ? "blue" : "orange";
   await (supabase as any)
-    .from(predictionTable)
+    .from("crl6mansqueuebot_rank_game_predictions")
     .update({ actual_winner: newActualWinner })
     .eq("series_id", series.id);
 
@@ -531,7 +520,7 @@ async function processCorrectReport(
     actorId,
     "correct_report",
     series.id,
-    `Changed winner from ${oldWinner} to ${winnerTeam} (queue_type=${series.queue_type})`,
+    `Changed winner from ${oldWinner} to ${winnerTeam}`,
   );
 
   const matchNumber = series.match_number;
@@ -547,8 +536,8 @@ async function processCorrectReport(
 // active-series case, and the same reply-then-delay ordering /report and /abandon use so the
 // admin's ephemeral confirmation isn't blocked on the 30s closing warning. With no id:, resolves
 // to whichever match the calling admin is currently sitting in (via membership, not channel —
-// queue_channel_id is a shared rank/universal queue channel, so multiple concurrently active
-// series can share it); an admin who isn't a participant must pass id: explicitly.
+// queue_channel_id is a shared queue channel, so multiple concurrently active series can share
+// it); an admin who isn't a participant must pass id: explicitly.
 // ---------------------------------------------------------------------------
 
 async function resolveSeriesForAdmin(
@@ -920,17 +909,13 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
   const queueMessageMap = new Map((queueMessages as any ?? []).map((q: any) => [q.queue_type, q.channel_id]));
 
   let queueChannelId: string | null = null;
-  let queueType: "rank" | "universal" | null = null;
+  let queueType: "rank" | null = null;
 
   const rankChannelId = queueMessageMap.get("rank") as string | undefined;
-  const universalChannelId = queueMessageMap.get("universal") as string | undefined;
 
   if (rankChannelId && interaction.channel_id === rankChannelId) {
     queueChannelId = rankChannelId;
     queueType = "rank";
-  } else if (universalChannelId && interaction.channel_id === universalChannelId) {
-    queueChannelId = universalChannelId;
-    queueType = "universal";
   }
 
   if (!queueChannelId || !queueType) {
@@ -939,7 +924,7 @@ async function processTestFlow(interaction: DiscordInteraction, actorId: string,
   }
 
   // Send initial message
-  const queueLabel = queueType === "rank" ? "Rank Queue" : "Universal Queue";
+  const queueLabel = "Rank Queue";
   await editOriginalResponse(interaction.token, {
     content: `🤖 Creating test bots and adding them to the ${queueLabel}...`,
   });
@@ -1049,9 +1034,6 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
     const { error: err3c } = await (supabase.from("crl6mansqueuebot_rank_game_predictions") as any)
       .delete()
       .not("series_id", "is", null);
-    const { error: err3d } = await (supabase.from("crl6mansqueuebot_universal_game_predictions") as any)
-      .delete()
-      .not("series_id", "is", null);
     const { error: err4 } = await supabase.from("crl6mansqueuebot_series_players").delete().not("series_id", "is", null);
     const { error: err5 } = await supabase.from("crl6mansqueuebot_series_lobby").delete().not("series_id", "is", null);
     const { error: err6 } = await supabase.from("crl6mansqueuebot_series").delete().not("id", "is", null);
@@ -1088,7 +1070,6 @@ async function processReset(interaction: DiscordInteraction, actorId: string, co
       err3,
       err3b,
       err3c,
-      err3d,
       err4,
       err5,
       err6,
@@ -1152,9 +1133,6 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
     const { error: err3c } = await (supabase.from("crl6mansqueuebot_rank_game_predictions") as any)
       .delete()
       .not("series_id", "is", null);
-    const { error: err3d } = await (supabase.from("crl6mansqueuebot_universal_game_predictions") as any)
-      .delete()
-      .not("series_id", "is", null);
     const { error: err4 } = await supabase.from("crl6mansqueuebot_series_players").delete().not("series_id", "is", null);
     const { error: err5 } = await supabase.from("crl6mansqueuebot_series_lobby").delete().not("series_id", "is", null);
     const { error: err6 } = await supabase.from("crl6mansqueuebot_series").delete().not("id", "is", null);
@@ -1188,7 +1166,6 @@ async function processFullReset(interaction: DiscordInteraction, actorId: string
       err3,
       err3b,
       err3c,
-      err3d,
       err4,
       err5,
       err6,
@@ -1260,7 +1237,6 @@ async function processChecklist(interaction: DiscordInteraction) {
     // Channels
     items.push(`**Channels**`);
     items.push(queueMessageMap.has("rank") ? `✅ Rank Queue channel` : `❌ Rank Queue channel`);
-    items.push(queueMessageMap.has("universal") ? `✅ Universal Queue channel` : `❌ Universal Queue channel`);
     items.push(configMap.has("report_channel_id") ? `✅ Report channel` : `❌ Report channel`);
     items.push(configMap.has("6mans_call_category_id") ? `✅ 6-mans call category` : `❌ 6-mans call category`);
 
@@ -1288,7 +1264,6 @@ async function processChecklist(interaction: DiscordInteraction) {
     items.push(``);
     items.push(`**Queue Mention Roles**`);
     items.push(mentionRoleMap.has("rank") ? `✅ Rank Queue mention role` : `❌ Rank Queue mention role`);
-    items.push(mentionRoleMap.has("universal") ? `✅ Universal Queue mention role` : `❌ Universal Queue mention role`);
 
     // Admin roles
     items.push(``);
@@ -1420,8 +1395,8 @@ async function processStart(interaction: DiscordInteraction, actorId: string) {
 
 // ---------------------------------------------------------------------------
 // /admin queue-message-mode mode:<simplified|default|hybrid|rich> — controls how join/leave
-// messages behave in #rank-queue / #universal-queue. See queue.ts's getQueueMessageMode() for the
-// full description of each mode.
+// messages behave in #rank-queue. See queue.ts's getQueueMessageMode() for the full description
+// of each mode.
 // ---------------------------------------------------------------------------
 
 const QUEUE_MESSAGE_MODE_DESCRIPTIONS: Record<string, string> = {

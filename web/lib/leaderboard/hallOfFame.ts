@@ -136,7 +136,7 @@ export async function getHallOfFameData(): Promise<HallOfFameSeason[]> {
       const streakWinner = pickTop(
         participants.map((p) => ({
           player: p.player,
-          value: computeStats(filterGames(p.games, { seasonId: season.id, queueType: "rank" })).longestWinStreak,
+          value: computeStats(filterGames(p.games, { seasonId: season.id })).longestWinStreak,
         })),
       );
 
@@ -180,7 +180,7 @@ export async function getHallOfFameData(): Promise<HallOfFameSeason[]> {
           const player = playersById.get(row.player_id);
           const games = gamesByPlayerId.get(row.player_id);
           if (!player || !games) return null;
-          const streak = computeStats(filterGames(games, { seasonId: season.id, queueType: "rank" })).longestWinStreak;
+          const streak = computeStats(filterGames(games, { seasonId: season.id })).longestWinStreak;
           return { player, value: streak };
         })
         .filter((x): x is { player: PlayerRow; value: number } => x !== null),

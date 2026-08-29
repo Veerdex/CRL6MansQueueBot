@@ -12,10 +12,10 @@ import { deleteMatchChannels } from "./matchChannels";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-const QUEUE_LABELS: Record<QueueType, string> = { rank: "Rank Queue", universal: "Universal Queue" };
+const QUEUE_LABELS: Record<QueueType, string> = { rank: "Rank Queue" };
 
 // ---------------------------------------------------------------------------
-// /test-rank-match, /test-universal-match, /end-test — admin-only commands that spin up a
+// /test-rank-match, /end-test — admin-only commands that spin up a
 // simulated 6-player match (the admin + 5 synthetic "test bot" players) so an admin can try the
 // real team-formation/report flow without needing 5 other Discord users to queue up with them.
 // See CLAUDE.md's "Open items" — no dedicated section exists yet for this feature.

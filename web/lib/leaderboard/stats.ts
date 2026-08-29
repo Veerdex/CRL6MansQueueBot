@@ -1,4 +1,4 @@
-import type { Band, QueueType } from "../supabase/types";
+import type { Band } from "../supabase/types";
 import type { CompletedGame } from "./queries";
 
 export interface GameStats {
@@ -12,15 +12,11 @@ export interface GameStats {
 
 export interface GameFilter {
   seasonId?: string;
-  queueType?: QueueType | "all";
 }
 
 export function filterGames(games: CompletedGame[], filter: GameFilter): CompletedGame[] {
   return games.filter((game) => {
     if (filter.seasonId && game.seasonId !== filter.seasonId) return false;
-    if (filter.queueType && filter.queueType !== "all" && game.queueType !== filter.queueType) {
-      return false;
-    }
     return true;
   });
 }

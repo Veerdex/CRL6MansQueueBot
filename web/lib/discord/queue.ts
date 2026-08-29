@@ -18,7 +18,6 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 
 const QUEUE_LABELS: Record<QueueType, string> = {
   rank: "Rank Queue",
-  universal: "Universal Queue",
 };
 
 // ---------------------------------------------------------------------------
@@ -306,10 +305,8 @@ export type QueueMessageMode = "simplified" | "default" | "hybrid" | "rich";
 //     plain join card per direct request. That message is still frozen permanently right after —
 //     see freezeQueueRosterMessage — so it stays visible as a record of who played that match, and
 //     the separate, always-posted gold "Match Found!" announcement (postRichMatchFoundAnnouncement)
-//     covers the full 6-player roster regardless of what this message shows. Applies uniformly to
-//     both queue types — a Universal player's Streak field simply never appears, since it's driven
-//     by Rank-Queue-only streak counts which are always 0 for them. A player auto-removed by the
-//     sweep route for inactivity (queue_member_timeout_minutes) also gets exactly one message —
+//     covers the full 6-player roster regardless of what this message shows. A player auto-removed
+//     by the sweep route for inactivity (queue_member_timeout_minutes) also gets exactly one message —
 //     the same richEventEmbed card shape, headlined as removed-for-inactivity instead of left, and
 //     always RICH_INACTIVITY_COLOR (orange) — rather than the roster-refresh-plus-plain-orange-
 //     embed pair every other mode still posts for that case; see CLAUDE.md, "Queue channels".
@@ -676,8 +673,8 @@ export async function isPlayerLockedInActiveSeries(supabase: AdminClient, player
 
 // Same lobby∪series_players lookup as isPlayerLockedInActiveSeries, but returns the series
 // row itself rather than a boolean — used by /sub and /abandon to resolve "the caller's
-// match" by membership instead of by channel. queue_channel_id is a shared rank/universal
-// queue channel, not a per-match channel, so multiple concurrently forming/active series can
+// match" by membership instead of by channel. queue_channel_id is a shared queue channel, not
+// a per-match channel, so multiple concurrently forming/active series can
 // have the same queue_channel_id; a player can only be locked into one at a time, so
 // membership is the unambiguous key (mirrors report.ts's own resolution, which never used
 // channel inference at all).
@@ -1012,31 +1009,6 @@ async function handlePop(
 
   await supabase.from("crl6mansqueuebot_queue_members").delete().eq("queue_type", queueType).in("player_id", playerIds);
 
-  const otherQueueType: QueueType = queueType === "rank" ? "universal" : "rank";
-  const { data: crossRemoved } = await supabase
-    .from("crl6mansqueuebot_queue_members")
-    .delete()
-    .eq("queue_type", otherQueueType)
-    .in("player_id", playerIds)
-    .select("player_id");
-
-  // Don't refresh queue message here — the vote embed will be posted in the queue channel
-  // by createMatchChannels, and we don't want to send a "0 members" message after pop
-  if (crossRemoved && crossRemoved.length > 0) {
-    await refreshQueueMessage(supabase, otherQueueType);
-    const crossRemovedIds = new Set(crossRemoved.map((r) => r.player_id));
-    await Promise.all(
-      members
-        .filter((m) => crossRemovedIds.has(m.id))
-        .map((m) =>
-          sendDirectMessage(
-            m.discord_id,
-            `Your ${QUEUE_LABELS[queueType]} popped, so you've been pulled out of the ${QUEUE_LABELS[otherQueueType]} too.`,
-          ),
-        ),
-    );
-  }
-
   await createMatchChannels(supabase, series.id, guildId, members, queueChannelId);
   return { members };
 }
@@ -1157,7 +1129,7 @@ async function processSetQueueChannel(
     await editOriginalResponse(interaction.token, { content: "You don't have admin access." });
     return;
   }
-  if (!channelId || (queueTypeRaw !== "rank" && queueTypeRaw !== "universal")) {
+  if (!channelId || queueTypeRaw !== "rank") {
     await editOriginalResponse(interaction.token, { content: "Invalid queue_type or channel." });
     return;
   }
@@ -1377,8 +1349,8 @@ async function processSetQueueMentionRole(
     return;
   }
 
-  if (queueTypeRaw !== "rank" && queueTypeRaw !== "universal") {
-    await editOriginalResponse(interaction.token, { content: "Invalid queue_type. Use 'rank' or 'universal'." });
+  if (queueTypeRaw !== "rank") {
+    await editOriginalResponse(interaction.token, { content: "Invalid queue_type. Use 'rank'." });
     return;
   }
 

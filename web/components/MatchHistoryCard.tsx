@@ -66,10 +66,7 @@ export default function MatchHistoryCard({
   return (
     <div className="rounded-xl border border-border bg-surface-2/40 p-4">
       <div className="mb-2 flex items-center justify-between text-xs text-muted">
-        <span>
-          {match.matchNumber !== null ? `Match #${match.matchNumber}` : "Match"} ·{" "}
-          {match.queueType === "rank" ? "Rank Queue" : "Universal Queue"}
-        </span>
+        <span>{match.matchNumber !== null ? `Match #${match.matchNumber}` : "Match"}</span>
         {/* Locale/timezone-dependent formatting can differ between server render and the
             browser's own locale — suppress the one-time hydration mismatch warning rather than
             deferring the whole date to a post-mount effect. */}

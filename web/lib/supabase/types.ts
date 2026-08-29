@@ -1,4 +1,4 @@
-export type QueueType = "rank" | "universal";
+export type QueueType = "rank";
 export type SeriesStatus = "forming" | "active" | "reported" | "cancelled" | "void";
 export type Team = "A" | "B";
 export type Band = "Iron" | "Garnet" | "Emerald" | "Sapphire";
