@@ -43,7 +43,7 @@ export default function HallOfFameSlotCard({
   mmrScale: number;
   mmrShift: number;
 }) {
-  const displayBand: DisplayBand | null = slot.player ? (slot.player.isPrism ? "Prism" : slot.player.band) : null;
+  const displayBand: DisplayBand | null = slot.player ? slot.player.band : null;
 
   return (
     <div

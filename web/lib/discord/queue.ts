@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, RICH_INACTIVITY_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, RICH_INACTIVITY_COLOR, PRISM_JOIN_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -34,7 +34,7 @@ const QUEUE_LABELS: Record<QueueType, string> = {
 async function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], streaks: StreakIds, headline?: string) {
   const label = QUEUE_LABELS[queueType];
   const mentionLine = members.length
-    ? members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ")
+    ? members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id), prism: m.is_prism })).join(" ")
     : "_Empty_";
   const headlineBlock = headline ? `**${headline}**\n\n` : "";
   const color = (await isSuperchargedDayLive()) ? SUPERCHARGED_COLOR : BRAND_COLOR;
@@ -54,12 +54,9 @@ async function buildRosterLines(members: PlayerRow[], streaks: StreakIds): Promi
   const shift = await getConfigNumber("mmr_shift", 0);
   return Promise.all(
     members.map(async (m) => {
-      // Prism is a live top-N overlay (see CLAUDE.md, "Bands / ranks"), not a `band` column
-      // value — resolve it before rendering so a Prism player's roster line shows Prism rather
-      // than their underlying (almost always Sapphire) band.
-      const band = m.is_prism ? "Prism" : m.is_placed ? m.band : null;
+      const band = m.is_placed ? m.band : null;
       const emoji = await getRankEmoji(band);
-      const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
+      const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id), prism: m.is_prism });
       const displayMmr = Math.round(m.mmr * scale + shift);
       return `${emoji} ${who} — ${getRankLabel(band)} · ${displayMmr} MMR`;
     }),
@@ -119,7 +116,7 @@ async function richEventEmbed(
   queueSize: number,
 ): Promise<any> {
   const label = QUEUE_LABELS[queueType];
-  const band = player.is_prism ? "Prism" : player.is_placed ? player.band : null;
+  const band = player.is_placed ? player.band : null;
   const [scale, shift, rankEmoji, winStreak, lossStreak] = await Promise.all([
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
@@ -138,15 +135,24 @@ async function richEventEmbed(
 
   const supercharged = await isSuperchargedDayLive();
   // Leave and inactivity always render in their own fixed color, even on a supercharged day — only
-  // join keeps the purple override, since it's the one case worth celebrating.
+  // join keeps the purple override, since it's the one case worth celebrating. A joining Prism
+  // holder's own card wins over even the Bonus Day purple — see CLAUDE.md, "Bands / ranks".
   const color =
-    action === "inactive" ? RICH_INACTIVITY_COLOR : action === "leave" ? RICH_LEAVE_COLOR : supercharged ? SUPERCHARGED_COLOR : RICH_JOIN_COLOR;
+    action === "inactive"
+      ? RICH_INACTIVITY_COLOR
+      : action === "leave"
+        ? RICH_LEAVE_COLOR
+        : player.is_prism
+          ? PRISM_JOIN_COLOR
+          : supercharged
+            ? SUPERCHARGED_COLOR
+            : RICH_JOIN_COLOR;
 
   const filled = Math.max(0, Math.min(6, queueSize));
   const filledEmoji = supercharged ? "🟪" : "🟩";
   const progress = `${filledEmoji.repeat(filled)}${"⬛".repeat(6 - filled)}  ${filled}/6`;
 
-  const playerMention = mention(player.discord_id, { onFire: winStreak >= FLAME_THRESHOLD, cold: lossStreak >= COLD_THRESHOLD });
+  const playerMention = mention(player.discord_id, { onFire: winStreak >= FLAME_THRESHOLD, cold: lossStreak >= COLD_THRESHOLD, prism: player.is_prism });
 
   // Inactivity is a copy of the leave card's shape (same stat line, same progress bar) with its
   // own headline instead of "left the ... Queue!" — see CLAUDE.md, "Queue channels".
@@ -230,7 +236,7 @@ async function richMatchFoundEmbed(members: PlayerRow[], streaks: StreakIds): Pr
 
 async function postRichMatchFoundAnnouncement(channelId: string, members: PlayerRow[], streaks: StreakIds) {
   const embed = await richMatchFoundEmbed(members, streaks);
-  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
+  const mentions = members.map((m) => mention(m.discord_id, { prism: m.is_prism })).join(" ");
   await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
     body: JSON.stringify({ content: mentions, embeds: [embed] }),

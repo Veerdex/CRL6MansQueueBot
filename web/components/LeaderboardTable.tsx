@@ -14,9 +14,9 @@ export interface MainBoardRow {
   displayName: string;
   avatarUrl: string | null;
   band: Band | null;
-  // Live top-N overlay (see CLAUDE.md, "Bands / ranks") — a Prism player's `band` column still
-  // holds their real underlying band (almost always Sapphire); this flag drives the gold
-  // highlight/icon override independently of that.
+  // Season-end achievement, held additively alongside `band` (see CLAUDE.md, "Bands / ranks") —
+  // drives the gold text/brightened badge styling once the player has a real band again this
+  // season (gated on `band !== null` at the render site), never a display-band substitute.
   isPrism: boolean;
   mmr: number;
   wins: number;
@@ -35,7 +35,21 @@ function formatWinRate(winRate: number | null) {
 // Hex, not rgb() — a hex alpha suffix is appended below (e.g. `${color}20`), which only forms a
 // valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid CSS and
 // gets silently dropped.
-function getBandColor(band: DisplayBand | null): string {
+// `bright` is the current Prism holder's badge tint (see CLAUDE.md, "Bands / ranks") — a subtly
+// brightened variant of the player's own real band color, never a fixed Prism color.
+function getBandColor(band: DisplayBand | null, bright = false): string {
+  if (bright) {
+    switch (band) {
+      case "Iron":
+        return "#9e9e9e";
+      case "Garnet":
+        return "#ff4d4d";
+      case "Emerald":
+        return "#00b34d";
+      case "Sapphire":
+        return "#4d4dff";
+    }
+  }
   switch (band) {
     case "Iron":
       return "#7d7d7d";
@@ -45,8 +59,6 @@ function getBandColor(band: DisplayBand | null): string {
       return "#008000";
     case "Sapphire":
       return "#0000ff";
-    case "Prism":
-      return "#c084fc";
     default:
       // Unranked/null: gray
       return "#464646";
@@ -137,21 +149,25 @@ export default function LeaderboardTable({
             ) : (
               pageRows.map((row, i) => {
                 const position = start + i + 1;
-                const displayBand: DisplayBand | null = row.isPrism ? "Prism" : row.band;
+                const displayBand: DisplayBand | null = row.band;
+                // Prism styling (gold text, brightened badge) only kicks in once the player has
+                // a real band again this season — right after a season reset everyone's
+                // Unranked, Prism or not. See CLAUDE.md, "Bands / ranks".
+                const showPrismStyling = row.isPrism && row.band !== null;
                 const isHighlighted = row.playerId === highlightedPlayerId;
-                const bandColor = getBandColor(displayBand);
+                const bandColor = getBandColor(displayBand, showPrismStyling);
                 const backgroundGradient = `linear-gradient(90deg, ${bandColor}20 0%, transparent 100%)`;
                 return (
                   <tr
                     key={row.playerId}
                     ref={isHighlighted ? highlightRef : null}
                     className={`row-hover cursor-pointer border-b border-border text-foreground last:border-b-0 ${
-                      row.isPrism ? "top-cut" : ""
+                      showPrismStyling ? "top-cut" : ""
                     } ${isHighlighted ? "highlight-pulse" : ""}`}
                     style={{ backgroundImage: backgroundGradient }}
                     onClick={() => goToPlayer(row.playerId)}
                   >
-                    <td className={`py-2 pr-3 pl-4 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{position}</td>
+                    <td className={`py-2 pr-3 pl-4 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>{position}</td>
                     <td className="py-2 pr-3 font-medium">
                       <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} />
                       {formatDisplayName(row.displayName)}
@@ -174,12 +190,12 @@ export default function LeaderboardTable({
                         className="h-6 w-6 object-contain"
                       />
                     </td>
-                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>
+                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>
                       {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))}
                     </td>
-                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{row.wins}</td>
-                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>{row.losses}</td>
-                    <td className={`py-2 pr-3 ${row.isPrism ? "font-semibold text-gold" : ""}`}>
+                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>{row.wins}</td>
+                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>{row.losses}</td>
+                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>
                       {formatWinRate(row.winRate)}
                     </td>
                   </tr>

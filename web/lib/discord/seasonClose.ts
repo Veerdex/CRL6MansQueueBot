@@ -2,9 +2,17 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getConfigNumber } from "./config";
 import { resetAllPlacementsToUnranked } from "./bands";
+import { getGuildId, addMemberRole, removeMemberRole } from "./rest";
 import type { SeasonRow } from "@/lib/supabase/types";
 
-type CloseSummary = { participants: number; top10: number; playersDecayed: number; playersReset: number };
+type CloseSummary = {
+  participants: number;
+  top10: number;
+  playersDecayed: number;
+  playersReset: number;
+  prismGranted: number;
+  prismRevoked: number;
+};
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -43,10 +51,11 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 // soft reset run. Test-data players (dev panel) are excluded throughout, same treatment as
 // every other bot-side Discord/ranking operation (see bands.ts).
 //
-// Prism is no longer granted/stripped here — it's a live top-N overlay recomputed continuously
-// by bands.ts's recomputeBands() (daily cron, every Rank Queue report, admin actions), not a
-// season-close-only event. The `made_top10`/season_history write below is purely an archival
-// record of that season's standings, decoupled from the actual `is_prism` role state.
+// Prism is a season-end achievement, granted/revoked ONLY here — the top `prism_top_n` players by
+// MMR (any band, >= top10_min_games this season) hold it for the entire following season,
+// stacked alongside their real band role, until the next season close re-evaluates it. See
+// CLAUDE.md, "Bands / ranks". The `made_top10`/season_history write below shares the exact same
+// ranking as the archival record of that season's standings.
 //
 // After decay, every currently-placed player is reset back to Unranked (bands.ts's
 // resetAllPlacementsToUnranked — see CLAUDE.md, "Seasons") so a new season starts with everyone
@@ -99,9 +108,12 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 
   const participantIds = [...gamesPlayedByPlayerId.keys()];
   if (participantIds.length === 0) {
+    // No games played this season — nobody can qualify for a fresh Prism grant, but anyone
+    // holding it from the season that just ended still needs to be cleared out.
+    const { revoked: prismRevoked } = await syncPrismRoles(supabase, new Set(), new Map());
     const playersDecayed = await applyMmrDecay(supabase, decayFactor);
     const playersReset = await resetAllPlacementsToUnranked();
-    return { participants: 0, top10: 0, playersDecayed, playersReset };
+    return { participants: 0, top10: 0, playersDecayed, playersReset, prismGranted: 0, prismRevoked };
   }
 
   const players = (
@@ -143,18 +155,94 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
     await supabase.from("crl6mansqueuebot_season_history").upsert(rowsChunk);
   }
 
-  // Prism role sync used to happen here (strip/grant against last season's `is_prism` holders).
-  // That's now handled live by bands.ts's recomputeBands() for the ordinary case (re-evaluated on
-  // every report/daily cron). At season-reset time specifically, though, resetAllPlacementsToUnranked
-  // (called below, via applyMmrDecay's sibling call) clears `is_prism` and the Prism role itself —
-  // fixed this session, since a later recomputeBands() call can't reconsider a player it just reset
-  // out of its own pool (is_placed/rank_games_played both get zeroed), so it could never actually
-  // "clear out anyone who no longer qualifies" the way this comment used to (incorrectly) claim.
+  const discordIdById = new Map(players.map((p) => [p.id, p.discord_id]));
+  const { granted: prismGranted, revoked: prismRevoked } = await syncPrismRoles(supabase, top10Ids, discordIdById);
 
   const playersDecayed = await applyMmrDecay(supabase, decayFactor);
   const playersReset = await resetAllPlacementsToUnranked();
 
-  return { participants: ranked.length, top10: top10Ids.size, playersDecayed, playersReset };
+  return { participants: ranked.length, top10: top10Ids.size, playersDecayed, playersReset, prismGranted, prismRevoked };
+}
+
+// ---------------------------------------------------------------------------
+// Grants Prism to every player in `top10Ids` who doesn't already hold it, and revokes it from
+// every current holder who isn't in `top10Ids` this time — a plain additive/subtractive diff, not
+// a swap. Best-effort per player (mirrors resetAllPlacementsToUnranked's pattern): one Discord
+// failure sets role_sync_pending so bands.ts's retry pass can pick it up later, and never blocks
+// the DB write or the rest of the diff. `discordIdById` only needs to cover `top10Ids` — current
+// holders' discord_ids come from the is_prism=true query itself.
+// ---------------------------------------------------------------------------
+// Pure diff core of syncPrismRoles, pulled out so it can be unit-tested without a Supabase/Discord
+// mock harness (this file's only I/O-free logic worth pinning directly): repeat top-N finishers
+// are a no-op, everyone else in top10Ids is a grant, every current holder not in top10Ids is a
+// revoke — including all of them when top10Ids is empty (the zero-participant season-close path).
+export function diffPrismRoles(
+  currentPrismIds: Set<string>,
+  top10Ids: Set<string>,
+): { toRevokeIds: Set<string>; toGrant: string[] } {
+  const toRevokeIds = new Set([...currentPrismIds].filter((id) => !top10Ids.has(id)));
+  const toGrant = [...top10Ids].filter((id) => !currentPrismIds.has(id));
+  return { toRevokeIds, toGrant };
+}
+
+async function syncPrismRoles(
+  supabase: SupabaseAdmin,
+  top10Ids: Set<string>,
+  discordIdById: Map<string, string>,
+): Promise<{ granted: number; revoked: number }> {
+  const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
+  const roleIdByBand = new Map((bandRoleRows ?? []).map((r) => [r.band, r.role_id]));
+  const prismRoleId = roleIdByBand.get("Prism");
+
+  let guildId: string | null = null;
+  if (prismRoleId) {
+    try {
+      guildId = await getGuildId();
+    } catch (err) {
+      console.error("Season close: failed to resolve guild id, skipping Prism role sync", err);
+    }
+  }
+
+  const { data: currentPrismRows } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("id, discord_id")
+    .eq("is_prism", true)
+    .eq("is_test_data", false);
+  const currentPrism = currentPrismRows ?? [];
+  const { toRevokeIds, toGrant } = diffPrismRoles(
+    new Set(currentPrism.map((p) => p.id)),
+    top10Ids,
+  );
+  const toRevoke = currentPrism.filter((p) => toRevokeIds.has(p.id));
+
+  for (const p of toRevoke) {
+    await supabase.from("crl6mansqueuebot_players").update({ is_prism: false }).eq("id", p.id);
+    if (guildId && prismRoleId) {
+      try {
+        await removeMemberRole(guildId, p.discord_id, prismRoleId);
+      } catch (err) {
+        console.error(`Season close: failed to remove Prism role for ${p.discord_id}`, err);
+        await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: true }).eq("id", p.id);
+      }
+    }
+  }
+
+  for (const id of toGrant) {
+    await supabase.from("crl6mansqueuebot_players").update({ is_prism: true }).eq("id", id);
+    if (guildId && prismRoleId) {
+      const discordId = discordIdById.get(id);
+      if (discordId) {
+        try {
+          await addMemberRole(guildId, discordId, prismRoleId);
+        } catch (err) {
+          console.error(`Season close: failed to add Prism role for ${discordId}`, err);
+          await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: true }).eq("id", id);
+        }
+      }
+    }
+  }
+
+  return { granted: toGrant.length, revoked: toRevoke.length };
 }
 
 // ---------------------------------------------------------------------------

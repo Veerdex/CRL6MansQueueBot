@@ -85,11 +85,9 @@ export default async function InfoPage() {
       bandFloorMmr.set(band, displayMmr);
     }
   }
-  // Revised a later session — supersedes an ">Sapphire's max MMR" floor, which could read as a
-  // healthier cutoff than reality: a high-MMR Sapphire player who hasn't hit top10_min_games yet
-  // isn't actually holding Prism, so deriving the floor from Sapphire's max ignored that gap.
-  // Now computed straight from who currently, actually holds is_prism (see bands.ts's matching
-  // /ranks fix) — the worst (lowest-MMR) current Prism player's real MMR.
+  // Prism is a season-end snapshot now (see CLAUDE.md, "Bands / ranks"), so this is NOT a live
+  // cutoff — a holder's MMR floats freely all season after the achievement is locked in. Shown as
+  // a descriptive "lowest current holder's MMR" data point only, never framed as a threshold.
   const prismMinMmr = placedBandMMRs
     .filter((p) => p.isPrism)
     .reduce<number | undefined>((min, p) => {
@@ -227,12 +225,11 @@ export default async function InfoPage() {
               Emerald ({bandPercentileLabel.Emerald}), Sapphire ({bandPercentileLabel.Sapphire}).
             </li>
             <li>
-              <strong>Prism</strong> is a live tier for Sapphire players who are also currently{" "}
-              <strong>
-                {prismTopN === 1 ? "the #1 Sapphire player" : `in the top ${prismTopN} Sapphire players`}
-              </strong>{" "}
-              by MMR (with at least {top10MinGames} Rank Queue games played this season) — you gain and
-              lose it the instant your standing crosses that line, not just at season close.
+              <strong>Prism</strong> is a season-end achievement: finish{" "}
+              <strong>{prismTopN === 1 ? "#1" : `in the top ${prismTopN}`}</strong> by MMR (any band, with
+              at least {top10MinGames} Rank Queue games played that season) when a season closes, and you
+              hold Prism for the <em>entire next season</em> — stacked alongside your real band, which keeps
+              changing normally. It doesn&apos;t update mid-season.
             </li>
             <li>
               Your band is based on how your MMR compares to everyone else&apos;s, recalculated{" "}
@@ -273,9 +270,9 @@ export default async function InfoPage() {
               <div className="min-w-0">
                 <div className="font-semibold text-foreground">Prism</div>
                 <div className="text-xs text-muted">
-                  {prismMinMmr === undefined ? "No players currently hold Prism" : `Currently ${prismMinMmr} MMR`} •{" "}
-                  {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
-                  this season
+                  {prismTopN === 1 ? "Top 1" : `Top ${prismTopN}`} at last season&apos;s close, min{" "}
+                  {top10MinGames} games that season
+                  {prismMinMmr !== undefined && ` • lowest current holder's MMR: ${prismMinMmr}`}
                 </div>
               </div>
             </li>

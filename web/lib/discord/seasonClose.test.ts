@@ -1,5 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { computeSafeMedian, decayMmr } from "./seasonClose";
+import { computeSafeMedian, decayMmr, diffPrismRoles } from "./seasonClose";
+
+describe("diffPrismRoles", () => {
+  it("is a no-op for a repeat top-N finisher who already holds Prism", () => {
+    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a"]), new Set(["a"]));
+    expect(toRevokeIds.size).toBe(0);
+    expect(toGrant).toEqual([]);
+  });
+
+  it("revokes a holder who drops out of the top N", () => {
+    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a", "b"]), new Set(["b"]));
+    expect(toRevokeIds).toEqual(new Set(["a"]));
+    expect(toGrant).toEqual([]);
+  });
+
+  it("grants a new top-N finisher who didn't already hold Prism", () => {
+    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a"]), new Set(["a", "b"]));
+    expect(toRevokeIds.size).toBe(0);
+    expect(toGrant).toEqual(["b"]);
+  });
+
+  it("revokes every current holder when top10Ids is empty (zero-participant season close)", () => {
+    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a", "b", "c"]), new Set());
+    expect(toRevokeIds).toEqual(new Set(["a", "b", "c"]));
+    expect(toGrant).toEqual([]);
+  });
+});
 
 describe("computeSafeMedian", () => {
   it("matches a plain median when the whole pool is already non-negative", () => {

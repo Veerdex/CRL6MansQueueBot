@@ -102,7 +102,7 @@ async function processCorrectCommand(interaction: DiscordInteraction) {
       await discordFetch(`/channels/${reportChannelId}/messages`, {
         method: "POST",
         body: JSON.stringify({
-          embeds: [{ description: `<@${discordId}> wants to correct Match #${matchId} — ${voteCount}/${CORRECT_VOTE_THRESHOLD}`, color: BRAND_COLOR }],
+          embeds: [{ description: `${mention(discordId, { prism: caller.is_prism })} wants to correct Match #${matchId} — ${voteCount}/${CORRECT_VOTE_THRESHOLD}`, color: BRAND_COLOR }],
         }),
       }).catch((err) => console.error(`Failed to post correct-vote progress for series ${series.id}`, err));
     }
@@ -259,20 +259,20 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
       const delta = finalDeltaByPlayer.get(sp.player_id)!;
       const correctedMmr = correctedMmrByPlayer.get(sp.player_id)!;
       const sign = delta >= 0 ? "+" : "";
-      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
+      const emoji = emojiByBand.get(p.band) || "❓";
       const displayNewMmr = await getDisplayMMR(correctedMmr);
       const displayDelta = delta * mmrScale;
       const onFire = streakIds.onFireIds.has(p.id);
       const cold = streakIds.coldIds.has(p.id);
-      pushLine(sp, `${mention(p.discord_id, { onFire, cold })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`);
+      pushLine(sp, `${mention(p.discord_id, { onFire, cold, prism: p.is_prism })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`);
     }
   } else {
     // Universal Queue: no MMR/streak/band effect either way — the winner flip above is
     // purely cosmetic for these, same as report.ts's own Universal Queue branch.
     for (const sp of seriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
-      pushLine(sp, `<@${p.discord_id}> ${emoji}`);
+      const emoji = emojiByBand.get(p.band) || "❓";
+      pushLine(sp, `${mention(p.discord_id, { prism: p.is_prism })} ${emoji}`);
     }
   }
 

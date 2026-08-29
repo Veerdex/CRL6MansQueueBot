@@ -1,9 +1,9 @@
 import type { Band } from "@/lib/supabase/types";
 
-// "Prism" isn't a value of the Band union (it's a live top-N overlay on top of a real band —
-// see CLAUDE.md, "Bands / ranks") but callers resolve `is_prism ? "Prism" : band` before
-// reaching these, so the icon/label functions accept the wider display-only type.
-export type DisplayBand = Band | "Prism";
+// Prism is a season-end achievement held additively alongside a player's real band (see
+// CLAUDE.md, "Bands / ranks") — it is never a value of the band/icon itself, so this type is
+// just an alias for the real Band union.
+export type DisplayBand = Band;
 
 export function getRankIconPath(band: DisplayBand | null): string {
   if (!band) return "/ranks/Unranked.png";

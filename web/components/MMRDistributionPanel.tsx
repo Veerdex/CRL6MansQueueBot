@@ -90,7 +90,7 @@ export default function MMRDistributionPanel({
   const bandCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const p of players) {
-      const key = p.isPrism ? "Prism" : p.isPlaced && p.band ? p.band : "Unranked";
+      const key = p.isPlaced && p.band ? p.band : "Unranked";
       map.set(key, (map.get(key) ?? 0) + 1);
     }
     return map;
@@ -183,7 +183,7 @@ export default function MMRDistributionPanel({
       <div className="mt-4">
         <div className="mb-2 text-xs font-semibold text-muted">Players per band</div>
         <div className="flex flex-wrap gap-3">
-          {[...BAND_ORDER, "Prism" as const, "Unranked" as const].map((band) => (
+          {[...BAND_ORDER, "Unranked" as const].map((band) => (
             <div key={band} className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5">
               <img src={getRankIconPath(band === "Unranked" ? null : band)} alt={getRankLabel(band === "Unranked" ? null : band)} className="h-4 w-4" />
               <span className="text-xs text-foreground">{band}</span>

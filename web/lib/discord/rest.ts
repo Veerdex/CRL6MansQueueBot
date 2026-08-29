@@ -28,6 +28,10 @@ export const RICH_JOIN_COLOR = 0x3ba55d;
 export const RICH_LEAVE_COLOR = 0xed4245;
 export const RICH_INACTIVITY_COLOR = 0xffa500;
 
+// A joining Prism holder's own card wins over both the ordinary join color and a Bonus Day's
+// SUPERCHARGED_COLOR — see CLAUDE.md, "Bands / ranks" (Prism). White with a pink tint.
+export const PRISM_JOIN_COLOR = 0xffe4ec;
+
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.

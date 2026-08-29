@@ -23,7 +23,7 @@ function PlayerRow({
   mmrScale: number;
   mmrShift: number;
 }) {
-  const displayBand: DisplayBand | null = player.isPrism ? "Prism" : player.band;
+  const displayBand: DisplayBand | null = player.band;
   const displayMmr = Math.round(applyMMRTransform(player.mmr, mmrScale, mmrShift));
 
   // Avatar/name always renders first (flush against the row's own left edge) on both teams —

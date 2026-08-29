@@ -242,7 +242,7 @@ body::before {
   background: color-mix(in srgb, var(--surface-2) 65%, transparent);
 }
 
-/* Live-projected Prism (top-N, config prism_top_n) cut — restrained gold accent, not a full row fill. */
+/* Season-end Prism achievement (top-N, config prism_top_n) — restrained gold accent, not a full row fill. */
 .top-cut {
   position: relative;
   background: color-mix(in srgb, var(--gold) 7%, transparent);

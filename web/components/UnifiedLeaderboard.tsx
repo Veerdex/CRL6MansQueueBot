@@ -14,7 +14,21 @@ import type { SeasonHistoryRow } from "@/lib/supabase/types";
 // Hex, not rgb() — these get a hex alpha suffix appended below (e.g. `${color}2e`), which only
 // forms a valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid
 // CSS and gets silently dropped, which is why the glow wasn't rendering.
-function getBandColor(band: DisplayBand | null): string {
+// `bright` is the current Prism holder's badge tint (see CLAUDE.md, "Bands / ranks") — a subtly
+// brightened variant of the player's own real band color, never a fixed Prism color.
+function getBandColor(band: DisplayBand | null, bright = false): string {
+  if (bright) {
+    switch (band) {
+      case "Iron":
+        return "#9e9e9e";
+      case "Garnet":
+        return "#ff4d4d";
+      case "Emerald":
+        return "#00b34d";
+      case "Sapphire":
+        return "#4d4dff";
+    }
+  }
   switch (band) {
     case "Iron":
       return "#7d7d7d";
@@ -24,8 +38,6 @@ function getBandColor(band: DisplayBand | null): string {
       return "#008000";
     case "Sapphire":
       return "#0000ff";
-    case "Prism":
-      return "#c084fc";
     default:
       // Unranked/null: gray
       return "#464646";
@@ -166,9 +178,12 @@ export default function UnifiedLeaderboard({
             ) : (
               <div className="space-y-2">
                 {topPlayersRows.map((row) => {
-                  const displayBand: DisplayBand | null = row.isPrism ? "Prism" : row.band;
+                  const displayBand: DisplayBand | null = row.band;
+                  // Prism styling only kicks in once the player has a real band again this
+                  // season — right after a season reset everyone's Unranked, Prism or not.
+                  const showPrismStyling = row.isPrism && row.band !== null;
                   // Unranked (no band) gets no glow — nothing to color it by.
-                  const bandColor = displayBand === null ? null : getBandColor(displayBand);
+                  const bandColor = displayBand === null ? null : getBandColor(displayBand, showPrismStyling);
                   const rowGlow = bandColor
                     ? `radial-gradient(ellipse 70% 100% at 0% 50%, ${bandColor}2e 0%, transparent 75%)`
                     : undefined;
@@ -178,7 +193,7 @@ export default function UnifiedLeaderboard({
                       className="row-hover flex items-center gap-4 rounded-lg px-4 py-3"
                       style={rowGlow ? { backgroundImage: rowGlow } : undefined}
                     >
-                      <div className={`min-w-fit text-sm font-semibold ${row.isPrism ? "text-gold" : "text-muted"}`}>
+                      <div className={`min-w-fit text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-muted"}`}>
                         #{row.position}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -196,7 +211,7 @@ export default function UnifiedLeaderboard({
                         />
                       </div>
                       <div className="text-right min-w-fit">
-                        <div className={`text-sm font-semibold ${row.isPrism ? "text-gold" : "text-foreground"}`}>
+                        <div className={`text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-foreground"}`}>
                           {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))} MMR
                         </div>
                       </div>
