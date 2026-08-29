@@ -11,24 +11,23 @@ import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
 import type { SeasonHistoryRow, SeasonRow } from "@/lib/supabase/types";
 
-// First N ranked rows (in caller-supplied order) that also meet the min-games gate get the dim
-// gold "topFive" row background — independent of, and unrelated to, prism_top_n/is_prism (the
-// live single Prism-holder achievement). Applies the same everywhere it's used: Top Players
-// (current season and any past season) and Main.
-const TOP_FIVE_COUNT = 5;
-
-// Marks the first TOP_FIVE_COUNT items (in order) that satisfy `isEligible`, skipping (not
-// renumbering) ineligible ones — so a player short of the games threshold doesn't let a 6th-place
-// player inherit the gold background. Written as a pure reduce (no cross-iteration variable
-// reassignment) since the render-time immutability lint rejects a plain mutable running counter.
-function markTopFive<T>(items: T[], isEligible: (item: T) => boolean): boolean[] {
-  return items.reduce<{ flags: boolean[]; remaining: number }>(
-    (acc, item) => {
-      const eligible = acc.remaining > 0 && isEligible(item);
-      return { flags: [...acc.flags, eligible], remaining: eligible ? acc.remaining - 1 : acc.remaining };
-    },
-    { flags: [], remaining: TOP_FIVE_COUNT },
-  ).flags;
+// Picks which rows get the gold "would be Prism" treatment, and *always* fills `count` slots
+// (callers pass `prism_top_n`) so the board never shows fewer than a full top N. Selection is by
+// priority tier, highest first, not by walking the display order: tier 2 is players who already
+// have `top10_min_games` games this season, tier 1 is ranked (placed) players, tier 0 is everyone
+// else. Ties inside a tier fall back to the caller's own row order, which is already
+// compareLeaderboardRank order (placed before unplaced, then MMR) — so MMR is the final tiebreak
+// without re-sorting on it here. A 10th-place player who has the Prism games threshold therefore
+// goes gold ahead of higher-MMR players who don't, while keeping their 10th-place row position.
+function markPrismEligible<T>(items: T[], count: number, tier: (item: T) => number): boolean[] {
+  const chosen = new Set(
+    items
+      .map((item, idx) => ({ idx, tier: tier(item) }))
+      .sort((a, b) => b.tier - a.tier || a.idx - b.idx)
+      .slice(0, count)
+      .map((entry) => entry.idx),
+  );
+  return items.map((_, idx) => chosen.has(idx));
 }
 
 // Hex, not rgb() — these get a hex alpha suffix appended below (e.g. `${color}2e`), which only
@@ -179,9 +178,12 @@ export default function UnifiedLeaderboard({
       .slice()
       .sort(compareLeaderboardRank)
       .slice(0, 20);
-    const topFiveFlags = markTopFive(
-      sorted,
-      (p) => activeSeasonId !== null && filterGames(p.games, { seasonId: activeSeasonId }).length >= top10MinGames,
+    const prismFlags = markPrismEligible(sorted, prismTopN, ({ player, games }) =>
+      activeSeasonId !== null && filterGames(games, { seasonId: activeSeasonId }).length >= top10MinGames
+        ? 2
+        : player.is_placed
+          ? 1
+          : 0,
     );
     return sorted.map((p, idx) => ({
       position: idx + 1,
@@ -190,23 +192,24 @@ export default function UnifiedLeaderboard({
       band: p.player.is_placed ? p.player.band : null,
       isPrism: p.player.is_prism,
       mmr: p.player.mmr,
-      topFive: topFiveFlags[idx],
+      prismEligible: prismFlags[idx],
     }));
-  }, [eligiblePlayers, activeSeasonId, top10MinGames]);
+  }, [eligiblePlayers, activeSeasonId, top10MinGames, prismTopN]);
 
   // Past-season standings come from the archived season_history rows, ordered by the rank
   // already computed at season-close time (see seasonClose.ts) rather than recomputed here.
   // Band/avatar/display name follow the same precedent as Hall of Fame: since band is a live-only
   // concept never archived per season, they're sourced from the player's current live row. There's
-  // no live Prism concept for a past season, so isPrism is always false here — only the topFive
-  // dim-gold background applies to historical standings.
+  // no live Prism concept for a past season, so isPrism is always false here. The gold
+  // treatment reads the archived `made_top10` flag — who actually took Prism at that close, under
+  // the prism_top_n/top10_min_games in force then — instead of re-cutting the list with today's
+  // config, which would silently rewrite past seasons if an admin ever retunes those.
   const historicalTopPlayersRows = useMemo(() => {
     if (!selectedSeason) return [];
     const sorted = seasonHistory
       .filter((h) => h.season_id === selectedSeason.id)
       .sort((a, b) => a.season_rank - b.season_rank)
       .slice(0, 20);
-    const topFiveFlags = markTopFive(sorted, (h) => h.season_games_played >= top10MinGames);
     return sorted
       .map((h, idx) => {
         const player = playersById.get(h.player_id);
@@ -218,20 +221,23 @@ export default function UnifiedLeaderboard({
           band: player.band,
           isPrism: false,
           mmr: h.mmr_at_close,
-          topFive: topFiveFlags[idx],
+          prismEligible: h.made_top10,
         };
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
-  }, [seasonHistory, selectedSeason, playersById, top10MinGames]);
+  }, [seasonHistory, selectedSeason, playersById]);
 
   const displayedTopPlayersRows = isCurrentSeason ? topPlayersRows : historicalTopPlayersRows;
 
   // Main view: current leaderboard
   const mainBoardRows = useMemo(() => {
     const sorted = eligiblePlayers.slice().sort(compareLeaderboardRank);
-    const topFiveFlags = markTopFive(
-      sorted,
-      ({ games }) => activeSeasonId !== null && filterGames(games, { seasonId: activeSeasonId }).length >= top10MinGames,
+    const prismFlags = markPrismEligible(sorted, prismTopN, ({ player, games }) =>
+      activeSeasonId !== null && filterGames(games, { seasonId: activeSeasonId }).length >= top10MinGames
+        ? 2
+        : player.is_placed
+          ? 1
+          : 0,
     );
     const rows: MainBoardRow[] = sorted.map(({ player, games }, idx) => {
       const rankStats = computeStats(filterGames(games, {}));
@@ -247,11 +253,11 @@ export default function UnifiedLeaderboard({
         winRate: rankStats.winRate,
         onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
         coldStreak: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
-        topFive: topFiveFlags[idx],
+        prismEligible: prismFlags[idx],
       };
     });
     return rows;
-  }, [eligiblePlayers, activeSeasonId, top10MinGames]);
+  }, [eligiblePlayers, activeSeasonId, top10MinGames, prismTopN]);
 
   // All-Time Stats view
   const statsPlayers = useMemo(() => {
@@ -339,8 +345,9 @@ export default function UnifiedLeaderboard({
               <div className="space-y-2">
                 {displayedTopPlayersRows.map((row) => {
                   const displayBand: DisplayBand | null = row.band;
-                  // Prism styling only kicks in once the player has a real band again this
-                  // season — right after a season reset everyone's Unranked, Prism or not.
+                  // The brightened band tint marks an *earned* Prism, and only kicks in once the
+                  // player has a real band again this season — right after a season reset
+                  // everyone's Unranked, Prism or not. The gold text is the separate top-N marker.
                   const showPrismStyling = row.isPrism && row.band !== null;
                   // Unranked (no band) gets no glow — nothing to color it by.
                   const bandColor = displayBand === null ? null : getBandColor(displayBand, showPrismStyling);
@@ -350,10 +357,10 @@ export default function UnifiedLeaderboard({
                   return (
                     <div
                       key={row.position}
-                      className={`row-hover flex items-center gap-4 rounded-lg px-4 py-3 ${row.topFive ? "gold-row" : ""}`}
+                      className={`row-hover flex items-center gap-4 rounded-lg px-4 py-3 ${row.prismEligible ? "gold-row" : ""}`}
                       style={rowGlow ? { backgroundImage: rowGlow } : undefined}
                     >
-                      <div className={`min-w-fit text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-muted"}`}>
+                      <div className={`min-w-fit text-sm font-semibold ${row.prismEligible ? "text-gold" : "text-muted"}`}>
                         #{row.position}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -375,7 +382,7 @@ export default function UnifiedLeaderboard({
                         />
                       </div>
                       <div className="text-right min-w-fit">
-                        <div className={`text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-foreground"}`}>
+                        <div className={`text-sm font-semibold ${row.prismEligible ? "text-gold" : "text-foreground"}`}>
                           {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))} MMR
                         </div>
                       </div>

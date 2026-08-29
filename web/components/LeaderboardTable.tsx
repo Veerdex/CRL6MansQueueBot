@@ -15,8 +15,9 @@ export interface MainBoardRow {
   avatarUrl: string | null;
   band: Band | null;
   // Season-end achievement, held additively alongside `band` (see CLAUDE.md, "Bands / ranks") —
-  // drives the gold text/brightened badge styling once the player has a real band again this
-  // season (gated on `band !== null` at the render site), never a display-band substitute.
+  // drives the brightened badge tint and gold left border once the player has a real band again
+  // this season (gated on `band !== null` at the render site), never a display-band substitute.
+  // The gold stat text is driven by `prismEligible`, not by this.
   isPrism: boolean;
   mmr: number;
   wins: number;
@@ -24,10 +25,11 @@ export interface MainBoardRow {
   winRate: number | null;
   onFire: boolean;
   coldStreak: boolean;
-  // First 5 ranked rows (in this board's own order) that also meet the top10_min_games
-  // games-this-season threshold — independent of, and may coexist with, isPrism. Drives a dim
-  // gold row background only, never the gold text/border that isPrism gets.
-  topFive: boolean;
+  // First `prism_top_n` ranked rows (in this board's own order) that also meet the
+  // top10_min_games games-this-season threshold — i.e. who would take Prism if the season closed
+  // right now. Drives the dim gold row background and the gold stat text. Independent of, and may
+  // coexist with, isPrism (an already-earned Prism from a past season close).
+  prismEligible: boolean;
 }
 
 const PAGE_SIZE = 20;
@@ -154,9 +156,10 @@ export default function LeaderboardTable({
               pageRows.map((row, i) => {
                 const position = start + i + 1;
                 const displayBand: DisplayBand | null = row.band;
-                // Prism styling (gold text, brightened badge) only kicks in once the player has
-                // a real band again this season — right after a season reset everyone's
-                // Unranked, Prism or not. See CLAUDE.md, "Bands / ranks".
+                // The brightened badge tint and gold left border mark an *earned* Prism, and
+                // only kick in once the player has a real band again this season — right after a
+                // season reset everyone's Unranked, Prism or not. See CLAUDE.md, "Bands / ranks".
+                // The gold stat text is the separate "would be Prism" top-N marker below.
                 const showPrismStyling = row.isPrism && row.band !== null;
                 const isHighlighted = row.playerId === highlightedPlayerId;
                 const bandColor = getBandColor(displayBand, showPrismStyling);
@@ -167,11 +170,11 @@ export default function LeaderboardTable({
                     ref={isHighlighted ? highlightRef : null}
                     className={`row-hover cursor-pointer border-b border-border text-foreground last:border-b-0 ${
                       showPrismStyling ? "top-cut" : ""
-                    } ${row.topFive ? "gold-row" : ""} ${isHighlighted ? "highlight-pulse" : ""}`}
+                    } ${row.prismEligible ? "gold-row" : ""} ${isHighlighted ? "highlight-pulse" : ""}`}
                     style={{ backgroundImage: backgroundGradient }}
                     onClick={() => goToPlayer(row.playerId)}
                   >
-                    <td className={`py-2 pr-3 pl-4 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>{position}</td>
+                    <td className={`py-2 pr-3 pl-4 ${row.prismEligible ? "font-semibold text-gold" : ""}`}>{position}</td>
                     <td className="py-2 pr-3 font-medium">
                       <PlayerAvatar avatarUrl={row.avatarUrl} alt={row.displayName} glow={row.isPrism} />
                       {formatDisplayName(row.displayName)}
@@ -194,12 +197,12 @@ export default function LeaderboardTable({
                         className="h-6 w-6 object-contain"
                       />
                     </td>
-                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>
+                    <td className={`py-2 pr-3 ${row.prismEligible ? "font-semibold text-gold" : ""}`}>
                       {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))}
                     </td>
-                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>{row.wins}</td>
-                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>{row.losses}</td>
-                    <td className={`py-2 pr-3 ${showPrismStyling ? "font-semibold text-gold" : ""}`}>
+                    <td className={`py-2 pr-3 ${row.prismEligible ? "font-semibold text-gold" : ""}`}>{row.wins}</td>
+                    <td className={`py-2 pr-3 ${row.prismEligible ? "font-semibold text-gold" : ""}`}>{row.losses}</td>
+                    <td className={`py-2 pr-3 ${row.prismEligible ? "font-semibold text-gold" : ""}`}>
                       {formatWinRate(row.winRate)}
                     </td>
                   </tr>
