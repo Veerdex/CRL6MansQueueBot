@@ -95,7 +95,7 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
 // already uses) instead of the band's plain-text name, MMR, and an optional streak suffix, all in
 // the embed's `description` rather than separate `fields` blocks, so there's no per-field padding
 // between them. Queue Progress stays its own field, and its filled-segment emoji swaps to 🟪 on a
-// Bonus Range day (matching the embed's own SUPERCHARGED_COLOR border) instead of always 🟩. The
+// Bonus Range day (matching the embed's own SUPERCHARGED_ANNOUNCE_COLOR border) instead of always 🟩. The
 // streak suffix (`   |   +N Win Streak🔥` / `   |   N Loss Streak🥶`) reuses ON_FIRE_EMOJI/
 // COLD_EMOJI from streaks.ts rather than a hardcoded literal, so it's guaranteed to match the same
 // emoji used everywhere else in the bot (mention decoration, leaderboard) instead of drifting.
@@ -105,7 +105,7 @@ async function hybridRosterEmbed(queueType: QueueType, members: PlayerRow[], str
 // exactly one message per inactive player instead of the roster-refresh-plus-plain-orange-embed
 // pair every other mode still posts — see CLAUDE.md, "Queue channels". Color is no longer
 // supercharged-overridable for "leave" or "inactive" (only "join" still swaps to
-// SUPERCHARGED_COLOR on a bonus day) — leave is always RICH_LEAVE_COLOR (red) and inactive is
+// SUPERCHARGED_ANNOUNCE_COLOR on a bonus day) — leave is always RICH_LEAVE_COLOR (red) and inactive is
 // always RICH_INACTIVITY_COLOR (orange), regardless of the day, per explicit request.
 async function richEventEmbed(
   supabase: AdminClient,
@@ -136,6 +136,10 @@ async function richEventEmbed(
   // Leave and inactivity always render in their own fixed color, even on a supercharged day — only
   // join keeps the purple override, since it's the one case worth celebrating. A joining Prism
   // holder's own card wins over even the Bonus Day purple — see CLAUDE.md, "Bands / ranks".
+  //
+  // Join uses the deeper SUPERCHARGED_ANNOUNCE_COLOR rather than the lighter SUPERCHARGED_COLOR
+  // every other gameplay embed swaps to, so the card matches the standalone "Today is a
+  // Supercharged Day!" announcement posted above it in the same channel (explicit request).
   const color =
     action === "inactive"
       ? RICH_INACTIVITY_COLOR
@@ -144,7 +148,7 @@ async function richEventEmbed(
         : player.is_prism
           ? PRISM_JOIN_COLOR
           : supercharged
-            ? SUPERCHARGED_COLOR
+            ? SUPERCHARGED_ANNOUNCE_COLOR
             : RICH_JOIN_COLOR;
 
   const filled = Math.max(0, Math.min(6, queueSize));

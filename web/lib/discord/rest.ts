@@ -13,8 +13,10 @@ export const AMBER_COLOR = 0xffbf00;
 
 // Supercharged (Bonus Day) colors — see CLAUDE.md, "Weekly bonus day". SUPERCHARGED_ANNOUNCE_COLOR
 // is the bright-purple border on the standalone "today is supercharged" embed posted alongside the
-// first-queue-join ping; SUPERCHARGED_COLOR is the lighter purple every normally-BRAND_COLOR
-// (green) gameplay embed swaps to for the duration of a supercharged day.
+// first-queue-join ping, and (per explicit request) on rich mode's join card too, so the two read
+// as the same celebration when they sit next to each other in the queue channel;
+// SUPERCHARGED_COLOR is the lighter purple every normally-BRAND_COLOR (green) gameplay embed —
+// queue status, hybrid announcements, team formation, report summaries — swaps to for the day.
 export const SUPERCHARGED_ANNOUNCE_COLOR = 0x9b30ff;
 export const SUPERCHARGED_COLOR = 0xc9a0ff;
 
@@ -22,14 +24,14 @@ export const SUPERCHARGED_COLOR = 0xc9a0ff;
 export const GOLD_COLOR = 0xffd700;
 
 // "Rich" queue-message mode's per-event announcement colors — Discord-native green/red for a
-// join vs. a leave (see CLAUDE.md, "Queue channels"). Overridden by SUPERCHARGED_COLOR on a
+// join vs. a leave (see CLAUDE.md, "Queue channels"). Overridden by SUPERCHARGED_ANNOUNCE_COLOR on a
 // bonus day, same precedent every other queue-status embed already follows.
 export const RICH_JOIN_COLOR = 0x3ba55d;
 export const RICH_LEAVE_COLOR = 0xed4245;
 export const RICH_INACTIVITY_COLOR = 0xffa500;
 
 // A joining Prism holder's own card wins over both the ordinary join color and a Bonus Day's
-// SUPERCHARGED_COLOR — see CLAUDE.md, "Bands / ranks" (Prism). White with a pink tint.
+// SUPERCHARGED_ANNOUNCE_COLOR — see CLAUDE.md, "Bands / ranks" (Prism). White with a pink tint.
 export const PRISM_JOIN_COLOR = 0xffe4ec;
 
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
