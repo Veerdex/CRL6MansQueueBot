@@ -8,6 +8,7 @@ import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands, type BandCalcMode } from "./bands";
 import { refreshPlayerAvatars } from "./avatars";
+import { syncNicknameMedals, type NicknameMedalSummary } from "./nicknameSync";
 import { refreshQueueMessage, refreshQueueMessageAfterSettlement, getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { claimSeriesVoid, closeMatchChannelsAfterDelay } from "./matchChannels";
 import { interactionUserId, interactionDisplayName, type CommandOption, type DiscordInteraction } from "./types";
@@ -744,10 +745,10 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
     actorId,
     "recompute_bands",
     undefined,
-    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} roleSyncPending=${summary.roleSyncPending}`,
+    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} prismGranted=${summary.prismGranted} prismRevoked=${summary.prismRevoked} roleSyncPending=${summary.roleSyncPending}`,
   );
   await editOriginalResponse(interaction.token, {
-    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}.${summary.roleSyncPending > 0 ? ` ⚠️ ${summary.roleSyncPending} Discord role sync${summary.roleSyncPending === 1 ? "" : "s"} still pending (will retry next recompute).` : ""}`,
+    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.${summary.roleSyncPending > 0 ? ` ⚠️ ${summary.roleSyncPending} Discord role sync${summary.roleSyncPending === 1 ? "" : "s"} still pending (will retry next recompute).` : ""}`,
   });
 }
 
@@ -758,10 +759,37 @@ async function processRecomputeBands(interaction: DiscordInteraction, actorId: s
 // interactionDisplayName/stripClanTag) for anyone who hasn't run a command since renaming.
 // Mainly useful right after the avatar_url column/cron migrations are first applied, so avatars
 // don't sit blank for up to a day waiting on the next scheduled run.
+//
+// Runs the season-medal nickname sweep alongside it, matching what the daily cron route does —
+// so an admin who spots someone wearing a medal they didn't earn can take it off immediately
+// instead of waiting for the next scheduled run (nicknameSync.ts).
 // ---------------------------------------------------------------------------
 
 async function processRefreshAvatars(interaction: DiscordInteraction, actorId: string) {
   const summary = await refreshPlayerAvatars();
+
+  // Best-effort, and reported separately: the avatar refresh has already succeeded and written
+  // its rows by this point, so a Discord nickname failure shouldn't read as a total failure.
+  let medals: NicknameMedalSummary | null = null;
+  try {
+    medals = await syncNicknameMedals();
+  } catch (error) {
+    console.error("Nickname medal sync failed", error);
+  }
+
+  // Logged outside the try so an audit-write failure can't be reported back as a medal-sync
+  // failure on a run that actually worked.
+  let medalLine = " Medal sync failed — see logs.";
+  if (medals) {
+    medalLine = ` Medals — awarded ${medals.awarded}, stripped ${medals.stripped}, unchanged ${medals.unchanged}${medals.failed ? `, failed ${medals.failed}` : ""}.`;
+    await logAdminAction(
+      actorId,
+      "sync_nickname_medals",
+      undefined,
+      `awarded=${medals.awarded} stripped=${medals.stripped} unchanged=${medals.unchanged} failed=${medals.failed}`,
+    );
+  }
+
   await logAdminAction(
     actorId,
     "refresh_avatars",
@@ -769,7 +797,7 @@ async function processRefreshAvatars(interaction: DiscordInteraction, actorId: s
     `updated=${summary.updated} skipped=${summary.skipped} renamed=${summary.renamed}`,
   );
   await editOriginalResponse(interaction.token, {
-    content: `Refreshed avatars — updated ${summary.updated}, skipped ${summary.skipped} (no guild member match), renamed ${summary.renamed}.`,
+    content: `Refreshed avatars — updated ${summary.updated}, skipped ${summary.skipped} (no guild member match), renamed ${summary.renamed}.${medalLine}`,
   });
 }
 

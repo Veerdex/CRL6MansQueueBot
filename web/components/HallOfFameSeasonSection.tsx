@@ -2,7 +2,7 @@ import HallOfFameSlotCard from "./HallOfFameSlotCard";
 import type { HallOfFameSeason } from "@/lib/leaderboard/hallOfFame";
 
 // The active season's whole block is desaturated + dimmed ("greyed out") to signal its standings
-// aren't final yet — the top 5 (plus games/streak) can still change as more games get reported
+// aren't final yet — the top 3 (plus games/streak) can still change as more games get reported
 // this season, unlike a closed season's archival season_history snapshot.
 export default function HallOfFameSeasonSection({
   season,
@@ -13,11 +13,10 @@ export default function HallOfFameSeasonSection({
   mmrScale: number;
   mmrShift: number;
 }) {
-  // Fixed slot order from getHallOfFameData/buildSlots: rank1-3, rank4-5, games, streak — split
-  // into two rows on their own lines: podium on top, everything else (same smaller size tier)
-  // together below (literal request).
+  // Fixed slot order from getHallOfFameData/buildSlots: rank1-3, games, streak — split into two
+  // rows on their own lines: podium on top, the two stat slots (same smaller size tier) below.
   const podium = season.slots.slice(0, 3);
-  const rest = season.slots.slice(3, 7);
+  const rest = season.slots.slice(3);
 
   return (
     <section className={`panel p-6 ${season.isActive ? "grayscale opacity-60" : ""}`}>

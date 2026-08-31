@@ -46,8 +46,6 @@ export default async function HomePage() {
     players,
     mmrScale,
     mmrShift,
-    prismTopN,
-    top10MinGames,
     hofPopupWindowHours,
     hallOfFameSeasons,
   ] = await Promise.all([
@@ -56,8 +54,6 @@ export default async function HomePage() {
     getAllPlayersWithGames(),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
-    getConfigNumber("prism_top_n", 1),
-    getConfigNumber("top10_min_games", 8),
     getConfigNumber("hof_popup_window_hours", DEFAULT_HOF_POPUP_WINDOW_HOURS),
     getHallOfFameData(),
   ]);
@@ -85,8 +81,6 @@ export default async function HomePage() {
         seasonHistory={seasonHistory}
         mmrScale={mmrScale}
         mmrShift={mmrShift}
-        prismTopN={prismTopN}
-        top10MinGames={top10MinGames}
       />
     </>
   );

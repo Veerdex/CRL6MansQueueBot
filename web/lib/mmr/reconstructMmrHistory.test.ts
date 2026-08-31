@@ -119,9 +119,10 @@ describe("reconstructMmrHistory", () => {
     expect(result.finalMmrByPlayer.get("p1")).toBe(505);
   });
 
-  it("applies real season-close decay only to players meeting placementGamesRequired, matching decayMmr/computeSafeMedian directly", () => {
-    // p1: 10 rank games (placed), ends at mmr 100. p2: 1 rank game (not placed under a
-    // requirement of 5), ends at mmr 200 — must be excluded from both the median and the decay.
+  it("applies real season-close decay to every player regardless of placement, matching decayMmr/computeSafeMedian directly", () => {
+    // p1: 10 rank games (placed), ends at mmr 100. p2: 1 rank game (unplaced under a requirement
+    // of 5), ends at mmr 200. Both decay — placement no longer gates the pool (see
+    // seasonClose.ts's applyMmrDecay), so p2 is in the median and gets decayed too.
     const seriesBatches = Array.from({ length: 10 }, (_, i) => ({
       seriesId: `p1-s${i}`,
       seasonId: "season1",
@@ -147,10 +148,11 @@ describe("reconstructMmrHistory", () => {
       placementGamesRequired: 5,
     });
 
-    const expectedP1 = decayMmr(100, computeSafeMedian([100]), 0.25);
-    expect(result.finalMmrByPlayer.get("p1")).toBeCloseTo(expectedP1, 10);
-    // p2 never crossed placementGamesRequired, so decay must not touch them.
-    expect(result.finalMmrByPlayer.get("p2")).toBe(200);
+    const median = computeSafeMedian([100, 200]);
+    expect(result.finalMmrByPlayer.get("p1")).toBeCloseTo(decayMmr(100, median, 0.25), 10);
+    expect(result.finalMmrByPlayer.get("p2")).toBeCloseTo(decayMmr(200, median, 0.25), 10);
+    // The unplaced player is genuinely compressed, not passed through untouched.
+    expect(result.finalMmrByPlayer.get("p2")).toBeLessThan(200);
   });
 
   it("reconstructs decay for a season with zero reported series, anchored after the prior season's decay point", () => {
@@ -219,7 +221,7 @@ describe("reconstructMmrHistory", () => {
     expect(result.driftWarnings).toHaveLength(0);
   });
 
-  it("leaves untouched players (never in any series) at 0 and excludes them from the decay median", () => {
+  it("leaves untouched players (never in any series) at 0, while still counting them in the decay median", () => {
     const result = reconstructMmrHistory({
       playerIds: ["p1", "neverPlayed"],
       seriesBatches: Array.from({ length: 5 }, (_, i) => ({
@@ -236,11 +238,12 @@ describe("reconstructMmrHistory", () => {
       placementGamesRequired: 5,
     });
 
+    // Still exactly 0: decayMmr(0, median, f) is 0 for any median, so a player who never played
+    // is unaffected even though they're now inside the pool.
     expect(result.finalMmrByPlayer.get("neverPlayed")).toBe(0);
-    // Confirms neverPlayed (0 rank games, below placementGamesRequired) was excluded from the
-    // median/decay pool — if it had been included, p1's decay result would differ from the
-    // single-player-pool expectation.
-    const expected = decayMmr(100, computeSafeMedian([100]), 0.25);
+    // ...but they DO count toward the median now, which is what moves p1's result off the
+    // single-player-pool expectation the placed-only pool used to produce.
+    const expected = decayMmr(100, computeSafeMedian([100, 0]), 0.25);
     expect(result.finalMmrByPlayer.get("p1")).toBeCloseTo(expected, 10);
   });
 

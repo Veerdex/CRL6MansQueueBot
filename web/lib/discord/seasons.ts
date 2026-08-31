@@ -6,6 +6,7 @@ import { editOriginalResponse } from "./rest";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { closeSeason } from "./seasonClose";
 import { recomputeBands } from "./bands";
+import { syncNicknameMedals } from "./nicknameSync";
 import { deleteConfigValue } from "./config";
 import { interactionUserId, type DiscordInteraction } from "./types";
 
@@ -21,16 +22,14 @@ export type SeasonResetSummary = {
   closedSeasonNumber: number | null;
   newSeasonNumber: number;
   playersReset: number;
-  prismGranted: number;
-  prismRevoked: number;
 };
 
 // Shared by the manual /newseason command and the automatic scheduled-reset sweep trigger
-// (see scheduledReset.ts) — atomically closes any currently active season (standings, Prism
-// grant/revoke, MMR soft reset, everyone back to Unranked — see seasonClose.ts and CLAUDE.md,
-// "Seasons") and opens the next one, then runs recomputeBands() once against the freshly-opened
-// season so anyone who crosses placement immediately (or a stale role_sync_pending flag) gets
-// picked up right away rather than waiting for the next daily cron tick.
+// (see scheduledReset.ts) — atomically closes any currently active season (standings, MMR
+// soft reset, everyone back to Unranked — see seasonClose.ts and CLAUDE.md, "Seasons") and
+// opens the next one, then runs recomputeBands() once against the freshly-opened season so a
+// stale Prism holder from last season's now-reset games-played count is cleared immediately
+// rather than waiting for their own next report.
 export async function performSeasonReset(): Promise<SeasonResetSummary> {
   const supabase = createAdminClient();
   const today = new Date().toISOString().slice(0, 10);
@@ -49,13 +48,9 @@ export async function performSeasonReset(): Promise<SeasonResetSummary> {
   const current = closedRows?.[0] ?? null;
 
   let playersReset = 0;
-  let prismGranted = 0;
-  let prismRevoked = 0;
   if (current) {
     const summary = await closeSeason(current);
     playersReset = summary.playersReset;
-    prismGranted = summary.prismGranted;
-    prismRevoked = summary.prismRevoked;
   }
 
   const { data: latest } = await supabase
@@ -77,16 +72,27 @@ export async function performSeasonReset(): Promise<SeasonResetSummary> {
 
   await recomputeBands();
 
-  return { closedSeasonNumber: current?.season_number ?? null, newSeasonNumber: nextNumber, playersReset, prismGranted, prismRevoked };
+  // Podium medals for the season that just closed, applied now instead of waiting for the daily
+  // sweep to pick them up. Best-effort: the season is already closed and reset in the database by
+  // this point, and nickname writes must never be what fails a season rollover.
+  try {
+    await syncNicknameMedals();
+  } catch (error) {
+    console.error("Nickname medal sync failed after season close", error);
+  }
+
+  return { closedSeasonNumber: current?.season_number ?? null, newSeasonNumber: nextNumber, playersReset };
 }
 
 // ---------------------------------------------------------------------------
 // /newseason — owner-or-admin-role gated. Closes any current season (median-compression MMR
-// soft reset, season_history standings, Prism grant/revoke for the next season's top
-// `prism_top_n`, every placed player reset back to Unranked — see seasonClose.ts and CLAUDE.md,
-// "Seasons") and opens the next one, then runs recomputeBands() (bands.ts) once against the
-// freshly-opened season to pick up any immediate placement/role-sync-retry work. Manual-trigger
-// only for now — no scheduled monthly rollover.
+// soft reset, season_history standings, every placed player reset back to Unranked — see
+// seasonClose.ts and CLAUDE.md, "Seasons") and opens the next one, then runs recomputeBands()
+// (bands.ts) once against the freshly-opened season —
+// Prism is a live top-N overlay gated on *this season's* Rank Queue games played, so without an
+// explicit recompute here, last season's Prism holders would stay Prism until their own next
+// report happens to re-trigger it, even though the new season's games-played count just reset
+// to zero under them. Manual-trigger only for now — no scheduled monthly rollover.
 // ---------------------------------------------------------------------------
 
 export function handleNewSeasonCommand(interaction: DiscordInteraction) {
@@ -125,7 +131,7 @@ async function processNewSeason(interaction: DiscordInteraction, confirmation: s
   await logAdminAction(actorId, "new_season", undefined, `season_number=${summary.newSeasonNumber}`);
   await editOriginalResponse(interaction.token, {
     content: summary.closedSeasonNumber
-      ? `Closed season ${summary.closedSeasonNumber} (standings recorded, MMR soft-reset, ${summary.playersReset} player(s) reset to Unranked, Prism: +${summary.prismGranted}/-${summary.prismRevoked}) and started season ${summary.newSeasonNumber}.`
+      ? `Closed season ${summary.closedSeasonNumber} (standings recorded, MMR soft-reset, ${summary.playersReset} player(s) reset to Unranked) and started season ${summary.newSeasonNumber} (Prism cut refreshed for the new season).`
       : `Started season ${summary.newSeasonNumber} (no prior active season).`,
   });
 }

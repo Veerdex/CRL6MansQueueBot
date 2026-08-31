@@ -17,6 +17,8 @@ type RecomputeSummary = {
   promoted: number;
   demoted: number;
   unchanged: number;
+  prismGranted: number;
+  prismRevoked: number;
   // Count of players left with role_sync_pending=true after this run — see
   // reconcileMemberRole and migration 0046_role_sync_pending.sql. Non-zero means at least one
   // Discord role add/remove failed (rate limit or otherwise) and will retry on the next
@@ -26,28 +28,29 @@ type RecomputeSummary = {
 type ChangeAction = "placed" | "promoted" | "demoted";
 
 // See migration 0046_role_sync_pending.sql. Reconciles a player's actual live Discord roles
-// against the single band/Unranked role they should hold, instead of trusting our own `band`
-// column to infer which role they currently wear and issuing a blind remove-old/add-new pair. Any
-// transient Discord failure (rate limit, etc.) partway through a remove/add pair would otherwise
-// leave Discord holding some stale combination of roles with no way to detect or retry it, since
-// the DB's band value had already committed to the new "target" state. Fetching live roles and
-// diffing against the caller-supplied tracked role-ID set fixes this and is naturally idempotent —
-// safe to re-run on a fresh retry pass no matter what partial state a prior failed attempt left
-// behind. Returns false (never throws) so callers can set role_sync_pending for a later retry
-// instead of wrongly assuming success.
-//
-// `trackedRoleIds` is explicitly passed in (rather than derived here) and must NEVER include the
-// Prism role id — Prism is granted/revoked independently at season close (see seasonClose.ts) and
-// held *alongside* a player's band role, not swapped with it. If this function treated Prism as a
-// tracked role, an ordinary promotion/demotion would strip a player's earned Prism role as a
-// stray untracked role the moment their band next changed.
+// against the single role (a band, Prism, or Unranked) they should hold, instead of trusting our
+// own band/is_prism columns to infer which role they currently wear and issuing a blind
+// remove-old/add-new pair. Two production bugs this replaces:
+//   1. A Prism holder's `band` column still reads their underlying band (Prism only overlays a
+//      role swap on top of it, never touching the column) — so "remove roleIdByBand.get(oldBand)"
+//      targeted a role the player never actually had equipped, and the real Prism role was never
+//      touched by a normal band-change path.
+//   2. Any transient Discord failure (rate limit, etc.) partway through a remove/add pair left
+//      Discord holding some stale combination of roles with no way to detect or retry it, since
+//      the DB's band/is_prism value had already committed to the new "target" state.
+// Fetching live roles and diffing against the tracked role-ID set (every configured band/Unranked/
+// Prism role) fixes both at once and is naturally idempotent — safe to re-run on a fresh retry
+// pass no matter what partial state a prior failed attempt left behind. Returns false (never
+// throws) so callers can set role_sync_pending for a later retry instead of wrongly assuming
+// success.
 async function reconcileMemberRole(
   guildId: string,
   discordId: string,
   desiredRoleId: string | undefined,
-  trackedRoleIds: Set<string>,
+  roleIdByBand: Map<string, string>,
 ): Promise<boolean> {
   try {
+    const trackedRoleIds = new Set(roleIdByBand.values());
     const currentRoleIds = await getMemberRoles(guildId, discordId);
     const toRemove = currentRoleIds.filter((r) => trackedRoleIds.has(r) && r !== desiredRoleId);
     await Promise.all(toRemove.map((roleId) => removeMemberRole(guildId, discordId, roleId)));
@@ -273,6 +276,8 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     emeraldCutoff,
     sapphireCutoff,
     graceInactivityDays,
+    prismTopN,
+    top10MinGames,
     bandCalcModeRaw,
   ] = await Promise.all([
     getConfigNumber("placement_games_required", 10),
@@ -282,12 +287,14 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
     getConfigNumber("grace_inactivity_days", 7),
+    getConfigNumber("prism_top_n", 1),
+    getConfigNumber("top10_min_games", 8),
     getConfigValue("band_calc_mode"),
   ]);
   const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
   const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisMmr, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
 
-  const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, roleSyncPending: 0 };
+  const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0, roleSyncPending: 0 };
 
   // Test-data players (dev panel) are synthetic and carry fake discord_ids that aren't real
   // guild members — role grant/revoke would just 404, and mixing them into the percentile pool
@@ -338,14 +345,6 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 
   const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
   const roleIdByBand = new Map((bandRoleRows ?? []).map((r) => [r.band, r.role_id]));
-  // Never includes Prism — see reconcileMemberRole's doc comment. Prism is an independent,
-  // additive role granted/revoked only at season close (seasonClose.ts), not something an
-  // ordinary band promotion/demotion should ever strip.
-  const trackedBandRoleIds = new Set(
-    (["Iron", "Garnet", "Emerald", "Sapphire", "Unranked"] as const)
-      .map((b) => roleIdByBand.get(b))
-      .filter((id): id is string => !!id),
-  );
 
   let guildId: string | null = null;
   if (roleIdByBand.size > 0) {
@@ -356,8 +355,8 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     }
   }
 
-  // Tracks every player whose band actually changed this run — the final retry pass skips them
-  // since they already got a fresh reconcile attempt just now.
+  // Tracks every player whose band/is_prism actually changed this run, across both loops below —
+  // the final retry pass skips them since they already got a fresh reconcile attempt just now.
   const handledIds = new Set<string>();
 
   for (const player of pool) {
@@ -392,17 +391,21 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     handledIds.add(player.id);
 
     if (guildId) {
-      // Desired role here is always the plain band role — reconcileMemberRole (scoped to
-      // trackedBandRoleIds, which excludes Prism) strips any other tracked role they hold (their
-      // old band or Unranked) as part of the same call, so the old separate "remove Unranked on
-      // placement" branch is subsumed by this too. A player's independently-held Prism role (see
-      // seasonClose.ts) is left completely untouched by this.
+      // Desired role here is always the plain band role, never Prism, even for a player who
+      // currently holds is_prism — a real band change means they've just left (or never held)
+      // Sapphire, Prism's only source band, so the Prism pass right below will independently
+      // compute willBePrism=false for them off this same mutated pool and reconcile them off
+      // Prism on its own pass. reconcileMemberRole strips any other tracked role they hold
+      // (their old band, Unranked, or a stale Prism role) as part of the same call, so the old
+      // separate "remove Unranked on placement" branch is subsumed by this too.
       const desiredRoleId = roleIdByBand.get(targetBand);
-      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, trackedBandRoleIds);
+      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, roleIdByBand);
       await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: !roleSynced }).eq("id", player.id);
       player.role_sync_pending = !roleSynced;
     }
 
+    // Mutate the local pool object so the Prism pass below sees this player's just-written
+    // band/placement rather than the pre-recompute snapshot fetched at the top of this function.
     player.band = targetBand;
     player.is_placed = true;
     if (action === "placed") player.peak_mmr = placementPeakUpdate.peak_mmr!;
@@ -410,73 +413,125 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     summary[action] += 1;
   }
 
-  if (guildId) {
-    await reconcilePendingRoleSync(supabase, guildId, roleIdByBand, trackedBandRoleIds, handledIds);
-  }
+  // ---------------------------------------------------------------------------
+  // Prism — a live top-N overlay, not a 5th BAND_ORDER tier. Folding it into BAND_ORDER would
+  // route it through computeBandChange's grace/hysteresis machinery (which has no promotion
+  // threshold for a tier above Sapphire, so demotion would never fire) — Prism instead gets its
+  // own strict, ungated top-N check, re-run every time this function runs (daily cron, every
+  // Rank Queue report, admin unreport/correct-report/recompute-bands). A player holds Prism when
+  // they're placed, sitting in the Sapphire band, have played at least `top10_min_games` Rank
+  // Queue games *this season*, and rank inside the top `prism_top_n` by MMR of everyone else who
+  // meets those same three requirements (see the qualify-then-cut note on the selection block
+  // below). No grace/hysteresis —
+  // falling out of the top N immediately un-sets is_prism; the player's `band` column already
+  // holds their real underlying band (almost always Sapphire), so "go back to Sapphire" falls
+  // out for free with no separate revert step. See CLAUDE.md, "Bands / ranks".
+  // ---------------------------------------------------------------------------
 
-  const { count: pendingCount } = await supabase
-    .from("crl6mansqueuebot_players")
-    .select("id", { count: "exact", head: true })
-    .eq("is_test_data", false)
-    .eq("role_sync_pending", true);
-  summary.roleSyncPending = pendingCount ?? 0;
+  const { data: activeSeasonRow } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .select("id")
+    .eq("is_active", true)
+    .maybeSingle();
 
-  return summary;
-}
-
-// ---------------------------------------------------------------------------
-// Retry pass for anyone left with role_sync_pending=true from a PRIOR run (a Discord sync that
-// failed — rate limit or otherwise). Queries ALL non-test-data pending players, not just the
-// placed `pool` passed through recomputeBands — a player who is currently Unranked (e.g. freshly
-// reset by /newseason) can still be a Prism holder awaiting a retried role grant, and wouldn't
-// appear in that pool at all. For each pending player this independently retries: (a) their band
-// role, via the same reconcileMemberRole used by the main loop, only if they're currently placed;
-// (b) their Prism role, via direct add/remove (Prism is additive, never routed through
-// reconcileMemberRole's swap semantics). role_sync_pending only clears once every applicable
-// check for that player succeeds.
-// ---------------------------------------------------------------------------
-async function reconcilePendingRoleSync(
-  supabase: ReturnType<typeof createAdminClient>,
-  guildId: string,
-  roleIdByBand: Map<string, string>,
-  trackedBandRoleIds: Set<string>,
-  skipIds: Set<string>,
-): Promise<void> {
-  const { data: pendingPlayers } = await supabase
-    .from("crl6mansqueuebot_players")
-    .select("id, discord_id, band, is_placed, is_prism")
-    .eq("is_test_data", false)
-    .eq("role_sync_pending", true);
-
-  for (const player of pendingPlayers ?? []) {
-    if (skipIds.has(player.id)) continue;
-
-    let ok = true;
-    if (player.is_placed) {
-      const desiredRoleId = player.band ? roleIdByBand.get(player.band as Band) : undefined;
-      ok = (await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, trackedBandRoleIds)) && ok;
-    }
-
-    const prismRoleId = roleIdByBand.get("Prism");
-    if (prismRoleId) {
-      try {
-        const currentRoleIds = await getMemberRoles(guildId, player.discord_id);
-        const hasPrismRole = currentRoleIds.includes(prismRoleId);
-        if (player.is_prism && !hasPrismRole) {
-          await addMemberRole(guildId, player.discord_id, prismRoleId);
-        } else if (!player.is_prism && hasPrismRole) {
-          await removeMemberRole(guildId, player.discord_id, prismRoleId);
-        }
-      } catch (err) {
-        console.error(`Band recompute: failed to retry Prism role sync for ${player.discord_id}`, err);
-        ok = false;
+  const seasonGamesById = new Map<string, number>();
+  if (activeSeasonRow) {
+    const { data: seasonSeries } = await supabase
+      .from("crl6mansqueuebot_series")
+      .select("id")
+      .eq("season_id", activeSeasonRow.id)
+      .eq("status", "reported")
+      .eq("queue_type", "rank")
+      .eq("is_test_data", false);
+    const seriesIds = (seasonSeries ?? []).map((s) => s.id);
+    if (seriesIds.length > 0) {
+      const { data: seasonSeriesPlayers } = await supabase
+        .from("crl6mansqueuebot_series_players")
+        .select("player_id")
+        .in("series_id", seriesIds);
+      for (const sp of seasonSeriesPlayers ?? []) {
+        seasonGamesById.set(sp.player_id, (seasonGamesById.get(sp.player_id) ?? 0) + 1);
       }
     }
+  }
 
-    if (ok) {
-      await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: false }).eq("id", player.id);
+  // Three requirements, all applied as *qualification* before the cut is taken — a player either
+  // qualifies for Prism or they don't, and the top `prism_top_n` qualifiers hold it: (1) placed,
+  // (2) already Sapphire band — the real band assignment above already ran this cycle, so
+  // `player.band` reflects it; this keeps a small community's Emerald/Garnet players out of Prism
+  // contention even if their raw MMR would otherwise land them in the top-N bracket, and (3) at
+  // least top10_min_games Rank Queue games *this season*.
+  //
+  // Note the ordering: qualification is a filter applied *before* .slice(prismTopN), not after it.
+  // An earlier revision took the top N Sapphire players by MMR and only then dropped the ones
+  // short on games, which left those slots empty — the community could see 2 Prism holders when
+  // prism_top_n was 5. Filtering first means the N slots fill from the qualified pool whenever
+  // enough players qualify, and a qualified lower-MMR player is never held out by an unqualified
+  // higher-MMR one. Fewer than N holders now only happens when fewer than N players qualify at all.
+  //
+  // Same tiebreak philosophy as the band percentile sort above: higher MMR first, ties broken by
+  // more (season) games played, then player id as a final deterministic tiebreak.
+  const prismQualified = pool
+    .filter(
+      (p) => p.is_placed && p.band === "Sapphire" && (seasonGamesById.get(p.id) ?? 0) >= top10MinGames,
+    )
+    .slice()
+    .sort(
+      (a, b) =>
+        b.mmr - a.mmr ||
+        (seasonGamesById.get(b.id) ?? 0) - (seasonGamesById.get(a.id) ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+  const newPrismIds = new Set(prismQualified.slice(0, prismTopN).map((p) => p.id));
+
+  for (const player of pool) {
+    const willBePrism = newPrismIds.has(player.id);
+    if (player.is_prism === willBePrism) continue;
+    handledIds.add(player.id);
+
+    await supabase.from("crl6mansqueuebot_players").update({ is_prism: willBePrism }).eq("id", player.id);
+    player.is_prism = willBePrism;
+
+    if (guildId) {
+      const desiredRoleId = willBePrism
+        ? roleIdByBand.get("Prism")
+        : player.band
+          ? roleIdByBand.get(player.band as Band)
+          : undefined;
+      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, roleIdByBand);
+      await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: !roleSynced }).eq("id", player.id);
+      player.role_sync_pending = !roleSynced;
+    }
+
+    if (willBePrism) summary.prismGranted += 1;
+    else summary.prismRevoked += 1;
+  }
+
+  // Retry pass: catches anyone left with role_sync_pending=true from a PRIOR run (a Discord sync
+  // that failed — rate limit or otherwise) whose band/is_prism didn't change again *this* run, so
+  // neither loop above touched them — without this, a stuck pending flag would only ever clear
+  // itself if that player's band or Prism status happened to change again later. Their DB state
+  // already reflects the correct target; only Discord itself is stale, so this just re-runs the
+  // same reconcile against their current committed state.
+  if (guildId) {
+    for (const player of pool) {
+      if (!player.role_sync_pending || handledIds.has(player.id)) continue;
+      const desiredRoleId = player.is_prism
+        ? roleIdByBand.get("Prism")
+        : player.band
+          ? roleIdByBand.get(player.band as Band)
+          : undefined;
+      const roleSynced = await reconcileMemberRole(guildId, player.discord_id, desiredRoleId, roleIdByBand);
+      if (roleSynced) {
+        await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: false }).eq("id", player.id);
+        player.role_sync_pending = false;
+      }
     }
   }
+
+  summary.roleSyncPending = pool.filter((p) => p.role_sync_pending).length;
+
+  return summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,10 +546,10 @@ async function reconcilePendingRoleSync(
 
 // ---------------------------------------------------------------------------
 // /newseason's "everyone starts over" reset (see CLAUDE.md, "Seasons") — called from
-// seasonClose.ts's closeSeason(), AFTER the MMR soft-reset decay has already run. That decay
-// pass (applyMmrDecay) queries its pool with `is_placed = true`, so this reset must not flip
-// is_placed until decay has already read/written against it, or the decay pool would come back
-// empty.
+// seasonClose.ts's closeSeason(), AFTER the MMR soft-reset decay has already run. The decay
+// pass (applyMmrDecay) no longer filters its pool on `is_placed` — it decays every non-test
+// player — so this ordering is no longer required by the decay itself, but it stays because the
+// standings/is_prism/band_at_close snapshots earlier in closeSeason() all read pre-reset values.
 //
 // Every currently-placed, non-test player is sent back through placement from scratch, per two
 // explicit user decisions (see CLAUDE.md):
@@ -513,9 +568,23 @@ async function reconcilePendingRoleSync(
 // Discord role sync swaps each affected player's current band role for Unranked, the mirror
 // image of the swap recomputeBands() already does the moment a player first places.
 //
-// Prism is untouched by this reset entirely — it's now a season-end achievement granted/revoked
-// only by seasonClose.ts's own Prism step, held for the whole following season regardless of how
-// a player's band/placement moves in the meantime. See CLAUDE.md, "Bands / ranks".
+// **Prism holders, fixed this session**: `is_prism` is also cleared and the *Prism* role (not the
+// band role) is what actually gets removed for a currently-Prism player — a bug caught via a live
+// report of players keeping their Prism status/role indefinitely after a season reset. The old
+// code only ever removed `roleIdByBand.get(p.band)` (the player's underlying band column, almost
+// always still "Sapphire" for a Prism holder, since Prism never touches that column — it only
+// overlays a role swap on top of it). For a Prism player that's a no-op: their *actual* Discord
+// role is Prism, not Sapphire, so nothing was ever actually removed, and `is_prism` stayed `true`
+// in the DB. Worse, this was self-perpetuating: the same reset also zeroes `rank_games_played` and
+// flips `is_placed` to `false`, which drops that player out of `recomputeBands()`'s pool entirely
+// (`pool` only includes already-`is_placed` players or newly-crossing-`placement_games_required`
+// ones — a reset player satisfies neither) — so the very next `recomputeBands()` call `/newseason`
+// already makes right after opening the new season, previously assumed (per a since-corrected
+// comment in `seasonClose.ts`) to "clear out anyone who no longer qualifies," could never actually
+// reconsider them. The stale Prism role/flag would only ever get cleaned up if that specific player
+// happened to re-place in the new season without re-qualifying for Prism. Fixed by handling Prism
+// directly in this same pass instead of relying on a later recompute that structurally can't see
+// these players anymore.
 // ---------------------------------------------------------------------------
 
 export async function resetAllPlacementsToUnranked(): Promise<number> {
@@ -523,7 +592,7 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
 
   const { data: placed } = await supabase
     .from("crl6mansqueuebot_players")
-    .select("id, discord_id, band")
+    .select("id, discord_id, band, is_prism")
     .eq("is_placed", true)
     .eq("is_test_data", false);
   const players = placed ?? [];
@@ -534,6 +603,7 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
     .update({
       is_placed: false,
       band: null,
+      is_prism: false,
       rank_games_played: 0,
       band_games_played: 0,
       last_rank_game_at: null,
@@ -560,7 +630,9 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
       await Promise.all(
         players.map(async (p) => {
           try {
-            const oldRoleId = p.band ? roleIdByBand.get(p.band as Band) : undefined;
+            // A Prism player's real held role is Prism, not their underlying band — remove
+            // whichever one they actually have, not always the band role.
+            const oldRoleId = p.is_prism ? roleIdByBand.get("Prism") : p.band ? roleIdByBand.get(p.band as Band) : undefined;
             if (oldRoleId) await removeMemberRole(resolvedGuildId, p.discord_id, oldRoleId);
             if (unrankedRoleId) await addMemberRole(resolvedGuildId, p.discord_id, unrankedRoleId);
           } catch (err) {
@@ -594,10 +666,9 @@ export async function grantUnrankedRoleToNewPlayer(discordId: string): Promise<v
 // ---------------------------------------------------------------------------
 // /setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role> — admin-gated, maps
 // a band (or the 'Unranked' informational role for newly queued/not-yet-placed players, or the
-// season-end 'Prism' achievement role, config prism_top_n) to a Discord role. recomputeBands()
-// above syncs the five band/Unranked keys from the percentile loop; Prism is granted/revoked
-// independently at season close (seasonClose.ts), held alongside a player's band role for the
-// whole following season. Mirrors /setqueuechannel's channel-mapping pattern.
+// live top-N 'Prism' tier, config prism_top_n) to a Discord role. recomputeBands() above syncs
+// all six keys: Iron/Garnet/Emerald/Sapphire/Unranked from the percentile loop, Prism from its
+// own live top-N pass right after. Mirrors /setqueuechannel's channel-mapping pattern.
 // ---------------------------------------------------------------------------
 
 export function handleSetBandRoleCommand(interaction: DiscordInteraction) {
@@ -650,9 +721,9 @@ async function processSetBandRole(
 // (band_cutoff_garnet_pctile etc.). Iron has no configured cutoff percentile (it's the bottom of
 // the ladder), so its line uses computeBandThresholdMmr(pool, 0, mode) — this resolves to the
 // pool's lowest MMR, a sensible floor value that keeps the format uniform across all four bands.
-// Prism gets a fifth line too, but unlike the four bands it has no live "cutoff" to report — it's
-// a season-end snapshot (see CLAUDE.md, "Bands / ranks") held alongside a player's real band, so
-// this just reports how many players currently hold it.
+// Prism gets a fifth line for the same reason the Info page includes it: it's a live top-N cut
+// among Sapphire players, and "the cutoffs for each rank" naturally includes it even though it
+// isn't one of the four BAND_ORDER percentile bands.
 // ---------------------------------------------------------------------------
 
 export function handleRanksCommand(interaction: DiscordInteraction) {
@@ -696,18 +767,32 @@ async function processRanksCommand(interaction: DiscordInteraction) {
     Sapphire: computeBandThresholdMmr(pool, sapphireCutoff, bandCalcMode),
   };
 
-  // Prism is now an independent, additive role (see CLAUDE.md, "Bands / ranks") — a Prism holder
-  // is still counted on their real band's line here, no subtraction needed.
+  // Computed up front (not after the loop, where this used to live) so the Sapphire line below
+  // can subtract it — a Prism holder's underlying `band` column stays "Sapphire" (Prism is a
+  // live overlay on top of it, not a separate band value — see CLAUDE.md, "Bands / ranks"), so
+  // without this a Prism player was counted on *both* the Sapphire line and the Prism line.
+  const prismCount = pool.filter((p) => p.is_prism).length;
+
   const lines: string[] = [];
   for (const band of BAND_ORDER) {
-    const count = pool.filter((p) => p.band === band).length;
+    const count = pool.filter((p) => p.band === band).length - (band === "Sapphire" ? prismCount : 0);
     const emoji = await getRankEmoji(band);
     lines.push(`${count} ${emoji} **${getRankLabel(band)}** — ${display(thresholdMmrByBand[band])} MMR`);
   }
 
-  const prismCount = pool.filter((p) => p.is_prism).length;
+  // Revised a later session — supersedes a rank-based "top-N-among-Sapphire-by-MMR" cut, which
+  // could report a healthier-looking cutoff than reality: that ranking ignored the
+  // top10_min_games eligibility filter recomputeBands()'s live Prism pass actually applies, so a
+  // higher-MMR Sapphire player who simply hadn't played enough games yet could occupy a
+  // theoretical "top N" slot the real Prism roster didn't reflect. The cutoff now comes straight
+  // from who currently, actually holds is_prism — the worst (lowest-MMR) current Prism player's
+  // MMR — which can only ever match reality, no eligibility bookkeeping duplicated here.
+  const prismMmrs = pool.filter((p) => p.is_prism).map((p) => p.mmr);
+  const prismCutoffMmr = prismMmrs.length > 0 ? Math.min(...prismMmrs) : undefined;
   const prismEmoji = await getRankEmoji("Prism");
-  lines.push(`${prismCount} ${prismEmoji} **Prism** — held from last season's Top N until the next season close`);
+  lines.push(
+    `${prismCount} ${prismEmoji} **Prism** — ${prismCutoffMmr === undefined ? "N/A" : `${display(prismCutoffMmr)} MMR`}`,
+  );
 
   await editOriginalResponse(interaction.token, {
     embeds: [

@@ -157,9 +157,8 @@ export async function getStreakIds(supabase: AdminClient, playerIds: string[]): 
 // (the bot's OAuth invite doesn't include MANAGE_NICKNAMES; see CLAUDE.md). A player can't be
 // both on-fire and cold at once (they're opposite streak types), but the flags are independent
 // booleans rather than an enum so callers can pass whichever they have on hand.
-export function mention(discordId: string, decoration: { onFire?: boolean; cold?: boolean; prism?: boolean } = {}): string {
-  const prefix = decoration.prism ? "✦ " : "";
-  if (decoration.onFire) return `${prefix}<@${discordId}> ${ON_FIRE_EMOJI}`;
-  if (decoration.cold) return `${prefix}<@${discordId}> ${COLD_EMOJI}`;
-  return `${prefix}<@${discordId}>`;
+export function mention(discordId: string, decoration: { onFire?: boolean; cold?: boolean } = {}): string {
+  if (decoration.onFire) return `<@${discordId}> ${ON_FIRE_EMOJI}`;
+  if (decoration.cold) return `<@${discordId}> ${COLD_EMOJI}`;
+  return `<@${discordId}>`;
 }

@@ -189,9 +189,11 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   // report summary.
   const streakAnnounceLines: string[] = [];
 
-  // Pre-fetch all rank emoji to avoid async calls in loops.
+  // Pre-fetch all rank emoji to avoid async calls in loops. Prism is a live top-N overlay (see
+  // CLAUDE.md, "Bands / ranks"), not a `players.band` value — included here so lookups can key
+  // off `p.is_prism ? "Prism" : p.band` below rather than always showing the underlying band.
   const emojiByBand = new Map<string | null, string>();
-  for (const band of [null, "Iron", "Garnet", "Emerald", "Sapphire"]) {
+  for (const band of [null, "Iron", "Garnet", "Emerald", "Sapphire", "Prism"]) {
     emojiByBand.set(band, await getRankEmoji(band));
   }
 
@@ -200,8 +202,8 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     // test data".
     for (const sp of allSeriesPlayers) {
       const p = playersById.get(sp.player_id)!;
-      const emoji = emojiByBand.get(p.band) || "❓";
-      pushLine(sp, `${mention(p.discord_id, { prism: p.is_prism })} — test match, no stat changes ${emoji}`);
+      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
+      pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else {
     const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
@@ -273,7 +275,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const streak = newStreakById.get(sp.player_id) ?? 0;
       if (streak >= ON_FIRE_THRESHOLD) {
         const p = playersById.get(sp.player_id)!;
-        streakAnnounceLines.push(`${mention(p.discord_id, { onFire: true, prism: p.is_prism })} is on a ${streak} game win streak!`);
+        streakAnnounceLines.push(`${mention(p.discord_id, { onFire: true })} is on a ${streak} game win streak!`);
       }
     }
 
@@ -321,14 +323,14 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       const p = playersById.get(sp.player_id)!;
       const r = resultsById.get(sp.player_id)!;
       const sign = r.delta >= 0 ? "+" : "";
-      const emoji = emojiByBand.get(p.band) || "❓";
+      const emoji = emojiByBand.get(p.is_prism ? "Prism" : p.band) || "❓";
       const displayNewMmr = await getDisplayMMR(r.newMmr);
       const displayDelta = r.delta * mmrScale;
       const onFire = (newStreakById.get(sp.player_id) ?? 0) >= FLAME_THRESHOLD;
       const cold = (newLossStreakById.get(sp.player_id) ?? 0) >= COLD_THRESHOLD;
       pushLine(
         sp,
-        `${mention(p.discord_id, { onFire, cold, prism: p.is_prism })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
+        `${mention(p.discord_id, { onFire, cold })} — ${sign}${displayDelta.toFixed(1)} MMR → ${displayNewMmr.toFixed(1)} ${emoji}`,
       );
     }
   }

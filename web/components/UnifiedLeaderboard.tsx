@@ -11,43 +11,10 @@ import { playTap } from "@/lib/sound";
 import type { CompletedGame, PlayerWithGames } from "@/lib/leaderboard/queries";
 import type { SeasonHistoryRow, SeasonRow } from "@/lib/supabase/types";
 
-// Picks which rows get the gold "would be Prism" treatment, and *always* fills `count` slots
-// (callers pass `prism_top_n`) so the board never shows fewer than a full top N. Selection is by
-// priority tier, highest first, not by walking the display order: tier 2 is players who already
-// have `top10_min_games` games this season, tier 1 is ranked (placed) players, tier 0 is everyone
-// else. Ties inside a tier fall back to the caller's own row order, which is already
-// compareLeaderboardRank order (placed before unplaced, then MMR) — so MMR is the final tiebreak
-// without re-sorting on it here. A 10th-place player who has the Prism games threshold therefore
-// goes gold ahead of higher-MMR players who don't, while keeping their 10th-place row position.
-function markPrismEligible<T>(items: T[], count: number, tier: (item: T) => number): boolean[] {
-  const chosen = new Set(
-    items
-      .map((item, idx) => ({ idx, tier: tier(item) }))
-      .sort((a, b) => b.tier - a.tier || a.idx - b.idx)
-      .slice(0, count)
-      .map((entry) => entry.idx),
-  );
-  return items.map((_, idx) => chosen.has(idx));
-}
-
 // Hex, not rgb() — these get a hex alpha suffix appended below (e.g. `${color}2e`), which only
 // forms a valid CSS color (#RRGGBBAA) when the base is hex; appending to `rgb(...)` is invalid
 // CSS and gets silently dropped, which is why the glow wasn't rendering.
-// `bright` is the current Prism holder's badge tint (see CLAUDE.md, "Bands / ranks") — a subtly
-// brightened variant of the player's own real band color, never a fixed Prism color.
-function getBandColor(band: DisplayBand | null, bright = false): string {
-  if (bright) {
-    switch (band) {
-      case "Iron":
-        return "#9e9e9e";
-      case "Garnet":
-        return "#ff4d4d";
-      case "Emerald":
-        return "#00b34d";
-      case "Sapphire":
-        return "#4d4dff";
-    }
-  }
+function getBandColor(band: DisplayBand | null): string {
   switch (band) {
     case "Iron":
       return "#7d7d7d";
@@ -57,6 +24,8 @@ function getBandColor(band: DisplayBand | null, bright = false): string {
       return "#008000";
     case "Sapphire":
       return "#0000ff";
+    case "Prism":
+      return "#c084fc";
     default:
       // Unranked/null: gray
       return "#464646";
@@ -71,8 +40,6 @@ interface UnifiedLeaderboardProps {
   seasonHistory: SeasonHistoryRow[];
   mmrScale: number;
   mmrShift: number;
-  prismTopN: number;
-  top10MinGames: number;
 }
 
 function applyMMRTransform(mmr: number, scale: number, shift: number): number {
@@ -97,13 +64,14 @@ export default function UnifiedLeaderboard({
   seasonHistory,
   mmrScale,
   mmrShift,
-  prismTopN,
-  top10MinGames,
 }: UnifiedLeaderboardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("main");
 
   const eligiblePlayers = players.filter(({ player }) => player.total_games_played >= 1);
   const playersById = useMemo(() => new Map(players.map((p) => [p.player.id, p.player])), [players]);
+  // Per-season W/L is not archived (season_history carries only games played), so a past-season
+  // Main board has to recompute it from the player's own game log, filtered to that season.
+  const gamesById = useMemo(() => new Map(players.map((p) => [p.player.id, p.games])), [players]);
 
   const sortedSeasons = useMemo(
     () => [...seasons].sort((a, b) => a.season_number - b.season_number),
@@ -112,9 +80,24 @@ export default function UnifiedLeaderboard({
   const minSeasonNumber = sortedSeasons[0]?.season_number ?? 1;
   const maxSeasonNumber = sortedSeasons[sortedSeasons.length - 1]?.season_number ?? 1;
   const activeSeasonNumber = seasons.find((s) => s.is_active)?.season_number ?? maxSeasonNumber;
-  const activeSeasonId = seasons.find((s) => s.is_active)?.id ?? null;
 
-  // Top Players season browser: number input + arrows, defaulting to the current season.
+  // Prism alumni: everyone who finished the most recently *closed* season inside that season's
+  // Prism cut, read straight off the archived `made_top10` flag seasonClose.ts writes. This is
+  // what the avatar glow has always meant, and it has to stay archive-sourced now that Prism is
+  // a live rank again — the season soft reset clears `is_prism`, so sourcing the glow from it
+  // would erase every alumnus the moment a season closes. Empty until the first season closes.
+  const prismAlumniIds = useMemo(() => {
+    const lastClosed = [...seasons]
+      .filter((s) => !s.is_active)
+      .sort((a, b) => b.season_number - a.season_number)[0];
+    if (!lastClosed) return new Set<string>();
+    return new Set(
+      seasonHistory.filter((h) => h.season_id === lastClosed.id && h.made_top10).map((h) => h.player_id),
+    );
+  }, [seasons, seasonHistory]);
+
+  // Season browser: number input + arrows, defaulting to the current season. Shared by the Top
+  // Players and Main views — one selection, so switching views keeps the season you were reading.
   const [selectedSeasonNumber, setSelectedSeasonNumber] = useState(activeSeasonNumber);
   const [seasonInputDraft, setSeasonInputDraft] = useState(String(activeSeasonNumber));
   const seasonInputRef = useRef<HTMLInputElement>(null);
@@ -170,6 +153,54 @@ export default function UnifiedLeaderboard({
     goToSeason(Math.min(maxSeasonNumber, Math.max(minSeasonNumber, parsed)));
   }
 
+  // Rendered by both season-aware views. The single seasonInputRef is safe because the view
+  // branches are mutually exclusive, so only one of these inputs is ever mounted.
+  function renderSeasonPicker() {
+    return (
+      // Three columns with equal 1fr gutters so the middle one lands on the page's true center;
+      // the "Season" label sits in the left gutter instead of in the centered group, and the empty
+      // right gutter balances it. Centering the label and control together as one flex row (what
+      // this was) pushed the input right of center by half the label's width.
+      <div className="mb-4 grid grid-cols-[1fr_auto_1fr] items-center">
+        <span className="justify-self-end whitespace-nowrap pr-2 text-sm font-medium text-muted">
+          Season
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="btn-icon"
+            onClick={handlePrevSeason}
+            aria-label="Previous season"
+          >
+            ‹
+          </button>
+          <input
+            ref={seasonInputRef}
+            type="number"
+            inputMode="numeric"
+            className="field w-16 py-1.5 text-center text-sm font-semibold"
+            value={seasonInputDraft}
+            onChange={(e) => setSeasonInputDraft(e.target.value)}
+            onBlur={(e) => commitSeasonInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+            aria-label="Season number"
+          />
+          <button
+            type="button"
+            className="btn-icon"
+            onClick={handleNextSeason}
+            aria-label="Next season"
+          >
+            ›
+          </button>
+        </div>
+        <span aria-hidden />
+      </div>
+    );
+  }
+
   // Top Players view: simplified list — unranked players are excluded, not just unbanded on
   // the Main board, since this view is specifically a ranking by band/MMR.
   const topPlayersRows = useMemo(() => {
@@ -178,32 +209,26 @@ export default function UnifiedLeaderboard({
       .slice()
       .sort(compareLeaderboardRank)
       .slice(0, 20);
-    const prismFlags = markPrismEligible(sorted, prismTopN, ({ player, games }) =>
-      activeSeasonId !== null && filterGames(games, { seasonId: activeSeasonId }).length >= top10MinGames
-        ? 2
-        : player.is_placed
-          ? 1
-          : 0,
-    );
     return sorted.map((p, idx) => ({
       position: idx + 1,
       displayName: p.player.display_name,
       avatarUrl: p.player.avatar_url,
       band: p.player.is_placed ? p.player.band : null,
       isPrism: p.player.is_prism,
+      wasPrism: prismAlumniIds.has(p.player.id),
       mmr: p.player.mmr,
-      prismEligible: prismFlags[idx],
     }));
-  }, [eligiblePlayers, activeSeasonId, top10MinGames, prismTopN]);
+  }, [eligiblePlayers, prismAlumniIds]);
 
   // Past-season standings come from the archived season_history rows, ordered by the rank
   // already computed at season-close time (see seasonClose.ts) rather than recomputed here.
-  // Band/avatar/display name follow the same precedent as Hall of Fame: since band is a live-only
-  // concept never archived per season, they're sourced from the player's current live row. There's
-  // no live Prism concept for a past season, so isPrism is always false here. The gold
-  // treatment reads the archived `made_top10` flag — who actually took Prism at that close, under
-  // the prism_top_n/top10_min_games in force then — instead of re-cutting the list with today's
-  // config, which would silently rewrite past seasons if an admin ever retunes those.
+  // Avatar and display name are the player's current live ones (same precedent as Hall of Fame —
+  // they're identity, not standing). Band is the archived `band_at_close`, so a past season shows
+  // the band actually held then rather than whatever the player wears today.
+  // Prism itself comes from the archived `made_top10` flag — who actually held Prism at that
+  // close, under the prism_top_n/top10_min_games in force then — rather than today's live
+  // `is_prism` (which describes this season) or a re-cut of the list with today's config, either
+  // of which would silently rewrite past seasons if an admin ever retunes those.
   const historicalTopPlayersRows = useMemo(() => {
     if (!selectedSeason) return [];
     const sorted = seasonHistory
@@ -218,10 +243,12 @@ export default function UnifiedLeaderboard({
           position: idx + 1,
           displayName: player.display_name,
           avatarUrl: player.avatar_url,
-          band: player.band,
-          isPrism: false,
+          band: h.band_at_close,
+          isPrism: h.made_top10,
+          // A past-season board glows for that season's own Prism finishers, not the current
+          // alumni set — the row already *is* the archived standing.
+          wasPrism: h.made_top10,
           mmr: h.mmr_at_close,
-          prismEligible: h.made_top10,
         };
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
@@ -232,14 +259,7 @@ export default function UnifiedLeaderboard({
   // Main view: current leaderboard
   const mainBoardRows = useMemo(() => {
     const sorted = eligiblePlayers.slice().sort(compareLeaderboardRank);
-    const prismFlags = markPrismEligible(sorted, prismTopN, ({ player, games }) =>
-      activeSeasonId !== null && filterGames(games, { seasonId: activeSeasonId }).length >= top10MinGames
-        ? 2
-        : player.is_placed
-          ? 1
-          : 0,
-    );
-    const rows: MainBoardRow[] = sorted.map(({ player, games }, idx) => {
+    const rows: MainBoardRow[] = sorted.map(({ player, games }) => {
       const rankStats = computeStats(filterGames(games, {}));
       return {
         playerId: player.id,
@@ -247,17 +267,57 @@ export default function UnifiedLeaderboard({
         avatarUrl: player.avatar_url,
         band: player.is_placed ? player.band : null,
         isPrism: player.is_prism,
+        wasPrism: prismAlumniIds.has(player.id),
         mmr: player.mmr,
         wins: rankStats.wins,
         losses: rankStats.losses,
         winRate: rankStats.winRate,
         onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
         coldStreak: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
-        prismEligible: prismFlags[idx],
       };
     });
     return rows;
-  }, [eligiblePlayers, activeSeasonId, top10MinGames, prismTopN]);
+  }, [eligiblePlayers, prismAlumniIds]);
+
+  // Past-season Main board: the full archived standing, on exactly the same sourcing rules as
+  // historicalTopPlayersRows above — order, MMR and band from the season_history snapshot, Prism
+  // from that season's own made_top10, avatar/display name from the live player row. The difference is the W/L/win-rate/streak columns, which
+  // season_history doesn't carry: they're recomputed from each player's own game log filtered to
+  // this season. That makes them season-scoped where the live board's are lifetime — deliberate,
+  // since lifetime totals next to a two-season-old MMR would describe nothing that happened then.
+  const historicalMainBoardRows = useMemo(() => {
+    if (!selectedSeason) return [];
+    return seasonHistory
+      .filter((h) => h.season_id === selectedSeason.id)
+      .sort((a, b) => a.season_rank - b.season_rank)
+      .map((h) => {
+        const player = playersById.get(h.player_id);
+        if (!player) return null;
+        const seasonStats = computeStats(filterGames(gamesById.get(h.player_id) ?? [], { seasonId: selectedSeason.id }));
+        const row: MainBoardRow = {
+          // The archived rank, not this list's index — a player whose live row has since gone
+          // away is dropped above, and renumbering around the hole would misreport everyone below.
+          position: h.season_rank,
+          playerId: player.id,
+          displayName: player.display_name,
+          avatarUrl: player.avatar_url,
+          band: h.band_at_close,
+          isPrism: h.made_top10,
+          // A past-season board glows for that season's own Prism finishers, matching Top Players.
+          wasPrism: h.made_top10,
+          mmr: h.mmr_at_close,
+          wins: seasonStats.wins,
+          losses: seasonStats.losses,
+          winRate: seasonStats.winRate,
+          onFire: seasonStats.currentStreak.type === "W" && seasonStats.currentStreak.count >= FLAME_THRESHOLD,
+          coldStreak: seasonStats.currentStreak.type === "L" && seasonStats.currentStreak.count >= COLD_THRESHOLD,
+        };
+        return row;
+      })
+      .filter((row): row is MainBoardRow => row !== null);
+  }, [seasonHistory, selectedSeason, playersById, gamesById]);
+
+  const displayedMainBoardRows = isCurrentSeason ? mainBoardRows : historicalMainBoardRows;
 
   // All-Time Stats view
   const statsPlayers = useMemo(() => {
@@ -302,38 +362,7 @@ export default function UnifiedLeaderboard({
       <div className="panel animate-in-delay-1 p-4 sm:p-6">
         {viewMode === "top-players" && (
           <div>
-            <div className="mb-4 flex items-center justify-center gap-2">
-              <span className="text-sm font-medium text-muted">Season</span>
-              <button
-                type="button"
-                className="btn-icon"
-                onClick={handlePrevSeason}
-                aria-label="Previous season"
-              >
-                ‹
-              </button>
-              <input
-                ref={seasonInputRef}
-                type="number"
-                inputMode="numeric"
-                className="field w-16 py-1.5 text-center text-sm font-semibold"
-                value={seasonInputDraft}
-                onChange={(e) => setSeasonInputDraft(e.target.value)}
-                onBlur={(e) => commitSeasonInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-                aria-label="Season number"
-              />
-              <button
-                type="button"
-                className="btn-icon"
-                onClick={handleNextSeason}
-                aria-label="Next season"
-              >
-                ›
-              </button>
-            </div>
+            {renderSeasonPicker()}
             <p className="mb-4 text-sm text-muted">
               {isCurrentSeason
                 ? "Top players by MMR ranking. Rank Queue standing only."
@@ -344,23 +373,24 @@ export default function UnifiedLeaderboard({
             ) : (
               <div className="space-y-2">
                 {displayedTopPlayersRows.map((row) => {
-                  const displayBand: DisplayBand | null = row.band;
-                  // The brightened band tint marks an *earned* Prism, and only kicks in once the
-                  // player has a real band again this season — right after a season reset
-                  // everyone's Unranked, Prism or not. The gold text is the separate top-N marker.
-                  const showPrismStyling = row.isPrism && row.band !== null;
-                  // Unranked (no band) gets no glow — nothing to color it by.
-                  const bandColor = displayBand === null ? null : getBandColor(displayBand, showPrismStyling);
+                  // Prism is a live rank again (see CLAUDE.md, "Bands / ranks"), so it displaces
+                  // the player's underlying band in the icon, label and row tint, and the same
+                  // flag drives the gold treatment — holding Prism *is* the live top-N cut.
+                  const displayBand: DisplayBand | null = row.isPrism ? "Prism" : row.band;
+                  const showPrismStyling = row.isPrism;
+                  // Unranked (no band) gets no row tint — nothing to color it by. (Distinct from
+                  // the avatar glow below, which tracks last season's Prism finishers.)
+                  const bandColor = displayBand === null ? null : getBandColor(displayBand);
                   const rowGlow = bandColor
                     ? `radial-gradient(ellipse 70% 100% at 0% 50%, ${bandColor}2e 0%, transparent 75%)`
                     : undefined;
                   return (
                     <div
                       key={row.position}
-                      className={`row-hover flex items-center gap-4 rounded-lg px-4 py-3 ${row.prismEligible ? "gold-row" : ""}`}
+                      className={`row-hover flex items-center gap-4 rounded-lg px-4 py-3 ${showPrismStyling ? "gold-row" : ""}`}
                       style={rowGlow ? { backgroundImage: rowGlow } : undefined}
                     >
-                      <div className={`min-w-fit text-sm font-semibold ${row.prismEligible ? "text-gold" : "text-muted"}`}>
+                      <div className={`min-w-fit text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-muted"}`}>
                         #{row.position}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -368,7 +398,7 @@ export default function UnifiedLeaderboard({
                           <PlayerAvatar
                             avatarUrl={row.avatarUrl}
                             alt={row.displayName}
-                            glow={row.isPrism}
+                            glow={row.wasPrism}
                           />
                           <span className="truncate">{formatDisplayName(row.displayName)}</span>
                         </div>
@@ -382,7 +412,7 @@ export default function UnifiedLeaderboard({
                         />
                       </div>
                       <div className="text-right min-w-fit">
-                        <div className={`text-sm font-semibold ${row.prismEligible ? "text-gold" : "text-foreground"}`}>
+                        <div className={`text-sm font-semibold ${showPrismStyling ? "text-gold" : "text-foreground"}`}>
                           {Math.round(applyMMRTransform(row.mmr, mmrScale, mmrShift))} MMR
                         </div>
                       </div>
@@ -396,10 +426,19 @@ export default function UnifiedLeaderboard({
 
         {viewMode === "main" && (
           <div>
+            {renderSeasonPicker()}
             <p className="mb-4 text-sm text-muted">
-              Rank Queue standing.
+              {isCurrentSeason ? "Rank Queue standing." : `Final standings for Season ${selectedSeasonNumber}.`}
             </p>
-            <LeaderboardTable rows={mainBoardRows} mmrScale={mmrScale} mmrShift={mmrShift} />
+            {/* Remounted per season so the table's own page and search highlight reset —
+                otherwise stepping back from page 3 of the live board into a shorter season lands
+                on a blank page with no visible explanation. */}
+            <LeaderboardTable
+              key={isCurrentSeason ? "live" : selectedSeasonNumber}
+              rows={displayedMainBoardRows}
+              mmrScale={mmrScale}
+              mmrShift={mmrShift}
+            />
           </div>
         )}
 

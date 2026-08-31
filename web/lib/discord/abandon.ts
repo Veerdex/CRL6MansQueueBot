@@ -126,7 +126,7 @@ async function processAbandon(interaction: DiscordInteraction, seriesIdOverride:
 
   if (voteCount < ABANDON_VOTE_THRESHOLD) {
     await editOriginalResponse(interaction.token, {
-      content: `Vote recorded — ${voteCount}/${ABANDON_VOTE_THRESHOLD} needed to void the series over ${mention(targetDiscordId, { prism: target.is_prism })}.`,
+      content: `Vote recorded — ${voteCount}/${ABANDON_VOTE_THRESHOLD} needed to void the series over <@${targetDiscordId}>.`,
     });
     return;
   }
@@ -154,7 +154,7 @@ async function processAbandon(interaction: DiscordInteraction, seriesIdOverride:
     await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
       method: "POST",
       body: JSON.stringify({
-        content: `**Series cancelled** — ${mention(targetDiscordId, { onFire: streaks.onFireIds.has(target.id), cold: streaks.coldIds.has(target.id), prism: target.is_prism })} was voted as abandoned by ${ABANDON_VOTE_THRESHOLD} teammates. No MMR change.\n\nThis channel will close in 30 seconds.`,
+        content: `**Series cancelled** — ${mention(targetDiscordId, { onFire: streaks.onFireIds.has(target.id), cold: streaks.coldIds.has(target.id) })} was voted as abandoned by ${ABANDON_VOTE_THRESHOLD} teammates. No MMR change.\n\nThis channel will close in 30 seconds.`,
       }),
     }).catch((err) => console.error(`Failed to post abandon-void summary for series ${series.id}`, err));
   }

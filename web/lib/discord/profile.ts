@@ -71,7 +71,7 @@ async function processProfile(interaction: DiscordInteraction, targetDiscordIdOp
 
   const rankStats = computeStats(filterGames(entry.games, {}));
   const { player } = entry;
-  const band: DisplayBand | null = player.is_placed ? player.band : null;
+  const band: DisplayBand | null = player.is_prism ? "Prism" : player.is_placed ? player.band : null;
 
   const [rankEmoji, displayMmr] = await Promise.all([getRankEmoji(band), getDisplayMMR(player.mmr)]);
 
@@ -84,8 +84,7 @@ async function processProfile(interaction: DiscordInteraction, targetDiscordIdOp
 
   const playerMention = mention(player.discord_id, {
     onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
-    cold: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
-    prism: player.is_prism,
+    cold: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
   });
 
   await editOriginalResponse(interaction.token, {

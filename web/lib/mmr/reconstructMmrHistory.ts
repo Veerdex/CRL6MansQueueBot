@@ -134,7 +134,7 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
   const orderedSeasons = [...input.seasons].sort((a, b) => a.seasonNumber - b.seasonNumber);
 
   // A season with zero series ever reported still needs its decay pass reconstructed (season
-  // close decays every currently-placed player, not just that season's participants) — anchored
+  // close decays every non-test player, not just that season's participants) — anchored
   // right after the previous closing season's decay point as a reasonable fallback, since there's
   // no series event to anchor to directly.
   const decaysByIndex = new Map<number, string[]>();
@@ -192,13 +192,13 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
       mmr.set(playerId, checkpoint);
     }
 
-    // "Currently placed" at a past moment is approximated via each player's own simulated
-    // cumulative rank-games-played count against the CURRENT placement_games_required config
-    // value — historical config changes aren't tracked, so this is an accepted approximation.
-    const placedIds = input.playerIds.filter((id) => (rankGamesPlayed.get(id) ?? 0) >= input.placementGamesRequired);
-    if (placedIds.length === 0) return;
-    const median = computeSafeMedian(placedIds.map((id) => mmr.get(id) ?? 0));
-    for (const id of placedIds) {
+    // Mirrors applyMmrDecay's real pool: every non-test player, placed or not. This used to
+    // approximate "currently placed at that past moment" from each player's simulated cumulative
+    // rank-games-played count, which is no longer needed now that placement doesn't gate the
+    // decay pool at all — one less unmodeled approximation in the replay.
+    if (input.playerIds.length === 0) return;
+    const median = computeSafeMedian(input.playerIds.map((id) => mmr.get(id) ?? 0));
+    for (const id of input.playerIds) {
       mmr.set(id, decayMmr(mmr.get(id) ?? 0, median, input.decayFactor));
     }
   };

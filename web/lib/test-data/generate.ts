@@ -1,4 +1,5 @@
 import "server-only";
+import { allTimeSeasonScore } from "../mmr/allTimeRating";
 import { createAdminClient } from "../supabase/admin";
 import { PLACEMENT_GAMES_REQUIRED, TOP10_MIN_GAMES, PRISM_TOP_N } from "../leaderboard/constants";
 import type { Band, QueueType, SeasonRow, Team } from "../supabase/types";
@@ -221,17 +222,23 @@ export async function generateTestData(): Promise<{ playersAdded: number }> {
     if (seriesPlayersError) throw seriesPlayersError;
   }
 
-  const seasonHistoryRows = plans
+  const seasonHistoryPlans = plans
     .map(({ spec }, i) => ({ spec, playerId: playerIds[i] }))
-    .filter(({ spec }) => spec.previousSeasonGames >= 1)
-    .map(({ spec, playerId }, rankIndex) => ({
-      season_id: previousSeason.id,
-      player_id: playerId,
-      mmr_at_close: (spec.mmr ?? 0) - 100,
-      season_games_played: spec.previousSeasonGames,
-      season_rank: rankIndex + 1,
-      made_top10: spec.previousSeasonGames >= TOP10_MIN_GAMES && rankIndex < PRISM_TOP_N,
-    }));
+    .filter(({ spec }) => spec.previousSeasonGames >= 1);
+  const seasonHistoryRows = seasonHistoryPlans.map(({ spec, playerId }, rankIndex) => ({
+    season_id: previousSeason.id,
+    player_id: playerId,
+    mmr_at_close: (spec.mmr ?? 0) - 100,
+    season_games_played: spec.previousSeasonGames,
+    season_rank: rankIndex + 1,
+    made_top10: spec.previousSeasonGames >= TOP10_MIN_GAMES && rankIndex < PRISM_TOP_N,
+    // The band the spec places them in, same value their live row carries — a real close snapshots
+    // whatever they held at the time, and these synthetic players never moved between seasons.
+    band_at_close: spec.band,
+    // Same all-time rating curve the real close uses, over this synthetic standing. These players
+    // are all is_test_data, so the points never reach a live career total.
+    season_score: allTimeSeasonScore(rankIndex + 1, seasonHistoryPlans.length),
+  }));
 
   if (seasonHistoryRows.length > 0) {
     const { error: historyError } = await supabase

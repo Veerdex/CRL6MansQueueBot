@@ -2,17 +2,10 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getConfigNumber } from "./config";
 import { resetAllPlacementsToUnranked } from "./bands";
-import { getGuildId, addMemberRole, removeMemberRole } from "./rest";
 import type { SeasonRow } from "@/lib/supabase/types";
+import { seasonScoresByPlayerId } from "../mmr/allTimeRating";
 
-type CloseSummary = {
-  participants: number;
-  top10: number;
-  playersDecayed: number;
-  playersReset: number;
-  prismGranted: number;
-  prismRevoked: number;
-};
+type CloseSummary = { participants: number; top10: number; playersDecayed: number; playersReset: number };
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -51,32 +44,28 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 // soft reset run. Test-data players (dev panel) are excluded throughout, same treatment as
 // every other bot-side Discord/ranking operation (see bands.ts).
 //
-// Prism is a season-end achievement, granted/revoked ONLY here — the top `prism_top_n` players by
-// MMR (any band, >= top10_min_games this season) hold it for the entire following season,
-// stacked alongside their real band role, until the next season close re-evaluates it. See
-// CLAUDE.md, "Bands / ranks". The `made_top10`/season_history write below shares the exact same
-// ranking as the archival record of that season's standings.
+// Prism is no longer granted/stripped here — it's a live top-N overlay recomputed continuously
+// by bands.ts's recomputeBands() (daily cron, every Rank Queue report, admin actions), not a
+// season-close-only event. The `made_top10`/season_history write below is the archival snapshot
+// of who was holding that live rank when the season ended — copied from `is_prism` rather than
+// re-derived, so the archive can never disagree with the standing players actually saw.
 //
 // After decay, every currently-placed player is reset back to Unranked (bands.ts's
 // resetAllPlacementsToUnranked — see CLAUDE.md, "Seasons") so a new season starts with everyone
-// re-earning their band from scratch. This must run AFTER applyMmrDecay, since that function's
-// own pool query filters on is_placed = true — reset first and decay would find nobody to decay.
+// re-earning their band from scratch. The ordering is no longer load-bearing for the decay pool
+// (which no longer filters on is_placed), but it is still what lets the standings/is_prism
+// snapshots above read pre-reset values, so it stays as-is.
 // ---------------------------------------------------------------------------
 
 export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<CloseSummary> {
   const supabase = createAdminClient();
 
-  const [decayFactor, top10MinGames, prismTopN] = await Promise.all([
-    getConfigNumber("decay_factor", 0.25),
-    getConfigNumber("top10_min_games", 8),
-    getConfigNumber("prism_top_n", 1),
-  ]);
+  const decayFactor = await getConfigNumber("decay_factor", 0.25);
 
   // ---- Season standings: season_rank for every participant (>=1 reported game that season,
-  // either queue — see CLAUDE.md, "Queueing"), made_top10 for the top `prism_top_n` among those
-  // with >= top10_min_games — archival only now, see the note above. The `made_top10` column
-  // name predates prism_top_n becoming configurable — kept as-is (a stable identifier, not a
-  // literal claim of "10"). ----
+  // either queue — see CLAUDE.md, "Queueing"), and made_top10 for whoever ended the season
+  // holding Prism — see the note above. The `made_top10` column name predates prism_top_n
+  // becoming configurable — kept as-is (a stable identifier, not a literal claim of "10"). ----
 
   const seriesIds = (
     await fetchAllPages((from, to) =>
@@ -108,12 +97,9 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 
   const participantIds = [...gamesPlayedByPlayerId.keys()];
   if (participantIds.length === 0) {
-    // No games played this season — nobody can qualify for a fresh Prism grant, but anyone
-    // holding it from the season that just ended still needs to be cleared out.
-    const { revoked: prismRevoked } = await syncPrismRoles(supabase, new Set(), new Map());
     const playersDecayed = await applyMmrDecay(supabase, decayFactor);
     const playersReset = await resetAllPlacementsToUnranked();
-    return { participants: 0, top10: 0, playersDecayed, playersReset, prismGranted: 0, prismRevoked };
+    return { participants: 0, top10: 0, playersDecayed, playersReset };
   }
 
   const players = (
@@ -140,8 +126,27 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
     .map((p) => ({ player: p, seasonGames: gamesPlayedByPlayerId.get(p.id) ?? 0 }))
     .sort((a, b) => b.player.mmr - a.player.mmr || b.seasonGames - a.seasonGames || a.player.id.localeCompare(b.player.id));
 
-  const eligibleForTop10 = ranked.filter((r) => r.seasonGames >= top10MinGames);
-  const top10Ids = new Set(eligibleForTop10.slice(0, prismTopN).map((r) => r.player.id));
+  // Who finished the season as Prism, read straight off the live `is_prism` column instead of
+  // being recomputed from a second copy of the top-N rule. bands.ts owns that rule (placed +
+  // Sapphire + >= top10_min_games, then the top `prism_top_n` by MMR) and refreshes the column on
+  // every Rank Queue report and on the daily cron, so this captures exactly the standing the
+  // community saw at close; the soft reset further down then clears `is_prism`, which is why the
+  // flag has to be snapshotted here. Both consumers of made_top10 — the leaderboard's Prism alumni
+  // avatar glow and the archived Top Players board — therefore always agree with what was actually
+  // displayed. Re-deriving it here would drift from that whenever the two rules disagreed: this
+  // pass had no Sapphire/placed qualification, so it backfilled unfilled Prism slots from lower
+  // bands and could archive players who never held the rank.
+  const top10Ids = new Set(ranked.filter((r) => r.player.is_prism).map((r) => r.player.id));
+
+  // All-time rating points for this season's finish (web/lib/mmr/allTimeRating.ts). Scored over
+  // the *placed* pool only and densely re-ranked inside it, which is why it can't just reuse
+  // `season_rank` below: that rank covers every participant with a reported game, unplaced ones
+  // included, so reusing it would both inflate N and leave gaps in r wherever an unplaced player
+  // finished mid-table. Read here, before the soft reset clears is_placed, for the same reason the
+  // is_prism snapshot above has to be. Unplaced participants still get a row, scoring 0.
+  const seasonScores = seasonScoresByPlayerId(
+    ranked.map((r) => ({ id: r.player.id, isPlaced: r.player.is_placed })),
+  );
 
   const historyRows = ranked.map((r, index) => ({
     season_id: closedSeason.id,
@@ -150,104 +155,53 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
     season_games_played: r.seasonGames,
     season_rank: index + 1,
     made_top10: top10Ids.has(r.player.id),
+    // Read here for the same reason as is_prism and is_placed above: resetAllPlacementsToUnranked()
+    // further down clears band for the whole roster, so a past-season board has no other source for
+    // it. The underlying band only — Prism rides along in made_top10.
+    band_at_close: r.player.is_placed ? r.player.band : null,
+    season_score: seasonScores.get(r.player.id) ?? 0,
   }));
+  // Throw rather than continue: everything below this point is destructive and irreversible
+  // (applyMmrDecay, then resetAllPlacementsToUnranked), and these rows are the only record of the
+  // standings it destroys. supabase-js resolves on a failed write instead of throwing, so without
+  // this check a rejected upsert is completely silent — and PostgREST *rejects* a write naming a
+  // column the table doesn't have (PGRST204) rather than dropping the field, which makes "the
+  // migration adding season_score/band_at_close hasn't been applied to this database yet" a real,
+  // reachable path to losing a whole season's standings. Aborting leaves the season row already
+  // flipped is_active=false by the caller's atomic claim, but with MMR and placements untouched,
+  // so the standings are still fully derivable from live data once the migration is applied.
   for (const rowsChunk of chunk(historyRows, ID_CHUNK)) {
-    await supabase.from("crl6mansqueuebot_season_history").upsert(rowsChunk);
+    const { error } = await supabase.from("crl6mansqueuebot_season_history").upsert(rowsChunk);
+    if (error) throw new Error(`Failed to archive season standings: ${error.message}`);
   }
 
-  const discordIdById = new Map(players.map((p) => [p.id, p.discord_id]));
-  const { granted: prismGranted, revoked: prismRevoked } = await syncPrismRoles(supabase, top10Ids, discordIdById);
+  // Prism role sync used to happen here (strip/grant against last season's `is_prism` holders).
+  // That's now handled live by bands.ts's recomputeBands() for the ordinary case (re-evaluated on
+  // every report/daily cron). At season-reset time specifically, though, resetAllPlacementsToUnranked
+  // (called below, via applyMmrDecay's sibling call) clears `is_prism` and the Prism role itself —
+  // fixed this session, since a later recomputeBands() call can't reconsider a player it just reset
+  // out of its own pool (is_placed/rank_games_played both get zeroed), so it could never actually
+  // "clear out anyone who no longer qualifies" the way this comment used to (incorrectly) claim.
 
   const playersDecayed = await applyMmrDecay(supabase, decayFactor);
   const playersReset = await resetAllPlacementsToUnranked();
 
-  return { participants: ranked.length, top10: top10Ids.size, playersDecayed, playersReset, prismGranted, prismRevoked };
+  return { participants: ranked.length, top10: top10Ids.size, playersDecayed, playersReset };
 }
 
 // ---------------------------------------------------------------------------
-// Grants Prism to every player in `top10Ids` who doesn't already hold it, and revokes it from
-// every current holder who isn't in `top10Ids` this time — a plain additive/subtractive diff, not
-// a swap. Best-effort per player (mirrors resetAllPlacementsToUnranked's pattern): one Discord
-// failure sets role_sync_pending so bands.ts's retry pass can pick it up later, and never blocks
-// the DB write or the rest of the diff. `discordIdById` only needs to cover `top10Ids` — current
-// holders' discord_ids come from the is_prism=true query itself.
-// ---------------------------------------------------------------------------
-// Pure diff core of syncPrismRoles, pulled out so it can be unit-tested without a Supabase/Discord
-// mock harness (this file's only I/O-free logic worth pinning directly): repeat top-N finishers
-// are a no-op, everyone else in top10Ids is a grant, every current holder not in top10Ids is a
-// revoke — including all of them when top10Ids is empty (the zero-participant season-close path).
-export function diffPrismRoles(
-  currentPrismIds: Set<string>,
-  top10Ids: Set<string>,
-): { toRevokeIds: Set<string>; toGrant: string[] } {
-  const toRevokeIds = new Set([...currentPrismIds].filter((id) => !top10Ids.has(id)));
-  const toGrant = [...top10Ids].filter((id) => !currentPrismIds.has(id));
-  return { toRevokeIds, toGrant };
-}
-
-async function syncPrismRoles(
-  supabase: SupabaseAdmin,
-  top10Ids: Set<string>,
-  discordIdById: Map<string, string>,
-): Promise<{ granted: number; revoked: number }> {
-  const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
-  const roleIdByBand = new Map((bandRoleRows ?? []).map((r) => [r.band, r.role_id]));
-  const prismRoleId = roleIdByBand.get("Prism");
-
-  let guildId: string | null = null;
-  if (prismRoleId) {
-    try {
-      guildId = await getGuildId();
-    } catch (err) {
-      console.error("Season close: failed to resolve guild id, skipping Prism role sync", err);
-    }
-  }
-
-  const { data: currentPrismRows } = await supabase
-    .from("crl6mansqueuebot_players")
-    .select("id, discord_id")
-    .eq("is_prism", true)
-    .eq("is_test_data", false);
-  const currentPrism = currentPrismRows ?? [];
-  const { toRevokeIds, toGrant } = diffPrismRoles(
-    new Set(currentPrism.map((p) => p.id)),
-    top10Ids,
-  );
-  const toRevoke = currentPrism.filter((p) => toRevokeIds.has(p.id));
-
-  for (const p of toRevoke) {
-    await supabase.from("crl6mansqueuebot_players").update({ is_prism: false }).eq("id", p.id);
-    if (guildId && prismRoleId) {
-      try {
-        await removeMemberRole(guildId, p.discord_id, prismRoleId);
-      } catch (err) {
-        console.error(`Season close: failed to remove Prism role for ${p.discord_id}`, err);
-        await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: true }).eq("id", p.id);
-      }
-    }
-  }
-
-  for (const id of toGrant) {
-    await supabase.from("crl6mansqueuebot_players").update({ is_prism: true }).eq("id", id);
-    if (guildId && prismRoleId) {
-      const discordId = discordIdById.get(id);
-      if (discordId) {
-        try {
-          await addMemberRole(guildId, discordId, prismRoleId);
-        } catch (err) {
-          console.error(`Season close: failed to add Prism role for ${discordId}`, err);
-          await supabase.from("crl6mansqueuebot_players").update({ role_sync_pending: true }).eq("id", id);
-        }
-      }
-    }
-  }
-
-  return { granted: toGrant.length, revoked: toRevoke.length };
-}
-
-// ---------------------------------------------------------------------------
-// Soft reset — every currently placed, non-test player (not just this season's participants,
+// Soft reset — every non-test player, placed or not (and not just this season's participants —
 // see CLAUDE.md, "Seasons"), applied after standings are already written.
+//
+// The pool used to filter on is_placed = true, which left unplaced players carrying an
+// un-decayed rating into a season where everyone else had been compressed. Because the two
+// groups interleave across the whole ladder, that let an unplaced player start the new season
+// *above* a placed player they had finished below — the decay formula's "never reorders players"
+// guarantee only ever held within the pool, never across its boundary. Decaying everyone closes
+// that gap and costs nothing for the never-played case: decayMmr(0, ...) is exactly 0.
+//
+// Widening the pool also widens what computeSafeMedian sees, so the compression constant now
+// reflects the whole community rather than the placed subset.
 //
 // decayMmr/computeSafeMedian live in ../mmr/seasonDecay.ts (a plain, dependency-free module)
 // rather than here, so web/scripts/backfill-mmr-before.ts — a tsx script that can't rely on
@@ -264,7 +218,6 @@ async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Prom
     supabase
       .from("crl6mansqueuebot_players")
       .select("id, mmr")
-      .eq("is_placed", true)
       .eq("is_test_data", false)
       .range(from, to)
       .then(({ data }) => data ?? []),

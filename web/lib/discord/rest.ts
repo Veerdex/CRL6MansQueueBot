@@ -30,38 +30,54 @@ export const RICH_JOIN_COLOR = 0x3ba55d;
 export const RICH_LEAVE_COLOR = 0xed4245;
 export const RICH_INACTIVITY_COLOR = 0xffa500;
 
-// A joining Prism holder's own card wins over both the ordinary join color and a Bonus Day's
-// SUPERCHARGED_ANNOUNCE_COLOR — see CLAUDE.md, "Bands / ranks" (Prism). White with a pink tint.
-export const PRISM_JOIN_COLOR = 0xffe4ec;
-
 // Bot-token REST calls — used for anything outside the 15-minute interaction-webhook
 // window (editing the persistent queue message later, creating match channels, etc).
 // Interaction responses/follow-ups themselves go through the interaction webhook instead.
+// Only a 429 is ever retried. A 403 (missing permission, or a member above the bot in the role
+// hierarchy — the guild owner can never be renamed by a bot at all) will fail identically
+// forever, and retrying it just burns invalid requests: Discord temp-bans an IP after 10,000
+// 401/403/429s in 10 minutes, which on Vercel's shared egress is not an IP we control.
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_MAX_WAIT_SECONDS = 30;
+
 export async function discordFetch(path: string, init: RequestInit = {}) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) {
     throw new Error("Missing DISCORD_BOT_TOKEN");
   }
 
-  const res = await fetch(`${DISCORD_API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bot ${token}`,
-      "Content-Type": "application/json",
-      ...init.headers,
-    },
-  });
+  for (let attempt = 0; ; attempt += 1) {
+    const res = await fetch(`${DISCORD_API_BASE}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bot ${token}`,
+        "Content-Type": "application/json",
+        ...init.headers,
+      },
+    });
 
-  if (!res.ok) {
-    const errorBody = await res.text();
-    throw new Error(`Discord API ${init.method ?? "GET"} ${path} failed: ${res.status} ${errorBody}`);
+    if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+      // Discord reports the wait in seconds, in the body for bucketed limits and in the header
+      // for Cloudflare-level ones. Capped so a long global limit surfaces as an error instead of
+      // silently holding the function open.
+      const body = (await res.json().catch(() => null)) as { retry_after?: number } | null;
+      const headerWait = Number(res.headers.get("retry-after") ?? Number.NaN);
+      const wait = body?.retry_after ?? (Number.isFinite(headerWait) ? headerWait : 1);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(wait, RATE_LIMIT_MAX_WAIT_SECONDS) * 1000));
+      continue;
+    }
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      throw new Error(`Discord API ${init.method ?? "GET"} ${path} failed: ${res.status} ${errorBody}`);
+    }
+
+    if (res.status === 204) {
+      return null;
+    }
+
+    return res.json();
   }
-
-  if (res.status === 204) {
-    return null;
-  }
-
-  return res.json();
 }
 
 // Best-effort DM — swallows failures (DMs closed, user left the server, etc.) since a
@@ -126,6 +142,39 @@ export async function getGuildId(): Promise<string> {
 export async function getMemberRoles(guildId: string, userId: string): Promise<string[]> {
   const member = (await discordFetch(`/guilds/${guildId}/members/${userId}`)) as { roles: string[] };
   return member.roles;
+}
+
+export type DiscordGuildMember = {
+  user: { id: string; avatar: string | null; username: string; global_name: string | null };
+  avatar: string | null;
+  nick: string | null;
+};
+
+// Paginates the full guild member list (limit=1000 per Discord's max, cursor = highest user id
+// seen so far) — requires the Server Members privileged intent to be enabled for this
+// application in the Developer Portal, gated by Discord on this REST endpoint even without a
+// gateway connection. One request covers the whole server at this community's size, so both
+// daily jobs that need every member's nickname (avatars.ts, nicknameSync.ts) read it here
+// rather than fetching members one at a time.
+export async function listAllGuildMembers(guildId: string): Promise<DiscordGuildMember[]> {
+  const members: DiscordGuildMember[] = [];
+  let after = "0";
+  for (;;) {
+    const batch = (await discordFetch(`/guilds/${guildId}/members?limit=1000&after=${after}`)) as DiscordGuildMember[];
+    members.push(...batch);
+    if (batch.length < 1000) return members;
+    after = batch[batch.length - 1].user.id;
+  }
+}
+
+// null clears the nickname entirely (the member falls back to their account display name),
+// which is different from "" — Discord treats an empty string the same way but null is the
+// documented form. Requires MANAGE_NICKNAMES and the bot ranking above the target.
+export async function setMemberNickname(guildId: string, userId: string, nick: string | null) {
+  await discordFetch(`/guilds/${guildId}/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nick }),
+  });
 }
 
 export async function addMemberRole(guildId: string, userId: string, roleId: string) {

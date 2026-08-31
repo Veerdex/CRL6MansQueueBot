@@ -1,7 +1,8 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { discordFetch, getGuildId } from "./rest";
+import { listAllGuildMembers, getGuildId, type DiscordGuildMember } from "./rest";
 import { stripClanTag } from "./types";
+import { stripMedals } from "./nicknameMedals";
 
 // Same pattern as seasonClose.ts's fetchAllPages/chunk — duplicated rather than imported since
 // it's a tiny, generic helper and seasonClose.ts keeps it module-private (see CLAUDE.md's note
@@ -28,20 +29,17 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
   }
 }
 
-type DiscordGuildMember = {
-  user: { id: string; avatar: string | null; username: string; global_name: string | null };
-  avatar: string | null;
-  nick: string | null;
-};
-
 // Same nickname-first, tag-stripped preference as interactionDisplayName (types.ts) — kept in
 // sync deliberately, since this is the bulk/lazy path for players who haven't run a command
 // (and so haven't hit getOrCreatePlayer's live update) since setting or changing their nickname.
+// Season medals are stripped too: they live in the Discord nickname on purpose (see
+// nicknameSync.ts), but display_name feeds the website leaderboard, match history, head-to-head
+// and every embed, and those already show placements through Hall of Fame and rank icons.
 function resolveDisplayName(member: DiscordGuildMember): string {
   const candidates = [member.nick, member.user.global_name, member.user.username];
   for (const candidate of candidates) {
     if (!candidate) continue;
-    const stripped = stripClanTag(candidate);
+    const stripped = stripMedals(stripClanTag(candidate));
     if (stripped) return stripped;
   }
   return "Unknown";
@@ -64,21 +62,6 @@ function buildAvatarUrl(guildId: string, userId: string, member: DiscordGuildMem
   }
   const defaultIndex = Number((BigInt(userId) >> BigInt(22)) % BigInt(6));
   return `https://cdn.discordapp.com/embed/avatars/${defaultIndex}.png`;
-}
-
-// Paginates the full guild member list (limit=1000 per Discord's max, cursor = highest user id
-// seen so far) — requires the Server Members privileged intent to be enabled for this
-// application in the Developer Portal, gated by Discord on this REST endpoint even without a
-// gateway connection.
-async function listAllGuildMembers(guildId: string): Promise<DiscordGuildMember[]> {
-  const members: DiscordGuildMember[] = [];
-  let after = "0";
-  for (;;) {
-    const batch = (await discordFetch(`/guilds/${guildId}/members?limit=1000&after=${after}`)) as DiscordGuildMember[];
-    members.push(...batch);
-    if (batch.length < 1000) return members;
-    after = batch[batch.length - 1].user.id;
-  }
 }
 
 export type AvatarRefreshSummary = { updated: number; skipped: number; renamed: number };

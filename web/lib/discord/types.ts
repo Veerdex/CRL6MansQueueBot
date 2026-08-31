@@ -1,3 +1,5 @@
+import { stripMedals } from "./nicknameMedals";
+
 // Minimal shapes for the fields this bot actually reads off an interaction payload —
 // not a full Discord API type package, just what's needed here.
 
@@ -66,14 +68,16 @@ export function stripClanTag(name: string): string {
 
 // Prefers the member's per-server nickname over their account-wide global_name/username — a
 // nickname is what this server actually knows a player by, and is also where clan tags like
-// "[BSU]" get set, hence the stripClanTag pass on every candidate. Falls through to the next
-// candidate if a tag-stripped value comes back empty (e.g. a nickname that was only a tag).
+// "[BSU]" get set, hence the stripClanTag pass on every candidate. Season medals are stripped
+// for the same reason (see nicknameMedals.ts): they belong in the Discord nickname, not in the
+// display_name this writes through getOrCreatePlayer on every command. Falls through to the next
+// candidate if a stripped value comes back empty (e.g. a nickname that was only a tag).
 export function interactionDisplayName(interaction: DiscordInteraction): string {
   const user = interaction.member?.user ?? interaction.user;
   const candidates = [interaction.member?.nick, user?.global_name, user?.username];
   for (const candidate of candidates) {
     if (!candidate) continue;
-    const stripped = stripClanTag(candidate);
+    const stripped = stripMedals(stripClanTag(candidate));
     if (stripped) return stripped;
   }
   return "Unknown";

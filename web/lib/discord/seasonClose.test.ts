@@ -1,31 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeSafeMedian, decayMmr, diffPrismRoles } from "./seasonClose";
-
-describe("diffPrismRoles", () => {
-  it("is a no-op for a repeat top-N finisher who already holds Prism", () => {
-    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a"]), new Set(["a"]));
-    expect(toRevokeIds.size).toBe(0);
-    expect(toGrant).toEqual([]);
-  });
-
-  it("revokes a holder who drops out of the top N", () => {
-    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a", "b"]), new Set(["b"]));
-    expect(toRevokeIds).toEqual(new Set(["a"]));
-    expect(toGrant).toEqual([]);
-  });
-
-  it("grants a new top-N finisher who didn't already hold Prism", () => {
-    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a"]), new Set(["a", "b"]));
-    expect(toRevokeIds.size).toBe(0);
-    expect(toGrant).toEqual(["b"]);
-  });
-
-  it("revokes every current holder when top10Ids is empty (zero-participant season close)", () => {
-    const { toRevokeIds, toGrant } = diffPrismRoles(new Set(["a", "b", "c"]), new Set());
-    expect(toRevokeIds).toEqual(new Set(["a", "b", "c"]));
-    expect(toGrant).toEqual([]);
-  });
-});
+import { computeSafeMedian, decayMmr } from "./seasonClose";
 
 describe("computeSafeMedian", () => {
   it("matches a plain median when the whole pool is already non-negative", () => {
@@ -51,10 +25,41 @@ describe("decayMmr", () => {
     expect(decayMmr(0, 25, 0.25)).toBe(0);
   });
 
+  // Live behavior (SYMMETRIC_NEGATIVE_DECAY = false in seasonDecay.ts) — commit 814ee7c.
   it("halves a negative player toward 0, independent of median and decay_factor", () => {
-    expect(decayMmr(-30, 25, 0.25)).toBeCloseTo(-15, 10);
-    expect(decayMmr(-30, -9999, 0.25)).toBeCloseTo(-15, 10); // median never consulted for mmr < 0
-    expect(decayMmr(-30, 25, 0.5)).toBeCloseTo(-15, 10); // decay_factor never consulted either
+    expect(decayMmr(-30, 25, 0.25)).toBe(-15);
+    expect(decayMmr(-30, 50, 0.25)).toBe(-15);
+    expect(decayMmr(-30, 25, 0.5)).toBe(-15);
+  });
+
+  // Flip SYMMETRIC_NEGATIVE_DECAY to true in lib/mmr/seasonDecay.ts and unskip this block to put
+  // the below-zero half back on the same median-scaled formula as the above-zero half. Kept rather
+  // than deleted so the alternative stays implemented and specified — see that file's header for
+  // the trade-off (symmetric decay recovers negatives more slowly than the halving does).
+  describe.skip("symmetric negative decay", () => {
+    it("compresses a negative player toward 0 with the same median-scaled formula as a positive one", () => {
+      // (-30 * 25) / (25 + 0.25 * 30) — the mmr >= 0 expression with |mmr| in the denominator.
+      expect(decayMmr(-30, 25, 0.25)).toBeCloseTo(-750 / 32.5, 10);
+      // Both the median and decay_factor move a below-zero player, which the `mmr / 2` branch
+      // does not: decay_factor becomes a single lever across the whole pool.
+      expect(decayMmr(-30, 50, 0.25)).toBeCloseTo(-1500 / 57.5, 10);
+      expect(decayMmr(-30, 25, 0.5)).toBeCloseTo(-750 / 40, 10);
+    });
+
+    it("is odd — a player N below zero is pulled toward zero exactly as far as one N above", () => {
+      for (const mmr of [0.001, 0.54, 5, 30, 116.307]) {
+        expect(decayMmr(-mmr, 52.9326, 0.5)).toBeCloseTo(-decayMmr(mmr, 52.9326, 0.5), 12);
+      }
+    });
+  });
+
+  it("leaves every rating untouched when the median is degenerate rather than wiping the pool", () => {
+    // computeSafeMedian returns 0 when at least half the pool ties at the minimum. Without the
+    // guard the formula sends every player to 0 — and 0/0 = NaN for one already there.
+    expect(computeSafeMedian([0, 0, 10])).toBe(0);
+    for (const mmr of [-10, 0, 10]) {
+      expect(decayMmr(mmr, 0, 0.25)).toBe(mmr);
+    }
   });
 
   it("never reorders players when median is safe (positive)", () => {
@@ -108,5 +113,25 @@ describe("decayMmr", () => {
     expect(decayedRaw).toBeCloseTo(48.3014, 2);
     const displayAfter = decayedRaw * 7.25 + 1000;
     expect(displayAfter).toBeCloseTo(1350.18, 1);
+  });
+});
+
+// The decay pool covers every non-test player, placed or not (changed 2026-08-31). Previously it
+// filtered on is_placed, which let an unplaced player carry an un-decayed rating past a placed
+// player they had finished below — the formula's strictly-increasing guarantee only ever held
+// within the pool, never across its boundary.
+describe("decay pool covers unplaced players", () => {
+  it("keeps a placed and an unplaced player in their original order", () => {
+    // The live pair that surfaced this: Murc (placed, 10.83) finished above Synthey (unplaced,
+    // 10.35) and, under the old placed-only pool, started the next season below them.
+    const pool = [10.8285, 10.3494, 116.307, -53.474, 0];
+    const median = computeSafeMedian(pool);
+    const murc = decayMmr(10.8285, median, 0.5);
+    const synthey = decayMmr(10.3494, median, 0.5);
+    expect(murc).toBeGreaterThan(synthey);
+  });
+
+  it("leaves a never-played player at exactly 0", () => {
+    expect(decayMmr(0, 52.933, 0.5)).toBe(0);
   });
 });

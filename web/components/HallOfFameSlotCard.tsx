@@ -9,28 +9,28 @@ function applyMMRTransform(mmr: number, scale: number, shift: number): number {
 
 const PRISM_ICON_PATH = "/ranks/Prism.png";
 
-// Gold/silver/bronze podium colors for the top 3; 4th/5th place and "most games played"/"highest
-// win streak" all share the same neutral grey — there's no natural 4th/5th medal color, and the
-// size-tier drop (see SIZE_SCALE) is what visually separates 4th-5th from the podium instead.
+// Gold/silver/bronze podium colors for the top 3; "most games played"/"highest win streak" share
+// a neutral grey — they're a different kind of achievement than a placing, and the size-tier drop
+// (see TIER_STEP) is what visually separates that second row from the podium.
 const SLOT_BG: Record<string, string> = {
   rank1: "bg-gold",
   rank2: "bg-silver",
   rank3: "bg-bronze",
-  rank4: "bg-slot-grey",
-  rank5: "bg-slot-grey",
   games: "bg-slot-grey",
   streak: "bg-slot-grey",
 };
 
-// Two cascading size tiers, each 15% smaller than the one before: podium (1st-3rd) at 85%;
-// 4th-5th, games, and streak all share the smaller 85%-of-that tier. SIZE_BOOST then bumps both
-// tiers up 15% across the board (literal request), applied after the cascade so the relative
-// 15%-smaller gap between the two rows is unaffected.
+// Two cascading size tiers, each 15% smaller than the one before: the podium (1st-3rd) at 85%,
+// then games and streak on the smaller 85%-of-that tier. SIZE_BOOST bumps both tiers up 15%
+// across the board (literal request), applied after the cascade so the relative 15%-smaller gap
+// between the two rows is unaffected. STAT_BOOST then lifts only the games/streak pair a further
+// 5% (literal request), deliberately narrowing that gap rather than preserving it.
 const TIER_STEP = 0.85;
 const SIZE_BOOST = 1.15;
+const STAT_BOOST = 1.05;
 function scaleForSlot(slot: HallOfFameSlot): number {
-  if (slot.kind === "rank" && slot.position <= 3) return TIER_STEP * SIZE_BOOST;
-  return TIER_STEP ** 2 * SIZE_BOOST;
+  if (slot.kind === "rank") return TIER_STEP * SIZE_BOOST;
+  return TIER_STEP ** 2 * SIZE_BOOST * STAT_BOOST;
 }
 
 function slotKey(slot: HallOfFameSlot): string {
@@ -46,10 +46,6 @@ function slotLabel(slot: HallOfFameSlot): string {
         return "2nd Place";
       case 3:
         return "3rd Place";
-      case 4:
-        return "4th Place";
-      case 5:
-        return "5th Place";
     }
   }
   if (slot.kind === "games") return "Most Games Played";
@@ -73,9 +69,9 @@ export default function HallOfFameSlotCard({
 }) {
   const displayBand: DisplayBand | null = slot.player ? slot.player.band : null;
   const scale = scaleForSlot(slot);
-  // A slot's player being in that season's top 5 (see hallOfFame.ts, `inTopFive`) shows the Prism
-  // icon in place of their band icon, even for an Unranked (null-band) top-5 player.
-  const showPrismIcon = slot.player?.inTopFive ?? false;
+  // A slot's player being in that season's top 3 (see hallOfFame.ts, `inTopThree`) shows the Prism
+  // icon in place of their band icon, even for an Unranked (null-band) top-3 player.
+  const showPrismIcon = slot.player?.inTopThree ?? false;
 
   return (
     <div
@@ -87,8 +83,8 @@ export default function HallOfFameSlotCard({
       </span>
       {slot.player ? (
         <>
-          {/* Every Hall of Fame slot is a celebrated achievement, so every avatar here — podium,
-              4th-5th, and both stat slots alike — gets the same golden halo. */}
+          {/* Every Hall of Fame slot is a celebrated achievement, so every avatar here — podium
+              and both stat slots alike — gets the same golden halo. */}
           <PlayerAvatar avatarUrl={slot.player.avatarUrl} alt={slot.player.displayName} scale={scale} glow />
           <span className="max-w-full truncate font-semibold" style={{ fontSize: `${0.875 * scale}rem` }}>
             {formatDisplayName(slot.player.displayName)}
@@ -97,7 +93,7 @@ export default function HallOfFameSlotCard({
             <img
               src={showPrismIcon ? PRISM_ICON_PATH : getRankIconPath(displayBand)}
               alt={showPrismIcon ? "Prism" : getRankLabel(displayBand)}
-              title={showPrismIcon ? "Prism — top 5 this season" : getRankLabel(displayBand)}
+              title={showPrismIcon ? "Prism — top 3 this season" : getRankLabel(displayBand)}
               className="object-contain"
               style={{ width: `${1.5 * scale}rem`, height: `${1.5 * scale}rem` }}
             />

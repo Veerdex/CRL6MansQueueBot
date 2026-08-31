@@ -180,7 +180,7 @@ export async function startTeamFormation(
 ) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
-  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id), prism: m.is_prism })).join(" ");
+  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
   const supercharged = await isSuperchargedSeries(supabase, seriesId);
   const body = { content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds, supercharged)], components: voteButtons(seriesId) };
 
@@ -277,7 +277,7 @@ export async function castVote(
 export async function startSeriesLengthVote(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
   const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
-  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id), prism: m.is_prism })).join(" ");
+  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
   const supercharged = await isSuperchargedSeries(supabase, seriesId);
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
@@ -769,7 +769,7 @@ function draftPickButtonRows(seriesId: string, remaining: PlayerRow[]) {
       components: remaining.slice(i, i + 5).map((p) => ({
         type: MessageComponentTypes.BUTTON,
         style: ButtonStyleTypes.SECONDARY,
-        label: (p.is_prism ? `✦ ${p.display_name}` : p.display_name).slice(0, 80),
+        label: p.display_name.slice(0, 80),
         custom_id: `draft_pick:${seriesId}:${p.id}`,
       })),
     });
@@ -793,7 +793,7 @@ function draftPickSelectRow(seriesId: string, remaining: PlayerRow[], pickCount:
           min_values: pickCount,
           max_values: pickCount,
           options: remaining.map((p) => ({
-            label: (p.is_prism ? `✦ ${p.display_name}` : p.display_name).slice(0, 100),
+            label: p.display_name.slice(0, 100),
             value: p.id,
             description: (descriptions.get(p.id) ?? "").slice(0, 100),
           })),
@@ -819,8 +819,8 @@ function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptai
     color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
     title: "Captains Draft",
     fields: [
-      { name: "Captain A", value: mention(captainA.discord_id, { onFire: streaks.onFireIds.has(captainA.id), cold: streaks.coldIds.has(captainA.id), prism: captainA.is_prism }), inline: true },
-      { name: "Captain B", value: mention(captainB.discord_id, { onFire: streaks.onFireIds.has(captainB.id), cold: streaks.coldIds.has(captainB.id), prism: captainB.is_prism }), inline: true },
+      { name: "Captain A", value: mention(captainA.discord_id, { onFire: streaks.onFireIds.has(captainA.id), cold: streaks.coldIds.has(captainA.id) }), inline: true },
+      { name: "Captain B", value: mention(captainB.discord_id, { onFire: streaks.onFireIds.has(captainB.id), cold: streaks.coldIds.has(captainB.id) }), inline: true },
       { name: "Status", value: status, inline: false },
     ],
   };
@@ -847,7 +847,7 @@ async function sendDraftPickPrompt(
   const turnPlayer = turnCaptain === "A" ? captainA : captainB;
   const supabase = createAdminClient();
   const streaks = await getStreakIds(supabase, [captainA.id, captainB.id, ...remaining.map((p) => p.id)]);
-  const turnPlayerDecoration = { onFire: streaks.onFireIds.has(turnPlayer.id), cold: streaks.coldIds.has(turnPlayer.id), prism: turnPlayer.is_prism };
+  const turnPlayerDecoration = { onFire: streaks.onFireIds.has(turnPlayer.id), cold: streaks.coldIds.has(turnPlayer.id) };
   const supercharged = await isSuperchargedSeries(supabase, seriesId);
 
   if (turnPlayer.is_test_data) {
@@ -872,7 +872,8 @@ async function sendDraftPickPrompt(
   const descriptions = new Map<string, string>();
 
   for (const player of remaining) {
-    const emoji = await getRankEmoji(player.band);
+    // Prism is a live top-N overlay (see CLAUDE.md, "Bands / ranks"), not a `band` column value.
+    const emoji = await getRankEmoji(player.is_prism ? "Prism" : player.band);
     const displayMMR = await getDisplayMMR(player.mmr);
     const { data: seriesPlayerRows } = await supabase
       .from("crl6mansqueuebot_series_players")
@@ -881,7 +882,7 @@ async function sendDraftPickPrompt(
 
     if (!seriesPlayerRows || seriesPlayerRows.length === 0) {
       embedFields.push({
-        name: player.is_prism ? `✦ ${player.display_name}` : player.display_name,
+        name: player.display_name,
         value: `${displayMMR.toFixed(0)} MMR ${emoji} | **W:** 0 | **L:** 0`,
         inline: false,
       });
@@ -904,7 +905,7 @@ async function sendDraftPickPrompt(
 
     const losses = seriesPlayerRows.length - wins;
     embedFields.push({
-      name: player.is_prism ? `✦ ${player.display_name}` : player.display_name,
+      name: player.display_name,
       value: `${displayMMR.toFixed(0)} MMR ${emoji} | **W:** ${wins} | **L:** ${losses}`,
       inline: false,
     });
@@ -1013,7 +1014,7 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
   // Best-effort pick confirmation — mirrors sendDraftPickPrompt's is_test_data guard, since a
   // synthetic test captain has no real Discord account to DM (sendDirectMessage would just fail).
   if (!turnCaptainPlayer.is_test_data) {
-    await sendDirectMessage(turnCaptainPlayer.discord_id, `You picked **${target.player.is_prism ? `✦ ${target.player.display_name}` : target.player.display_name}**.`);
+    await sendDirectMessage(turnCaptainPlayer.discord_id, `You picked **${target.player.display_name}**.`);
   }
 
   const newAssignedCount = assignedCount + 1;
@@ -1121,9 +1122,8 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   // Best-effort pick confirmation — same is_test_data guard as the single-pick path above.
   if (!turnCaptainPlayer.is_test_data) {
     const pickedNames = claimedIds
-      .map((id) => nonCaptainRows.find((x) => x.row.player_id === id)?.player)
-      .filter((p): p is PlayerRow => Boolean(p))
-      .map((p) => (p.is_prism ? `✦ ${p.display_name}` : p.display_name));
+      .map((id) => nonCaptainRows.find((x) => x.row.player_id === id)?.player.display_name)
+      .filter((n): n is string => Boolean(n));
     await sendDirectMessage(turnCaptainPlayer.discord_id, `You picked **${pickedNames.join(", ")}**.`);
   }
 
@@ -1260,7 +1260,7 @@ async function finalizeTeams(
   );
 
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
-  const memberMention = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id), prism: m.is_prism });
+  const memberMention = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
   const teamALine = teamA.map(memberMention).join(" ");
   const teamBLine = teamB.map(memberMention).join(" ");
 

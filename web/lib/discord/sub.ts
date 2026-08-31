@@ -128,7 +128,7 @@ async function processSubRequest(
     return;
   }
 
-  const { data: participants } = await supabase.from("crl6mansqueuebot_players").select("id, discord_id, is_prism").in(
+  const { data: participants } = await supabase.from("crl6mansqueuebot_players").select("id, discord_id").in(
     "id",
     seriesPlayers.map((sp) => sp.player_id),
   );
@@ -183,10 +183,10 @@ async function processSubRequest(
   }
 
   const streaks = await getStreakIds(supabase, isSelfSub ? [target.id] : [target.id, caller.id]);
-  const targetMention = mention(effectiveTargetDiscordId, { onFire: streaks.onFireIds.has(target.id), cold: streaks.coldIds.has(target.id), prism: target.is_prism });
+  const targetMention = mention(effectiveTargetDiscordId, { onFire: streaks.onFireIds.has(target.id), cold: streaks.coldIds.has(target.id) });
   const requestContent = isSelfSub
     ? `<@${nomineeDiscordId}> — ${targetMention} wants to sub out and nominated you to take their seat (Team ${leavingRow.team}). Accept to join the match.`
-    : `<@${nomineeDiscordId}> — ${mention(discordId, { onFire: streaks.onFireIds.has(caller.id), cold: streaks.coldIds.has(caller.id), prism: caller.is_prism })} nominated you to sub in for ${targetMention} (Team ${leavingRow.team}). Accept to join the match.`;
+    : `<@${nomineeDiscordId}> — ${mention(discordId, { onFire: streaks.onFireIds.has(caller.id), cold: streaks.coldIds.has(caller.id) })} nominated you to sub in for ${targetMention} (Team ${leavingRow.team}). Accept to join the match.`;
 
   const message = (await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
     method: "POST",
@@ -343,12 +343,12 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
   if (subRequest.message_id && series.queue_channel_id) {
     const streaks = await getStreakIds(supabase, leavingPlayer ? [nominee.id, leavingPlayer.id] : [nominee.id]);
     const leavingMention = leavingPlayer
-      ? mention(leavingPlayer.discord_id, { onFire: streaks.onFireIds.has(leavingPlayer.id), cold: streaks.coldIds.has(leavingPlayer.id), prism: leavingPlayer.is_prism })
+      ? mention(leavingPlayer.discord_id, { onFire: streaks.onFireIds.has(leavingPlayer.id), cold: streaks.coldIds.has(leavingPlayer.id) })
       : "?";
     await discordFetch(`/channels/${series.queue_channel_id}/messages/${subRequest.message_id}`, {
       method: "PATCH",
       body: JSON.stringify({
-        content: `${mention(nominee.discord_id, { onFire: streaks.onFireIds.has(nominee.id), cold: streaks.coldIds.has(nominee.id), prism: nominee.is_prism })} accepted and has subbed in for ${leavingMention} on Team ${team}.`,
+        content: `${mention(nominee.discord_id, { onFire: streaks.onFireIds.has(nominee.id), cold: streaks.coldIds.has(nominee.id) })} accepted and has subbed in for ${leavingMention} on Team ${team}.`,
         components: [],
       }),
     }).catch((err) => console.error(`Failed to update sub request message for series ${seriesId}`, err));

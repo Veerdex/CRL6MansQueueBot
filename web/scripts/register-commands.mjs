@@ -642,7 +642,7 @@ const commands = [
       },
       {
         name: "refresh-avatars",
-        description: "Manually trigger the daily avatar refresh.",
+        description: "Manually trigger the daily avatar and season-medal refresh.",
         type: SUB_COMMAND,
         options: [],
       },
