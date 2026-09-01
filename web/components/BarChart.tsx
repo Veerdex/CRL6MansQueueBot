@@ -43,7 +43,12 @@ export default function BarChart({ bars, color = "#ff8238", height = 260, connec
     return paddingTop + plotHeight - (value / maxValue) * plotHeight;
   }
 
-  const yGridLines = 4;
+  // Fewer than 4 gridlines once the tallest bar is itself below 4, so the rounded labels stay
+  // distinct: at maxValue=3 a fixed 4 would tick 0,1,2,2,3 — a repeated label drawn over itself,
+  // and a duplicate React key. Capping the count at floor(maxValue) keeps the step at >=1, which
+  // is what guarantees uniqueness (a sub-1 step is the only way two ticks can round together).
+  // Floor because bars may carry fractional values (SeriesLengthPanel plots percentages).
+  const yGridLines = Math.max(1, Math.min(4, Math.floor(maxValue)));
   const yTicks = Array.from({ length: yGridLines + 1 }, (_, i) => Math.round((maxValue / yGridLines) * i));
 
   return (
