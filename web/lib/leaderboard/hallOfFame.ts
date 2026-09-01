@@ -46,14 +46,38 @@ function toHofPlayer(
   };
 }
 
-// Same standing tiebreak seasonClose.ts uses: MMR desc, then this-season games played desc, then
-// player id asc as a final deterministic tiebreak.
+// seasonClose.ts's standing tiebreak — MMR desc, then this-season games played desc, then player
+// id asc — with the placed-first tier the leaderboard applies (compareLeaderboardRank) put ahead
+// of it. Without that tier an unplaced player with a couple of lucky wins can take a podium slot
+// off a banded one, which is the same defect the past-season boards had; the podium is a standing,
+// and an Unranked finisher has no standing to be first in. Note this only reorders who *reaches*
+// the podium — it is unrelated to the Prism/gold selection HoF deliberately keeps separate
+// (see `isPrism` vs `inTopThree` above), which stays untouched.
 function rankParticipants(
   entries: { player: PlayerRow; mmr: number; seasonGames: number }[],
 ): { player: PlayerRow; mmr: number }[] {
   return [...entries]
-    .sort((a, b) => b.mmr - a.mmr || b.seasonGames - a.seasonGames || a.player.id.localeCompare(b.player.id))
+    .sort(
+      (a, b) =>
+        Number(b.player.is_placed) - Number(a.player.is_placed) ||
+        b.mmr - a.mmr ||
+        b.seasonGames - a.seasonGames ||
+        a.player.id.localeCompare(b.player.id),
+    )
     .map((e) => ({ player: e.player, mmr: e.mmr }));
+}
+
+// The closed-season equivalent, over archived rows. `season_rank` was baked in at close with no
+// placed-first tier, so it is re-tiered here at read time rather than rewritten in the database —
+// the column stays the archival record that nicknameSync.ts's medal sweep and allTimeRating.ts
+// both read. Mirrors compareArchivedRank in UnifiedLeaderboard.tsx (duplicated the same way
+// compareLeaderboardRank is, rather than shared across the server/client boundary).
+function compareArchivedStanding(a: SeasonHistoryRow, b: SeasonHistoryRow): number {
+  return (
+    Number(b.band_at_close !== null) - Number(a.band_at_close !== null) ||
+    b.mmr_at_close - a.mmr_at_close ||
+    a.season_rank - b.season_rank
+  );
 }
 
 // Picks the single highest-`value` entry (games played / win streak slots) — same tiebreak
@@ -172,7 +196,7 @@ export async function getHallOfFameData(): Promise<HallOfFameSeason[]> {
     const history = historyBySeasonId.get(season.id) ?? [];
 
     const top3 = [...history]
-      .sort((a, b) => a.season_rank - b.season_rank)
+      .sort(compareArchivedStanding)
       .slice(0, 3)
       .map((row) => {
         const player = playersById.get(row.player_id);

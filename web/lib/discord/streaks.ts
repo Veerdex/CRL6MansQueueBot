@@ -11,6 +11,14 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // on the players row (same approach the leaderboard's win-streak columns already use, see
 // web/lib/leaderboard/queries.ts's getAllPlayersWithGames). Test-data series are excluded, same
 // as bands.ts/seasonClose.ts.
+//
+// Streaks are scoped to the active season and do not carry across a season boundary: closing a
+// season resets everyone to 0, and the first game of the new season starts a fresh streak. That
+// falls out of the derived-not-stored design above — there is no counter to reset, only a
+// narrower window to count over — so a season close needs no streak bookkeeping of its own.
+// A series belongs to the season it was created in (series.season_id is set at pop), so one that
+// pops just before a close and reports just after still scores against the old season and does
+// not seed a streak in the new one.
 
 export const ON_FIRE_EMOJI = "🔥";
 // Amber "on a streak!" announcement embed threshold (report.ts) — separate from FLAME_THRESHOLD
@@ -52,11 +60,28 @@ function consecutiveLosses(games: StreakGame[]): number {
   return streak;
 }
 
+// The season every streak below is counted over. A null result means no season is open at all,
+// which the callers treat as "no games", i.e. streak 0 — deliberately *not* the lifetime
+// fallback that leaderboard/stats.ts's filterGames uses for an undefined seasonId. With no open
+// season there is no season streak to be on, and silently widening to all-time here would hand
+// out a stale MMR bonus off last season's results, which is the exact carry-over this scoping
+// exists to prevent.
+async function fetchActiveSeasonId(supabase: AdminClient): Promise<string | null> {
+  const { data } = await supabase
+    .from("crl6mansqueuebot_seasons")
+    .select("id")
+    .eq("is_active", true)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
 async function fetchStreakGames(
   supabase: AdminClient,
   playerId: string,
   excludeSeriesId?: string,
 ): Promise<StreakGame[]> {
+  const seasonId = await fetchActiveSeasonId(supabase);
+  if (!seasonId) return [];
   const { data: seriesPlayerRows } = await supabase
     .from("crl6mansqueuebot_series_players")
     .select("series_id, team")
@@ -71,6 +96,7 @@ async function fetchStreakGames(
       "id",
       rows.map((r) => r.series_id),
     )
+    .eq("season_id", seasonId)
     .eq("queue_type", "rank")
     .eq("status", "reported")
     .eq("is_test_data", false);
@@ -115,6 +141,8 @@ export interface StreakIds {
 export async function getStreakIds(supabase: AdminClient, playerIds: string[]): Promise<StreakIds> {
   const uniqueIds = [...new Set(playerIds)];
   if (uniqueIds.length === 0) return { onFireIds: new Set(), coldIds: new Set() };
+  const seasonId = await fetchActiveSeasonId(supabase);
+  if (!seasonId) return { onFireIds: new Set(), coldIds: new Set() };
 
   const { data: seriesPlayerRows } = await supabase
     .from("crl6mansqueuebot_series_players")
@@ -128,6 +156,7 @@ export async function getStreakIds(supabase: AdminClient, playerIds: string[]): 
     .from("crl6mansqueuebot_series")
     .select("id, winner_team, reported_at, created_at")
     .in("id", seriesIds)
+    .eq("season_id", seasonId)
     .eq("queue_type", "rank")
     .eq("status", "reported")
     .eq("is_test_data", false);

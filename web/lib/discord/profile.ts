@@ -4,7 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags } from "discord-inter
 import { editOriginalResponse, getRankEmoji, BRAND_COLOR } from "./rest";
 import { getDisplayMMR } from "./config";
 import { getRankLabel, type DisplayBand } from "@/lib/leaderboard/rankIcon";
-import { getAllPlayersWithGames, type PlayerWithGames } from "@/lib/leaderboard/queries";
+import { getActiveSeason, getAllPlayersWithGames, type PlayerWithGames } from "@/lib/leaderboard/queries";
 import { computeStats, filterGames, FLAME_THRESHOLD, COLD_THRESHOLD } from "@/lib/leaderboard/stats";
 import { mention, ON_FIRE_EMOJI, COLD_EMOJI } from "./streaks";
 import { interactionUserId, type DiscordInteraction } from "./types";
@@ -48,7 +48,7 @@ async function processProfile(interaction: DiscordInteraction, targetDiscordIdOp
   }
   const targetDiscordId = targetDiscordIdOption ?? callerDiscordId;
 
-  const allPlayers = await getAllPlayersWithGames();
+  const [allPlayers, activeSeason] = await Promise.all([getAllPlayersWithGames(), getActiveSeason()]);
   const entry = allPlayers.find((p) => p.player.discord_id === targetDiscordId);
 
   if (!entry) {
@@ -69,22 +69,29 @@ async function processProfile(interaction: DiscordInteraction, targetDiscordIdOp
   const eligible = allPlayers.filter((p) => p.player.total_games_played >= 1).sort(compareLeaderboardRank);
   const rank = eligible.findIndex((p) => p.player.id === entry.player.id) + 1;
 
-  const rankStats = computeStats(filterGames(entry.games, {}));
+  // Wins/Losses and Streak are all this season's only, matching the Main Leaderboard — each
+  // season keeps its own record and the website's All-Time Stats view carries the cross-season
+  // totals. The streak scope has to match streaks.ts, which counts within the active season and
+  // pays the MMR bonus off that window; a lifetime streak here would advertise a bonus the bot
+  // will not actually award on the next report. No open season means no games rather than the
+  // whole log — filterGames reads an undefined seasonId as "no filter", so the empty list is
+  // spelled out here to keep this in step with fetchActiveSeasonId's null handling in streaks.ts.
+  const seasonStats = computeStats(activeSeason ? filterGames(entry.games, { seasonId: activeSeason.id }) : []);
   const { player } = entry;
   const band: DisplayBand | null = player.is_prism ? "Prism" : player.is_placed ? player.band : null;
 
   const [rankEmoji, displayMmr] = await Promise.all([getRankEmoji(band), getDisplayMMR(player.mmr)]);
 
   const streakText =
-    rankStats.currentStreak.type === "W"
-      ? `${rankStats.currentStreak.count} Win Streak${rankStats.currentStreak.count >= FLAME_THRESHOLD ? ` ${ON_FIRE_EMOJI}` : ""}`
-      : rankStats.currentStreak.type === "L"
-        ? `${rankStats.currentStreak.count} Loss Streak${rankStats.currentStreak.count >= COLD_THRESHOLD ? ` ${COLD_EMOJI}` : ""}`
-        : "No Rank Queue games yet";
+    seasonStats.currentStreak.type === "W"
+      ? `${seasonStats.currentStreak.count} Win Streak${seasonStats.currentStreak.count >= FLAME_THRESHOLD ? ` ${ON_FIRE_EMOJI}` : ""}`
+      : seasonStats.currentStreak.type === "L"
+        ? `${seasonStats.currentStreak.count} Loss Streak${seasonStats.currentStreak.count >= COLD_THRESHOLD ? ` ${COLD_EMOJI}` : ""}`
+        : "No Rank Queue games this season";
 
   const playerMention = mention(player.discord_id, {
-    onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
-    cold: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
+    onFire: seasonStats.currentStreak.type === "W" && seasonStats.currentStreak.count >= FLAME_THRESHOLD,
+    cold: seasonStats.currentStreak.type === "L" && seasonStats.currentStreak.count >= COLD_THRESHOLD,
   });
 
   await editOriginalResponse(interaction.token, {
@@ -97,8 +104,8 @@ async function processProfile(interaction: DiscordInteraction, targetDiscordIdOp
           { name: "MMR", value: `${Math.round(displayMmr)}`, inline: true },
           { name: "Rank", value: `#${rank}`, inline: true },
           { name: "Streak", value: streakText, inline: true },
-          { name: "Wins", value: `${rankStats.wins}`, inline: true },
-          { name: "Losses", value: `${rankStats.losses}`, inline: true },
+          { name: "Season Wins", value: `${seasonStats.wins}`, inline: true },
+          { name: "Season Losses", value: `${seasonStats.losses}`, inline: true },
         ],
       },
     ],

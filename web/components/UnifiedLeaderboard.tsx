@@ -34,6 +34,22 @@ function getBandColor(band: DisplayBand | null): string {
 
 type ViewMode = "top-players" | "main" | "all-time";
 
+// Which tabs the segmented control actually offers. "top-players" is deliberately absent — the
+// view is disabled, not deleted: every piece that renders it (topPlayersRows,
+// historicalTopPlayersRows, displayedTopPlayersRows and the `viewMode === "top-players"` block
+// below) is left intact and simply unreachable, so re-enabling is a one-token change here rather
+// than a rebuild. `useState<ViewMode>("main")` already defaults to a tab that's still listed, so
+// nothing can land on the hidden view.
+const ENABLED_VIEW_MODES = ["main", "all-time"] as const satisfies readonly ViewMode[];
+
+// Keyed by the full ViewMode union rather than only the enabled ones, so the disabled tab keeps
+// its label and re-enabling stays a one-token edit above.
+const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  "top-players": "Top Players",
+  main: "Main",
+  "all-time": "All-Time Stats",
+};
+
 interface UnifiedLeaderboardProps {
   players: PlayerWithGames[];
   seasons: SeasonRow[];
@@ -58,6 +74,22 @@ function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number 
   return a.player.id.localeCompare(b.player.id);
 }
 
+// compareLeaderboardRank's archived twin, for past-season boards. `season_rank` is the order
+// seasonClose.ts baked in — MMR desc, then season games, then id, with no placed-first tier — so
+// replaying it verbatim seats unplaced finishers above banded ones, which the live board never
+// does. The column itself stays the record of record and is deliberately not rewritten: Hall of
+// Fame podiums and the nickname medal sweep both read `season_rank <= 3` straight off it, and
+// all-time rating re-ranks the placed players out of it. The tier is applied here at read time
+// instead. Final tiebreak is `season_rank` rather than a re-derived games-played count, since it
+// already encodes exactly that tiebreak from close.
+function compareArchivedRank(a: SeasonHistoryRow, b: SeasonHistoryRow): number {
+  const bandedDiff = Number(b.band_at_close !== null) - Number(a.band_at_close !== null);
+  if (bandedDiff !== 0) return bandedDiff;
+  const mmrDiff = b.mmr_at_close - a.mmr_at_close;
+  if (mmrDiff !== 0) return mmrDiff;
+  return a.season_rank - b.season_rank;
+}
+
 export default function UnifiedLeaderboard({
   players,
   seasons,
@@ -79,7 +111,12 @@ export default function UnifiedLeaderboard({
   );
   const minSeasonNumber = sortedSeasons[0]?.season_number ?? 1;
   const maxSeasonNumber = sortedSeasons[sortedSeasons.length - 1]?.season_number ?? 1;
-  const activeSeasonNumber = seasons.find((s) => s.is_active)?.season_number ?? maxSeasonNumber;
+  const activeSeason = seasons.find((s) => s.is_active) ?? null;
+  const activeSeasonNumber = activeSeason?.season_number ?? maxSeasonNumber;
+  // Undefined only if no season is active at all (shouldn't happen — one always is). filterGames
+  // treats an undefined seasonId as "no filter", so that degenerate case falls back to lifetime
+  // totals, the same direction isCurrentSeason's own `?? true` fallback leans.
+  const activeSeasonId = activeSeason?.id;
 
   // Prism alumni: everyone who finished the most recently *closed* season inside that season's
   // Prism cut, read straight off the archived `made_top10` flag seasonClose.ts writes. This is
@@ -220,8 +257,8 @@ export default function UnifiedLeaderboard({
     }));
   }, [eligiblePlayers, prismAlumniIds]);
 
-  // Past-season standings come from the archived season_history rows, ordered by the rank
-  // already computed at season-close time (see seasonClose.ts) rather than recomputed here.
+  // Past-season standings come from the archived season_history rows, re-tiered for display by
+  // compareArchivedRank (banded first) rather than replaying the archived season_rank order.
   // Avatar and display name are the player's current live ones (same precedent as Hall of Fame —
   // they're identity, not standing). Band is the archived `band_at_close`, so a past season shows
   // the band actually held then rather than whatever the player wears today.
@@ -232,8 +269,10 @@ export default function UnifiedLeaderboard({
   const historicalTopPlayersRows = useMemo(() => {
     if (!selectedSeason) return [];
     const sorted = seasonHistory
-      .filter((h) => h.season_id === selectedSeason.id)
-      .sort((a, b) => a.season_rank - b.season_rank)
+      // Banded finishers only, mirroring the live view's `player.is_placed` filter — this view is
+      // specifically a ranking by band/MMR, so an unranked finisher has no place in it.
+      .filter((h) => h.season_id === selectedSeason.id && h.band_at_close !== null)
+      .sort(compareArchivedRank)
       .slice(0, 20);
     return sorted
       .map((h, idx) => {
@@ -260,7 +299,12 @@ export default function UnifiedLeaderboard({
   const mainBoardRows = useMemo(() => {
     const sorted = eligiblePlayers.slice().sort(compareLeaderboardRank);
     const rows: MainBoardRow[] = sorted.map(({ player, games }) => {
-      const rankStats = computeStats(filterGames(games, {}));
+      // Every column here is the active season's only — W/L/win-rate and the streak flags alike.
+      // Each season keeps its own record and the All-Time Stats view carries the cross-season
+      // totals. The streaks are scoped for the same reason the bot's are (lib/discord/streaks.ts,
+      // which counts within the active season and pays its MMR bonus off that): a lifetime flame
+      // here would mark a player on-fire on the site while the bot no longer honors the streak.
+      const seasonStats = computeStats(filterGames(games, { seasonId: activeSeasonId }));
       return {
         playerId: player.id,
         displayName: player.display_name,
@@ -269,35 +313,42 @@ export default function UnifiedLeaderboard({
         isPrism: player.is_prism,
         wasPrism: prismAlumniIds.has(player.id),
         mmr: player.mmr,
-        wins: rankStats.wins,
-        losses: rankStats.losses,
-        winRate: rankStats.winRate,
-        onFire: rankStats.currentStreak.type === "W" && rankStats.currentStreak.count >= FLAME_THRESHOLD,
-        coldStreak: rankStats.currentStreak.type === "L" && rankStats.currentStreak.count >= COLD_THRESHOLD,
+        wins: seasonStats.wins,
+        losses: seasonStats.losses,
+        winRate: seasonStats.winRate,
+        onFire: seasonStats.currentStreak.type === "W" && seasonStats.currentStreak.count >= FLAME_THRESHOLD,
+        coldStreak: seasonStats.currentStreak.type === "L" && seasonStats.currentStreak.count >= COLD_THRESHOLD,
       };
     });
     return rows;
-  }, [eligiblePlayers, prismAlumniIds]);
+  }, [eligiblePlayers, prismAlumniIds, activeSeasonId]);
 
   // Past-season Main board: the full archived standing, on exactly the same sourcing rules as
   // historicalTopPlayersRows above — order, MMR and band from the season_history snapshot, Prism
   // from that season's own made_top10, avatar/display name from the live player row. The difference is the W/L/win-rate/streak columns, which
   // season_history doesn't carry: they're recomputed from each player's own game log filtered to
-  // this season. That makes them season-scoped where the live board's are lifetime — deliberate,
-  // since lifetime totals next to a two-season-old MMR would describe nothing that happened then.
+  // this season, matching the live board's own season-scoped W/L. The streak columns are
+  // season-scoped here too, where the live board deliberately keeps them lifetime: a closed
+  // season has no live bot streak to contradict, and a lifetime flame next to a two-season-old
+  // MMR would describe nothing that happened then.
   const historicalMainBoardRows = useMemo(() => {
     if (!selectedSeason) return [];
-    return seasonHistory
+    // Resolve live players before numbering, so a finisher whose player row has since gone away
+    // leaves no hole in the positions below them.
+    const entries = seasonHistory
       .filter((h) => h.season_id === selectedSeason.id)
-      .sort((a, b) => a.season_rank - b.season_rank)
-      .map((h) => {
-        const player = playersById.get(h.player_id);
-        if (!player) return null;
+      .sort(compareArchivedRank)
+      .map((h) => ({ h, player: playersById.get(h.player_id) }))
+      .filter((e): e is { h: SeasonHistoryRow; player: PlayerWithGames["player"] } => e.player !== undefined);
+    return entries
+      .map(({ h, player }, idx) => {
         const seasonStats = computeStats(filterGames(gamesById.get(h.player_id) ?? [], { seasonId: selectedSeason.id }));
         const row: MainBoardRow = {
-          // The archived rank, not this list's index — a player whose live row has since gone
-          // away is dropped above, and renumbering around the hole would misreport everyone below.
-          position: h.season_rank,
+          // This list's index, not the archived `season_rank` — once banded players are tiered
+          // ahead of unranked ones the archived number no longer matches where the row actually
+          // sits, and a visibly non-monotonic position column reads as a bug. `season_rank`
+          // remains the archived record; this is only what the board displays.
+          position: idx + 1,
           playerId: player.id,
           displayName: player.display_name,
           avatarUrl: player.avatar_url,
@@ -313,8 +364,7 @@ export default function UnifiedLeaderboard({
           coldStreak: seasonStats.currentStreak.type === "L" && seasonStats.currentStreak.count >= COLD_THRESHOLD,
         };
         return row;
-      })
-      .filter((row): row is MainBoardRow => row !== null);
+      });
   }, [seasonHistory, selectedSeason, playersById, gamesById]);
 
   const displayedMainBoardRows = isCurrentSeason ? mainBoardRows : historicalMainBoardRows;
@@ -343,7 +393,7 @@ export default function UnifiedLeaderboard({
       <div className="animate-in mb-6 flex flex-wrap items-center gap-4">
         {/* View Mode Selection */}
         <div className="segmented">
-          {(["top-players", "main", "all-time"] as const).map((mode) => (
+          {ENABLED_VIEW_MODES.map((mode) => (
             <button
               key={mode}
               type="button"
@@ -351,9 +401,7 @@ export default function UnifiedLeaderboard({
               className="segmented-btn"
               onClick={() => selectView(mode)}
             >
-              {mode === "top-players" && "Top Players"}
-              {mode === "main" && "Main"}
-              {mode === "all-time" && "All-Time Stats"}
+              {VIEW_MODE_LABELS[mode]}
             </button>
           ))}
         </div>
