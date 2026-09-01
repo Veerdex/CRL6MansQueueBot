@@ -553,6 +553,11 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 //
 // Every currently-placed, non-test player is sent back through placement from scratch, per two
 // explicit user decisions (see CLAUDE.md):
+// Applied to every non-test player, placed or not — an unplaced player's in-progress placement
+// run is season-scoped in every way that matters, so it resets with everything else (see the
+// comment on the widened update in the body). Only the Discord role swap and the returned count
+// stay scoped to players who were actually placed.
+//
 //   - rank_games_played resets to 0. This is the same lifetime counter that also gates
 //     provisional/elevated K-factor eligibility (provisional_games), so resetting it to force
 //     re-placement also re-elevates provisional K for a player's first placement_games_required
@@ -590,15 +595,27 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
 export async function resetAllPlacementsToUnranked(): Promise<number> {
   const supabase = createAdminClient();
 
+  // Previously-placed players only. This list exists for the Discord role swap further down (an
+  // already-Unranked player has no band/Prism role to trade in) and for the returned count, which
+  // is what /newseason reports as "N player(s) reset to Unranked". The column reset itself is
+  // deliberately wider — see the update immediately below.
   const { data: placed } = await supabase
     .from("crl6mansqueuebot_players")
     .select("id, discord_id, band, is_prism")
     .eq("is_placed", true)
     .eq("is_test_data", false);
   const players = placed ?? [];
-  if (players.length === 0) return 0;
 
-  await supabase
+  // The whole non-test roster, not just the placed subset. An unplaced player is carrying a
+  // partial placement run (rank_games_played somewhere in 1..placement_games_required-1) earned
+  // entirely inside the season being closed, against MMR that applyMmrDecay has just compressed.
+  // Leaving that intact let them finish placing in the new season off one or two games while
+  // every player reset above them had to re-earn the full requirement — the same cross-boundary
+  // inconsistency that made seasonClose.ts widen its decay pool past is_placed, in the same
+  // place, for the same reason. Zeroing everyone keeps placement meaning one thing for the whole
+  // roster. For an already-unplaced player the placement columns here are already false/null, so
+  // this only clears their counters; for a player who has never queued it is a no-op outright.
+  const { error: resetError } = await supabase
     .from("crl6mansqueuebot_players")
     .update({
       is_placed: false,
@@ -608,10 +625,18 @@ export async function resetAllPlacementsToUnranked(): Promise<number> {
       band_games_played: 0,
       last_rank_game_at: null,
     })
-    .in(
-      "id",
-      players.map((p) => p.id),
-    );
+    .eq("is_test_data", false);
+  // Checked for the same reason the season_history upsert is (seasonClose.ts): supabase-js
+  // resolves rather than throws on a rejected write, so an unchecked call here fails silently and
+  // leaves the season half-closed — MMR decayed by applyMmrDecay, placements never cleared — while
+  // the count returned below still reports a reset that did not happen. This is the last
+  // destructive step of closeSeason(), so throwing costs nothing already done and surfaces the
+  // failure instead of burying it.
+  if (resetError) throw new Error(`Failed to reset placements: ${resetError.message}`);
+
+  // After the reset, not before: the counter reset above has to run even in a season where
+  // nobody ever placed.
+  if (players.length === 0) return 0;
 
   const { data: bandRoleRows } = await supabase.from("crl6mansqueuebot_band_roles").select("*");
   const roleIdByBand = new Map((bandRoleRows ?? []).map((r) => [r.band, r.role_id]));

@@ -23,6 +23,13 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
+// `page` MUST apply a total `.order(...)` on a unique key (a primary key, or a column set that is
+// unique across the rows being read). PostgREST's `.range()` is a plain LIMIT/OFFSET over whatever
+// order the planner happens to pick, and Postgres guarantees no stability across two separate
+// statements — so an unordered paged read can hand back one row twice and drop another entirely
+// once the result set outgrows PAGE_SIZE. That is not cosmetic here: a dropped player silently
+// loses their season_history row, and with it their standings placing, band_at_close and all-time
+// season_score, with nothing left to reconstruct it from once the decay below has run.
 async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<T[]>): Promise<T[]> {
   const rows: T[] = [];
   let from = 0;
@@ -50,11 +57,14 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 // of who was holding that live rank when the season ended — copied from `is_prism` rather than
 // re-derived, so the archive can never disagree with the standing players actually saw.
 //
-// After decay, every currently-placed player is reset back to Unranked (bands.ts's
+// After decay, placement is reset across the whole non-test roster (bands.ts's
 // resetAllPlacementsToUnranked — see CLAUDE.md, "Seasons") so a new season starts with everyone
-// re-earning their band from scratch. The ordering is no longer load-bearing for the decay pool
-// (which no longer filters on is_placed), but it is still what lets the standings/is_prism
-// snapshots above read pre-reset values, so it stays as-is.
+// re-earning their band from scratch: placed players go back to Unranked, and unplaced players
+// give up the partial placement run they had accumulated in the season just closed rather than
+// carrying it forward into a compressed ladder. Only the Discord role swap and the reported
+// count stay scoped to who was actually placed. The ordering is no longer load-bearing for the
+// decay pool (which no longer filters on is_placed either), but it is still what lets the
+// standings/is_prism snapshots above read pre-reset values, so it stays as-is.
 // ---------------------------------------------------------------------------
 
 export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<CloseSummary> {
@@ -75,6 +85,7 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
         .eq("season_id", closedSeason.id)
         .eq("status", "reported")
         .eq("is_test_data", false)
+        .order("id")
         .range(from, to)
         .then(({ data }) => data ?? []),
     )
@@ -87,6 +98,9 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
         .from("crl6mansqueuebot_series_players")
         .select("player_id")
         .in("series_id", idChunk)
+        // (series_id, player_id) is this table's primary key — see 0001_init.sql.
+        .order("series_id")
+        .order("player_id")
         .range(from, to)
         .then(({ data }) => data ?? []),
     );
@@ -111,6 +125,7 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
             .select("*")
             .in("id", idChunk)
             .eq("is_test_data", false)
+            .order("id")
             .range(from, to)
             .then(({ data }) => data ?? []),
         ),
@@ -219,6 +234,7 @@ async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Prom
       .from("crl6mansqueuebot_players")
       .select("id, mmr")
       .eq("is_test_data", false)
+      .order("id")
       .range(from, to)
       .then(({ data }) => data ?? []),
   );
