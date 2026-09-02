@@ -498,7 +498,9 @@ export default function UnifiedLeaderboard({
             <StatsBoard
               players={statsPlayers}
               mode="all-time"
-              currentSeason={null}
+              // Threaded through only so "Current streak" resets at season boundaries — see
+              // stats.ts's computeStats and /stats/all-time/page.tsx's identical comment.
+              currentSeason={activeSeason ? { id: activeSeason.id, seasonNumber: activeSeason.season_number } : null}
               previousSeason={null}
               mmrScale={mmrScale}
               mmrShift={mmrShift}

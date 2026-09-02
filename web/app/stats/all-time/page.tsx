@@ -1,11 +1,12 @@
 import StatsBoard from "@/components/StatsBoard";
-import { getAllPlayersWithGames } from "@/lib/leaderboard/queries";
+import { getActiveSeason, getAllPlayersWithGames } from "@/lib/leaderboard/queries";
 import { getConfigNumber } from "@/lib/discord/config";
 
 export const dynamic = "force-dynamic";
 
 export default async function AllTimeStatsPage() {
-  const [players, mmrScale, mmrShift] = await Promise.all([
+  const [activeSeason, players, mmrScale, mmrShift] = await Promise.all([
+    getActiveSeason(),
     getAllPlayersWithGames(),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
@@ -31,7 +32,10 @@ export default async function AllTimeStatsPage() {
         <StatsBoard
           players={eligiblePlayers}
           mode="all-time"
-          currentSeason={null}
+          // Not used to filter which games count (all-time mode is deliberately lifetime totals)
+          // — only threaded through so "Current streak" resets at season boundaries instead of
+          // bridging a stale pre-reset streak forever. See stats.ts's computeStats.
+          currentSeason={activeSeason ? { id: activeSeason.id, seasonNumber: activeSeason.season_number } : null}
           previousSeason={null}
           mmrScale={mmrScale}
           mmrShift={mmrShift}

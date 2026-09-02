@@ -72,6 +72,40 @@ describe("computeStats", () => {
     expect(computeStats([game({ won: true })]).currentStreak).toEqual({ type: "W", count: 1 });
     expect(computeStats([game({ won: false })]).currentStreak).toEqual({ type: "L", count: 1 });
   });
+
+  describe("currentSeasonId (season-boundary reset)", () => {
+    // Regression case: a player ("Tony") who ended last season on a 9-game win streak and
+    // hasn't played since must show a 0 current streak on the All-Time Stats board, not a stale
+    // one bridging into a season that's since closed.
+    it("zeroes the current streak when the player's last game predates the current season", () => {
+      const games = Array.from({ length: 9 }, () => game({ seasonId: "season1", won: true }));
+      expect(computeStats(games, "season2").currentStreak).toEqual({ type: null, count: 0 });
+      // longestWinStreak is a lifetime record and must be unaffected.
+      expect(computeStats(games, "season2").longestWinStreak).toBe(9);
+    });
+
+    it("does not let a streak bridge from a prior season into the current one", () => {
+      const games = [
+        ...[true, true, true].map((won) => game({ seasonId: "season1", won })),
+        ...[true, true].map((won) => game({ seasonId: "season2", won })),
+      ];
+      // Without the season boundary this would read 5 (bridging both seasons' win runs).
+      expect(computeStats(games, "season2").currentStreak).toEqual({ type: "W", count: 2 });
+    });
+
+    it("still lets a streak span multiple games within the same current season", () => {
+      const games = [true, true, true].map((won) => game({ seasonId: "season2", won }));
+      expect(computeStats(games, "season2").currentStreak).toEqual({ type: "W", count: 3 });
+    });
+
+    it("without currentSeasonId, keeps the old unrestricted (bridging) behavior", () => {
+      const games = [
+        ...[true, true, true].map((won) => game({ seasonId: "season1", won })),
+        ...[true, true].map((won) => game({ seasonId: "season2", won })),
+      ];
+      expect(computeStats(games).currentStreak).toEqual({ type: "W", count: 5 });
+    });
+  });
 });
 
 describe("bandRank", () => {

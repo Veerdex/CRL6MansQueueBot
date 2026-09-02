@@ -87,7 +87,12 @@ export default function StatsBoard({
       const scoped = filterGames(p.games, {
         seasonId: mode === "season" ? selectedSeasonId : undefined,
       });
-      const stats = computeStats(scoped);
+      // currentSeason?.id keeps "Current streak" pinned to the live season even in "all-time"
+      // mode, where `scoped` is otherwise every game the player has ever played — without this a
+      // streak earned before the most recent season reset would keep showing here forever. See
+      // stats.ts's computeStats. In "season" mode `scoped` is already a single season's games, so
+      // this is a no-op there.
+      const stats = computeStats(scoped, currentSeason?.id ?? null);
       return {
         playerId: p.playerId,
         displayName: p.displayName,
@@ -96,7 +101,7 @@ export default function StatsBoard({
         ...stats,
       };
     });
-  }, [players, selectedSeasonId, mode]);
+  }, [players, selectedSeasonId, mode, currentSeason]);
 
   const showPeakColumn = mode === "all-time";
   const columns = showPeakColumn ? [...COLUMNS, PEAK_COLUMN] : COLUMNS;

@@ -22,7 +22,18 @@ export function filterGames(games: CompletedGame[], filter: GameFilter): Complet
 }
 
 // `games` must be in chronological order (oldest first) — streaks depend on it.
-export function computeStats(games: CompletedGame[]): GameStats {
+//
+// `currentSeasonId`, when passed, makes `currentStreak` reset at every season boundary — a
+// season close always zeroes a player's current streak (see CLAUDE.md, "Seasons"), so it can
+// never bridge from a prior (now-closed) season into whatever's been played since, even between
+// two wins. This is the one thing UnifiedLeaderboard/profile.ts/streaks.ts's own season-id
+// filtering (see CLAUDE.md, "Current streak always resets...") doesn't cover: the All-Time Stats
+// board (StatsBoard.tsx's "all-time" mode) deliberately passes every game a player has ever
+// played to computeStats, since wins/losses/gamesPlayed/longestWinStreak are meant to be lifetime
+// totals there — but "current streak" isn't a total, it's a live "on a streak right now"
+// indicator, so it needs this narrower reset even inside an otherwise-lifetime view. Omit it (or
+// pass undefined) to keep the old unrestricted behavior for a caller with no season id on hand.
+export function computeStats(games: CompletedGame[], currentSeasonId?: string | null): GameStats {
   let wins = 0;
   let losses = 0;
   let longestWinStreak = 0;
@@ -40,7 +51,10 @@ export function computeStats(games: CompletedGame[]): GameStats {
       runningWinStreak = 0;
     }
 
-    if (currentStreakType === (game.won ? "W" : "L")) {
+    if (currentSeasonId !== undefined && currentSeasonId !== null && game.seasonId !== currentSeasonId) {
+      currentStreakType = null;
+      currentStreakCount = 0;
+    } else if (currentStreakType === (game.won ? "W" : "L")) {
       currentStreakCount += 1;
     } else {
       currentStreakType = game.won ? "W" : "L";
