@@ -26,6 +26,34 @@ export interface PlayerWithGames {
   games: CompletedGame[]; // chronological order (oldest first), all seasons/queues
 }
 
+// Same fetchAllPages/chunk pattern as avatars.ts, nicknameSync.ts, and seasonClose.ts, duplicated
+// rather than imported for the reason avatars.ts:7 records. PostgREST silently truncates an
+// unbounded select at a project row cap (1000 rows), with no error and no marker on the response
+// — which is how the W/L on this site went wrong: series_players passed 1000 rows and the
+// tail of the table stopped arriving, so players silently lost matches off their record.
+// Every paged read needs a *total* order on a unique key as well: .range() is LIMIT/OFFSET over
+// whatever order the planner happened to pick, so without one a page boundary can repeat a row
+// and drop another. series_players' primary key is (series_id, player_id).
+const PAGE_SIZE = 1000;
+const ID_CHUNK = 200;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<T[]>): Promise<T[]> {
+  const rows: T[] = [];
+  let from = 0;
+  for (;;) {
+    const batch = await page(from, from + PAGE_SIZE - 1);
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) return rows;
+    from += PAGE_SIZE;
+  }
+}
+
 export async function getActiveSeason(): Promise<SeasonRow | null> {
   const supabase = createServerClient();
   const { data, error } = await supabase
@@ -85,32 +113,66 @@ export async function getAllSeasonHistory(): Promise<SeasonHistoryRow[]> {
   return data ?? [];
 }
 
-// Fetches every player plus their full chronological game history in two flat
-// queries (not N+1 per player, not embedded joins) — fine at this data volume
-// per CLAUDE.md's "small server, don't over-engineer" principle.
+// Fetches every player plus their full chronological game history in a few flat, paged queries
+// (not N+1 per player, not embedded joins) — fine at this data volume per CLAUDE.md's "small
+// server, don't over-engineer" principle.
 export async function getAllPlayersWithGames(): Promise<PlayerWithGames[]> {
   const supabase = createServerClient();
 
-  const { data: players, error: playersError } = await supabase
-    .from("crl6mansqueuebot_players")
-    .select("*");
-  if (playersError) throw playersError;
+  const players = await fetchAllPages((from, to) =>
+    supabase
+      .from("crl6mansqueuebot_players")
+      .select("*")
+      .order("id")
+      .range(from, to)
+      .then((r) => {
+        if (r.error) throw r.error;
+        return r.data ?? [];
+      }),
+  );
 
-  const { data: series, error: seriesError } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("id, season_id, queue_type, winner_team, reported_at, created_at")
-    .eq("status", "reported");
-  if (seriesError) throw seriesError;
+  const series = await fetchAllPages((from, to) =>
+    supabase
+      .from("crl6mansqueuebot_series")
+      .select("id, season_id, queue_type, winner_team, reported_at, created_at")
+      .eq("status", "reported")
+      .order("id")
+      .range(from, to)
+      .then((r) => {
+        if (r.error) throw r.error;
+        return r.data ?? [];
+      }),
+  );
 
-  const { data: seriesPlayers, error: seriesPlayersError } = await supabase
-    .from("crl6mansqueuebot_series_players")
-    .select("series_id, player_id, team");
-  if (seriesPlayersError) throw seriesPlayersError;
+  // Read per reported-series id rather than as one sweep of the whole table. The rows belonging
+  // to forming/active/void series were only ever discarded by the `if (!s) continue` below, so
+  // this keeps the read proportional to the matches that actually count toward a record.
+  const rosterChunks = await Promise.all(
+    chunk(
+      series.map((s) => s.id),
+      ID_CHUNK,
+    ).map((idChunk) =>
+      fetchAllPages((from, to) =>
+        supabase
+          .from("crl6mansqueuebot_series_players")
+          .select("series_id, player_id, team")
+          .in("series_id", idChunk)
+          .order("series_id")
+          .order("player_id")
+          .range(from, to)
+          .then((r) => {
+            if (r.error) throw r.error;
+            return r.data ?? [];
+          }),
+      ),
+    ),
+  );
+  const seriesPlayers = rosterChunks.flat();
 
-  const seriesById = new Map((series ?? []).map((s) => [s.id, s]));
+  const seriesById = new Map(series.map((s) => [s.id, s]));
 
   const gamesByPlayer = new Map<string, CompletedGame[]>();
-  for (const sp of seriesPlayers ?? []) {
+  for (const sp of seriesPlayers) {
     const s = seriesById.get(sp.series_id);
     if (!s) continue; // series wasn't in the "reported" set
 
@@ -131,7 +193,7 @@ export async function getAllPlayersWithGames(): Promise<PlayerWithGames[]> {
     }
   }
 
-  return (players ?? []).map((player) => {
+  return players.map((player) => {
     const games = (gamesByPlayer.get(player.id) ?? []).sort(
       (a, b) => new Date(a.playedAt).getTime() - new Date(b.playedAt).getTime(),
     );

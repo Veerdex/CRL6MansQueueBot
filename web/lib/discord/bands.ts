@@ -9,6 +9,34 @@ import { interactionUserId, type DiscordInteraction } from "./types";
 import type { Band, BandRoleKey } from "@/lib/supabase/types";
 import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 
+// Same fetchAllPages/chunk pattern as avatars.ts, nicknameSync.ts, and seasonClose.ts, duplicated
+// rather than imported for the reason avatars.ts:7 records. PostgREST silently truncates an
+// unbounded select at a project row cap (1000 rows), with no error and no marker on the response
+// — reached here at ~167 reported matches in one season, where a short read would quietly
+// undercount a player out of Prism qualification.
+// Every paged read needs a *total* order on a unique key as well: .range() is LIMIT/OFFSET over
+// whatever order the planner happened to pick, so without one a page boundary can repeat a row
+// and drop another. series_players' primary key is (series_id, player_id).
+const PAGE_SIZE = 1000;
+const ID_CHUNK = 200;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<T[]>): Promise<T[]> {
+  const rows: T[] = [];
+  let from = 0;
+  for (;;) {
+    const batch = await page(from, from + PAGE_SIZE - 1);
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) return rows;
+    from += PAGE_SIZE;
+  }
+}
+
 const BAND_ORDER: Band[] = ["Iron", "Garnet", "Emerald", "Sapphire"];
 const VALID_BAND_ROLE_KEYS: BandRoleKey[] = ["Iron", "Garnet", "Emerald", "Sapphire", "Unranked", "Prism"];
 
@@ -434,22 +462,50 @@ export async function recomputeBands(options?: { force?: boolean }): Promise<Rec
     .eq("is_active", true)
     .maybeSingle();
 
+  // Paged, because this is a count and a short read is indistinguishable from a low game count:
+  // PostgREST silently truncates an unbounded select at a project row cap (1000 rows), which this
+  // roster read reaches at ~167 reported matches in a single season. Undercounting here does not
+  // just look wrong, it silently disqualifies players from Prism. .range() is LIMIT/OFFSET over
+  // the planner's order, so each page needs a total order — series_players' PK is
+  // (series_id, player_id). Same fetchAllPages/chunk pattern as avatars.ts (see its note at :7 on
+  // why this small helper is duplicated per file rather than shared).
   const seasonGamesById = new Map<string, number>();
   if (activeSeasonRow) {
-    const { data: seasonSeries } = await supabase
-      .from("crl6mansqueuebot_series")
-      .select("id")
-      .eq("season_id", activeSeasonRow.id)
-      .eq("status", "reported")
-      .eq("queue_type", "rank")
-      .eq("is_test_data", false);
-    const seriesIds = (seasonSeries ?? []).map((s) => s.id);
+    const seasonSeries = await fetchAllPages((from, to) =>
+      supabase
+        .from("crl6mansqueuebot_series")
+        .select("id")
+        .eq("season_id", activeSeasonRow.id)
+        .eq("status", "reported")
+        .eq("queue_type", "rank")
+        .eq("is_test_data", false)
+        .order("id")
+        .range(from, to)
+        .then((r) => {
+          if (r.error) throw r.error;
+          return r.data ?? [];
+        }),
+    );
+    const seriesIds = seasonSeries.map((s) => s.id);
     if (seriesIds.length > 0) {
-      const { data: seasonSeriesPlayers } = await supabase
-        .from("crl6mansqueuebot_series_players")
-        .select("player_id")
-        .in("series_id", seriesIds);
-      for (const sp of seasonSeriesPlayers ?? []) {
+      const seasonRosterChunks = await Promise.all(
+        chunk(seriesIds, ID_CHUNK).map((idChunk) =>
+          fetchAllPages((from, to) =>
+            supabase
+              .from("crl6mansqueuebot_series_players")
+              .select("series_id, player_id")
+              .in("series_id", idChunk)
+              .order("series_id")
+              .order("player_id")
+              .range(from, to)
+              .then((r) => {
+                if (r.error) throw r.error;
+                return r.data ?? [];
+              }),
+          ),
+        ),
+      );
+      for (const sp of seasonRosterChunks.flat()) {
         seasonGamesById.set(sp.player_id, (seasonGamesById.get(sp.player_id) ?? 0) + 1);
       }
     }

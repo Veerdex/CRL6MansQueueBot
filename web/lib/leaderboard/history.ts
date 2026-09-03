@@ -38,40 +38,99 @@ export interface MatchHistoryData {
   players: { playerId: string; displayName: string }[];
 }
 
+// Same fetchAllPages/chunk pattern as avatars.ts, nicknameSync.ts, and seasonClose.ts, duplicated
+// rather than imported for the reason avatars.ts:7 records. PostgREST silently truncates an
+// unbounded select at a project row cap (1000 rows), with no error and no marker on the response
+// — six matches short of biting here: the roster read below stood at 966 of the 1000 rows
+// it needed on the day this paging went in.
+// Every paged read needs a *total* order on a unique key as well: .range() is LIMIT/OFFSET over
+// whatever order the planner happened to pick, so without one a page boundary can repeat a row
+// and drop another. series_players' primary key is (series_id, player_id).
+const PAGE_SIZE = 1000;
+const ID_CHUNK = 200;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<T[]>): Promise<T[]> {
+  const rows: T[] = [];
+  let from = 0;
+  for (;;) {
+    const batch = await page(from, from + PAGE_SIZE - 1);
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) return rows;
+    from += PAGE_SIZE;
+  }
+}
+
 export async function getMatchHistory(): Promise<MatchHistoryData> {
   const supabase = createServerClient();
 
-  const { data: series, error: seriesError } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("id, queue_type, winner_team, reported_at, created_at, match_number")
-    .eq("status", "reported")
-    .order("reported_at", { ascending: false });
-  if (seriesError) throw seriesError;
-  if (!series || series.length === 0) return { matches: [], players: [] };
+  // reported_at alone is not a total order to page over (two series can share a timestamp, and
+  // the column is nullable), hence the id tiebreak — see the note above.
+  const series = await fetchAllPages((from, to) =>
+    supabase
+      .from("crl6mansqueuebot_series")
+      .select("id, queue_type, winner_team, reported_at, created_at, match_number")
+      .eq("status", "reported")
+      .order("reported_at", { ascending: false })
+      .order("id")
+      .range(from, to)
+      .then((r) => {
+        if (r.error) throw r.error;
+        return r.data ?? [];
+      }),
+  );
+  if (series.length === 0) return { matches: [], players: [] };
 
-  const { data: rosterRows, error: rosterError } = await supabase
-    .from("crl6mansqueuebot_series_players")
-    .select("series_id, player_id, team, mmr_before")
-    .in(
-      "series_id",
+  const rosterChunks = await Promise.all(
+    chunk(
       series.map((s) => s.id),
-    );
-  if (rosterError) throw rosterError;
+      ID_CHUNK,
+    ).map((idChunk) =>
+      fetchAllPages((from, to) =>
+        supabase
+          .from("crl6mansqueuebot_series_players")
+          .select("series_id, player_id, team, mmr_before")
+          .in("series_id", idChunk)
+          .order("series_id")
+          .order("player_id")
+          .range(from, to)
+          .then((r) => {
+            if (r.error) throw r.error;
+            return r.data ?? [];
+          }),
+      ),
+    ),
+  );
+  const rosterRows = rosterChunks.flat();
 
-  const playerIds = new Set((rosterRows ?? []).map((r) => r.player_id));
-  const { data: players, error: playersError } =
-    playerIds.size > 0
-      ? await supabase
+  const playerIds = new Set(rosterRows.map((r) => r.player_id));
+  const playerChunks = await Promise.all(
+    chunk(Array.from(playerIds), ID_CHUNK).map((idChunk) =>
+      fetchAllPages((from, to) =>
+        supabase
           .from("crl6mansqueuebot_players")
           .select("id, display_name, avatar_url, band, is_prism, mmr")
-          .in("id", Array.from(playerIds))
-      : { data: [], error: null };
-  if (playersError) throw playersError;
+          .in("id", idChunk)
+          .order("id")
+          .range(from, to)
+          .then((r) => {
+            if (r.error) throw r.error;
+            return r.data ?? [];
+          }),
+      ),
+    ),
+  );
 
-  const playerById = new Map((players ?? []).map((p) => [p.id, p]));
+  const players = playerChunks.flat();
+  const playerById = new Map(players.map((p) => [p.id, p]));
 
   const rosterBySeries = new Map<string, { playerId: string; team: Team; mmrBefore: number | null }[]>();
-  for (const row of rosterRows ?? []) {
+  for (const row of rosterRows) {
     const entry = { playerId: row.player_id, team: row.team, mmrBefore: row.mmr_before };
     const list = rosterBySeries.get(row.series_id);
     if (list) list.push(entry);
@@ -130,6 +189,6 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
 
   return {
     matches,
-    players: (players ?? []).map((p) => ({ playerId: p.id, displayName: p.display_name })),
+    players: players.map((p) => ({ playerId: p.id, displayName: p.display_name })),
   };
 }
