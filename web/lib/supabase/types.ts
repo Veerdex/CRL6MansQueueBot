@@ -91,9 +91,9 @@ export type SeasonHistoryRow = {
   // unplaced at that close — the past-season boards render that as Unranked, exactly as the live
   // board does. Never "Prism": that's the made_top10 overlay above, applied on top of this.
   band_at_close: Band | null;
-  // All-time rating points earned for this season's finish (0 for the bottom half of the standing
-  // and for every unplaced participant). Summing a player's rows across seasons gives their career
-  // all-time rating — see web/lib/mmr/allTimeRating.ts. Nothing reads it yet.
+  // All-time rating points earned for this season's finish: 100 for first down to exactly 1 for
+  // last, and 0 only for unplaced participants. Summing a player's rows across seasons gives their
+  // career all-time rating — see web/lib/mmr/allTimeRating.ts. Nothing reads it yet.
   season_score: number;
 };
 

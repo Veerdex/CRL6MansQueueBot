@@ -153,12 +153,13 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   // bands and could archive players who never held the rank.
   const top10Ids = new Set(ranked.filter((r) => r.player.is_prism).map((r) => r.player.id));
 
-  // All-time rating points for this season's finish (web/lib/mmr/allTimeRating.ts). Scored over
-  // the *placed* pool only and densely re-ranked inside it, which is why it can't just reuse
-  // `season_rank` below: that rank covers every participant with a reported game, unplaced ones
-  // included, so reusing it would both inflate N and leave gaps in r wherever an unplaced player
-  // finished mid-table. Read here, before the soft reset clears is_placed, for the same reason the
-  // is_prism snapshot above has to be. Unplaced participants still get a row, scoring 0.
+  // All-time rating points for this season's finish (web/lib/mmr/allTimeRating.ts). Every placed
+  // player earns, from 100 for first down to exactly 1 for last. Scored over the *placed* pool
+  // only and densely re-ranked inside it, which is why it can't just reuse `season_rank` below:
+  // that rank covers every participant with a reported game, unplaced ones included, so reusing it
+  // would both inflate the field and leave gaps in r wherever an unplaced player finished
+  // mid-table. Read here, before the soft reset clears is_placed, for the same reason the is_prism
+  // snapshot above has to be. Unplaced participants still get a row, scoring 0.
   const seasonScores = seasonScoresByPlayerId(
     ranked.map((r) => ({ id: r.player.id, isPlaced: r.player.is_placed })),
   );
