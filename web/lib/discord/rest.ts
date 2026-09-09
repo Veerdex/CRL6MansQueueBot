@@ -40,6 +40,35 @@ export const RICH_INACTIVITY_COLOR = 0xffa500;
 const RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_MAX_WAIT_SECONDS = 30;
 
+// discordFetch rejects with this instead of a bare Error so a caller can tell *why* a call
+// failed without scraping the message string. It still extends Error and still carries the exact
+// same message text, so every existing `catch (err)` handler behaves as it always did.
+//
+// The distinction that motivated it: a member route 404s permanently once that user leaves the
+// guild, which is a normal outcome rather than something to retry or flag — see bands.ts, where a
+// full-roster role sweep would otherwise mark every ex-member as a failed sync forever.
+export class DiscordApiError extends Error {
+  constructor(
+    readonly status: number,
+    // Discord's own JSON error code (10007 Unknown Member, 10013 Unknown User, ...), null when
+    // the error body wasn't JSON — Cloudflare-level errors return HTML, not an API envelope.
+    readonly code: number | null,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DiscordApiError";
+  }
+}
+
+// Unknown Member / Unknown User: the target isn't in the guild (left, was kicked, or the id is
+// stale). A 404 on any member route means the same thing even without a parsable code.
+const UNKNOWN_MEMBER_CODES = new Set([10007, 10013]);
+
+export function isUnknownMemberError(err: unknown): boolean {
+  if (!(err instanceof DiscordApiError)) return false;
+  return err.status === 404 || (err.code !== null && UNKNOWN_MEMBER_CODES.has(err.code));
+}
+
 export async function discordFetch(path: string, init: RequestInit = {}) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) {
@@ -69,7 +98,19 @@ export async function discordFetch(path: string, init: RequestInit = {}) {
 
     if (!res.ok) {
       const errorBody = await res.text();
-      throw new Error(`Discord API ${init.method ?? "GET"} ${path} failed: ${res.status} ${errorBody}`);
+      const parsedCode = (() => {
+        try {
+          const parsed = JSON.parse(errorBody) as { code?: unknown };
+          return typeof parsed.code === "number" ? parsed.code : null;
+        } catch {
+          return null;
+        }
+      })();
+      throw new DiscordApiError(
+        res.status,
+        parsedCode,
+        `Discord API ${init.method ?? "GET"} ${path} failed: ${res.status} ${errorBody}`,
+      );
     }
 
     if (res.status === 204) {
@@ -148,6 +189,10 @@ export type DiscordGuildMember = {
   user: { id: string; avatar: string | null; username: string; global_name: string | null };
   avatar: string | null;
   nick: string | null;
+  // Every role id the member currently holds. Present on this endpoint's payload all along —
+  // declaring it lets bands.ts's full-roster role sweep diff against live state from the one
+  // paginated list read below, instead of issuing a getMemberRoles call per player.
+  roles: string[];
 };
 
 // Paginates the full guild member list (limit=1000 per Discord's max, cursor = highest user id

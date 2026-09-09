@@ -3,6 +3,7 @@ import {
   computeBandChange,
   computeBandPercentiles,
   computeBandThresholdMmr,
+  desiredRoleIdFor,
   targetBandForPercentile,
   type BandCutoffConfig,
 } from "./bands";
@@ -264,5 +265,39 @@ describe("computeBandChange — grace-inactivity bypass", () => {
     const player = { band: "Sapphire" as const, band_games_played: 0, is_placed: true, last_rank_game_at: null, mmr: 10 };
     const change = computeBandChange(player, 10, false, inactivityConfig, thresholds, false, { now });
     expect(change).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// desiredRoleIdFor — the rule the role reconcile pass runs on. Its "no band means Unranked"
+// clause is the fix for a live bug: /newseason clears every player's band, and the pre-fix retry
+// pass mapped that to `undefined` ("strip every tracked role, add nothing"), while nothing in
+// recomputeBands could reach an unplaced player in the first place. See syncPlayerRoles.
+// ---------------------------------------------------------------------------
+
+describe("desiredRoleIdFor", () => {
+  const roleIdByBand = new Map<string, string>([
+    ["Iron", "r-iron"],
+    ["Garnet", "r-garnet"],
+    ["Emerald", "r-emerald"],
+    ["Sapphire", "r-sapphire"],
+    ["Unranked", "r-unranked"],
+    ["Prism", "r-prism"],
+  ]);
+
+  it("gives a placed player their band role", () => {
+    expect(desiredRoleIdFor({ band: "Emerald", is_prism: false }, roleIdByBand)).toBe("r-emerald");
+  });
+
+  it("gives an unplaced (band-less) player Unranked, not nothing", () => {
+    expect(desiredRoleIdFor({ band: null, is_prism: false }, roleIdByBand)).toBe("r-unranked");
+  });
+
+  it("prefers Prism over the underlying band column a Prism holder still carries", () => {
+    expect(desiredRoleIdFor({ band: "Sapphire", is_prism: true }, roleIdByBand)).toBe("r-prism");
+  });
+
+  it("returns undefined for a band with no role mapped yet (/setbandrole never run)", () => {
+    expect(desiredRoleIdFor({ band: "Garnet", is_prism: false }, new Map())).toBeUndefined();
   });
 });
