@@ -131,6 +131,13 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // but deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set through its
   // own dedicated, boolean-validated /admin streak-bonus toggle command instead.
   streak_bonus_enabled: 1,
+  // Ceiling for the win-streak multiplier — see elo.ts, EloConfig.streakMaxMultiplier. 1.5 means
+  // a 7+ game streak in an even matchup earns 1.5x its Elo term (the taper cuts that back toward
+  // 1x for favorites, and the flat mmr_min_delta floor is never multiplied). 1 disables the extra
+  // MMR without disabling streak tracking, same as streak_bonus_enabled: 0. Unlike that toggle
+  // this is an ordinary numeric knob with no dedicated subcommand, so it IS listed in
+  // register-commands.mjs's CONFIG_KEYS and tunable through the generic /admin config set.
+  streak_bonus_max_multiplier: 1.5,
   // Best-of-3/5/7 series-length pre-vote — see CLAUDE.md, "Team formation (on pop)". Same
   // precedent as bonus_day_enabled/streak_bonus_enabled: listed here for /admin config get's
   // display, but deliberately left out of register-commands.mjs's CONFIG_KEYS since it's set

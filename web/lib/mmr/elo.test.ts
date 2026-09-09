@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeEloDeltas, computeStreakBonus, type EloConfig, type EloPlayerInput } from "./elo";
+import { computeEloDeltas, computeStreakMultiplier, type EloConfig, type EloPlayerInput } from "./elo";
 
 const config: EloConfig = { kFactor: 32, sScale: 400, provisionalGames: 10, provisionalKMultiplier: 1.75 };
 
@@ -287,27 +287,93 @@ describe("computeEloDeltas — series length multiplier", () => {
   });
 });
 
-describe("computeStreakBonus", () => {
-  it("is 0 below a 3-game prior streak, at any expected value", () => {
-    expect(computeStreakBonus(0, 0.5)).toBe(0);
-    expect(computeStreakBonus(1, 0.5)).toBe(0);
-    expect(computeStreakBonus(2, 0.5)).toBe(0);
+describe("computeStreakMultiplier", () => {
+  it("pays nothing on the first two wins of a run, at any expected value", () => {
+    // priorStreak is the count *before* this game, so 0 is a player's first win and 1 their second.
+    expect(computeStreakMultiplier(0, 0.5, 1.5)).toBe(1);
+    expect(computeStreakMultiplier(1, 0.2, 1.5)).toBe(1);
   });
 
-  it("ramps +1 per game starting at a 3-game prior streak, unscaled at expected<=0.5", () => {
-    expect(computeStreakBonus(3, 0.5)).toBe(1);
-    expect(computeStreakBonus(4, 0.5)).toBe(2);
-    expect(computeStreakBonus(4, 0.2)).toBe(2);
+  it("ramps one fifth of the way to the ceiling per game from the third win on", () => {
+    expect(computeStreakMultiplier(2, 0.5, 1.5)).toBeCloseTo(1.1, 10);
+    expect(computeStreakMultiplier(3, 0.5, 1.5)).toBeCloseTo(1.2, 10);
+    expect(computeStreakMultiplier(4, 0.5, 1.5)).toBeCloseTo(1.3, 10);
+    expect(computeStreakMultiplier(5, 0.5, 1.5)).toBeCloseTo(1.4, 10);
   });
 
-  it("caps at +5, unscaled at expected<=0.5", () => {
-    expect(computeStreakBonus(7, 0.5)).toBe(5);
-    expect(computeStreakBonus(12, 0.1)).toBe(5);
+  it("caps at the ceiling from the seventh win on, and stays there for an underdog", () => {
+    expect(computeStreakMultiplier(6, 0.5, 1.5)).toBeCloseTo(1.5, 10);
+    expect(computeStreakMultiplier(7, 0.5, 1.5)).toBeCloseTo(1.5, 10);
+    expect(computeStreakMultiplier(12, 0.5, 1.5)).toBeCloseTo(1.5, 10);
+    // expected < 0.5 is an underdog win — the taper is clamped at 1, never above it, so a long
+    // streak is worth the same 1.5x whether the win was a coin flip or an upset.
+    expect(computeStreakMultiplier(12, 0.1, 1.5)).toBeCloseTo(1.5, 10);
   });
 
-  it("tapers linearly to 0 as expected approaches 1", () => {
-    expect(computeStreakBonus(7, 0.75)).toBeCloseTo(2.5, 10);
-    expect(computeStreakBonus(7, 0.9)).toBeCloseTo(1, 10);
-    expect(computeStreakBonus(7, 1)).toBe(0);
+  it("tapers back toward 1x as the win becomes a foregone conclusion", () => {
+    expect(computeStreakMultiplier(7, 0.75, 1.5)).toBeCloseTo(1.25, 10);
+    expect(computeStreakMultiplier(7, 0.9, 1.5)).toBeCloseTo(1.1, 10);
+    expect(computeStreakMultiplier(7, 1, 1.5)).toBe(1);
+  });
+
+  it("honours a non-default ceiling, and 1 disables it entirely", () => {
+    expect(computeStreakMultiplier(6, 0.5, 2)).toBeCloseTo(2, 10);
+    expect(computeStreakMultiplier(2, 0.5, 2)).toBeCloseTo(1.2, 10);
+    expect(computeStreakMultiplier(12, 0.5, 1)).toBe(1);
+  });
+});
+
+describe("computeEloDeltas — win-streak multiplier", () => {
+  // Two identical teams, so expected is exactly 0.5 and the taper is exactly 1 — every number
+  // below is the multiplier's full effect with nothing else moving.
+  const even = (streak: number): EloPlayerInput[] => [
+    { playerId: "a1", mmr: 100, team: "A", priorRankGamesPlayed: 20, priorRankWinStreak: streak },
+    { playerId: "a2", mmr: 100, team: "A", priorRankGamesPlayed: 20 },
+    { playerId: "a3", mmr: 100, team: "A", priorRankGamesPlayed: 20 },
+    { playerId: "b1", mmr: 100, team: "B", priorRankGamesPlayed: 20, priorRankWinStreak: streak },
+    { playerId: "b2", mmr: 100, team: "B", priorRankGamesPlayed: 20 },
+    { playerId: "b3", mmr: 100, team: "B", priorRankGamesPlayed: 20 },
+  ];
+  const streakConfig: EloConfig = { ...config, minDeltaFloor: 2, streakMaxMultiplier: 1.5 };
+
+  it("scales the earned Elo term but never the flat minDeltaFloor", () => {
+    const plain = computeEloDeltas(even(0), "A", streakConfig).find((r) => r.playerId === "a1")!;
+    const streaked = computeEloDeltas(even(7), "A", streakConfig).find((r) => r.playerId === "a1")!;
+    // 32 * 0.5 / 3 = 5.3333 earned, + 2.0 floor.
+    expect(plain.delta).toBeCloseTo(7.33333, 4);
+    // Earned term 1.5x'd to 8.0, floor still a flat +2 rather than 1.5x'd to 3.
+    expect(streaked.delta).toBeCloseTo(10, 4);
+    expect(streaked.streakMultiplier).toBeCloseTo(1.5, 10);
+    expect(plain.streakMultiplier).toBe(1);
+  });
+
+  it("is worth the same percentage at every series length", () => {
+    // The regression this rewrite exists for: as a flat +bonus added AFTER
+    // seriesLengthMultiplier, an identical streak was worth ~125% of a BO3 delta but only ~54%
+    // of a BO7's. As a multiplier inside it, the ratio is length-invariant.
+    const ratioAt = (seriesLengthMultiplier: number) => {
+      const cfg = { ...streakConfig, seriesLengthMultiplier };
+      const plain = computeEloDeltas(even(0), "A", cfg).find((r) => r.playerId === "a1")!;
+      const streaked = computeEloDeltas(even(7), "A", cfg).find((r) => r.playerId === "a1")!;
+      return streaked.delta / plain.delta;
+    };
+    expect(ratioAt(0.6)).toBeCloseTo(ratioAt(1), 10);
+    expect(ratioAt(1.4)).toBeCloseTo(ratioAt(1), 10);
+  });
+
+  it("never applies to a loser, however long their streak", () => {
+    const results = computeEloDeltas(even(12), "A", streakConfig);
+    const loser = results.find((r) => r.playerId === "b1")!;
+    const plainLoser = computeEloDeltas(even(0), "A", streakConfig).find((r) => r.playerId === "b1")!;
+    expect(loser.streakMultiplier).toBe(1);
+    expect(loser.delta).toBeCloseTo(plainLoser.delta, 10);
+    expect(loser.delta).toBeLessThan(0);
+  });
+
+  it("defaults to a no-op when streakMaxMultiplier is omitted", () => {
+    const results = computeEloDeltas(even(12), "A", { ...config, minDeltaFloor: 2 });
+    const winner = results.find((r) => r.playerId === "a1")!;
+    expect(winner.streakMultiplier).toBe(1);
+    expect(winner.delta).toBeCloseTo(7.33333, 4);
   });
 });

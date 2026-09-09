@@ -14,6 +14,11 @@ export type EloPlayerInput = {
   mmr: number;
   team: Team;
   priorRankGamesPlayed: number;
+  // Consecutive Rank Queue wins *before* this series — see streaks.ts's getPriorRankWinStreak,
+  // which excludes the series being scored so it can't count itself. Feeds
+  // computeStreakMultiplier below for a winner and is ignored entirely for a loser. Optional,
+  // defaulting to 0 (no streak) when omitted, so callers that don't model streaks are unaffected.
+  priorRankWinStreak?: number;
 };
 
 export type EloConfig = {
@@ -45,6 +50,17 @@ export type EloConfig = {
   // instead scales the whole delta, floor included, so BO7 stays proportionally bigger than BO3
   // regardless of how lopsided the win was. Optional, defaulting to a no-op 1x when omitted.
   seriesLengthMultiplier?: number;
+  // Ceiling for the win-streak multiplier applied to a winner's earned Elo term — 1.5 means a
+  // maxed streak in an even matchup earns 1.5x that term. Deliberately scales ONLY that term and
+  // not minDeltaFloor's flat add-on: the floor is the guaranteed participation payout, and form
+  // shouldn't compound with it. It also lands INSIDE seriesLengthMultiplier rather than after it,
+  // which is where the flat +bonus this replaced used to sit — that placement made an identical
+  // streak worth 125% of a BO3's delta but only 54% of a BO7's, since the bonus was a fixed
+  // number of points divided by a base the series length had already scaled. As a multiplier on
+  // the term itself, a streak is now worth the same percentage at every series length. Optional,
+  // defaulting to a no-op 1x when omitted; its live default (1.5) lives in config.ts's
+  // KNOWN_CONFIG_DEFAULTS as streak_bonus_max_multiplier.
+  streakMaxMultiplier?: number;
 };
 
 export type EloResult = {
@@ -53,10 +69,15 @@ export type EloResult = {
   newMmr: number;
   wasProvisional: boolean;
   // This player's team's pre-game win probability as actually used for their delta above,
-  // computed at config.sScale / confidenceMultiplier — also the input to computeStreakBonus's
-  // scaling curve. Deliberately decoupled from the website's independently-computed History
+  // computed at config.sScale / confidenceMultiplier — also the input to
+  // computeStreakMultiplier's taper. Deliberately decoupled from the website's independently-computed History
   // page / /chances odds (see confidenceMultiplier on EloConfig).
   expected: number;
+  // The win-streak multiplier actually applied to this player's Elo term above — 1 for every
+  // loser, for a winner on their first or second win of a run, and whenever the feature is off.
+  // Surfaced for reporting and audit only: unlike the flat bonus it replaced, callers do not need
+  // it to assemble the delta, which already includes it.
+  streakMultiplier: number;
 };
 
 function teamAverage(players: EloPlayerInput[], team: Team): number {
@@ -77,6 +98,7 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
   const expectedA = 1 / (1 + 10 ** ((avgB - avgA) / effectiveSScale));
   const expectedByTeam: Record<Team, number> = { A: expectedA, B: 1 - expectedA };
 
+  const streakMaxMultiplier = config.streakMaxMultiplier ?? 1;
   const skewFactor = config.skewFactor ?? 0;
   const minDeltaFloor = config.minDeltaFloor ?? 0;
   // Which side of 0 gets its outward-pushing deltas dampened: positive skewFactor dampens the
@@ -92,7 +114,13 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
     const expected = expectedByTeam[p.team];
     const wasProvisional = p.priorRankGamesPlayed < config.provisionalGames;
     const k = wasProvisional ? config.kFactor * config.provisionalKMultiplier : config.kFactor;
-    let delta = (k * (score - expected)) / 3;
+    // Winners only. A loser's streak is 0 by definition the moment this series settles, and
+    // applying a >1 multiplier to their negative delta would turn a reward into a punishment.
+    const streakMultiplier =
+      p.team === winner ? computeStreakMultiplier(p.priorRankWinStreak ?? 0, expected, streakMaxMultiplier) : 1;
+    // Scales the earned Elo term and nothing else — minDeltaFloor is added further down, outside
+    // this deliberately (see EloConfig.streakMaxMultiplier).
+    let delta = ((k * (score - expected)) / 3) * streakMultiplier;
 
     if (dampenedSide !== 0) {
       // The dampening curve is centered on the midpoint between the player's current MMR and
@@ -120,24 +148,29 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
     // See EloConfig.seriesLengthMultiplier: applied last, over the whole delta (floor included).
     delta *= config.seriesLengthMultiplier ?? 1;
 
-    return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional, expected: expectedByTeam[p.team] };
+    return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional, expected: expectedByTeam[p.team], streakMultiplier };
   });
 }
 
-// Win-streak MMR bonus (see CLAUDE.md, "MMR / Elo" — streak bonus). Pure and separate from
-// computeEloDeltas since it needs a player's prior Rank Queue win-streak length, which lives
-// in report history (DB), not anything elo.ts otherwise touches. priorStreak is the player's
-// consecutive-win count *before* the game currently being scored — 0 below a 3-game streak,
-// then +1 per game up to a +5 cap (priorStreak=3 -> +1, 4 -> +2, 5 -> +3, 6 -> +4, 7+ -> +5).
+// Win-streak MMR multiplier (see CLAUDE.md, "MMR / Elo" — streak bonus). Pure and kept separate
+// from computeEloDeltas's own math because priorStreak comes from report history (DB), which
+// elo.ts otherwise never touches — it reaches the calculation as EloPlayerInput.priorRankWinStreak.
 //
-// expected is the winning team's EloResult.expected (the same, possibly confidence-boosted, win
-// probability that produced this player's delta — see EloConfig.confidenceMultiplier) — scales
-// the base bonus down as the win looks more like a foregone conclusion, and never boosts it above
-// the base bonus for an underdog win.
-// At expected<=0.5 (coin-flip or underdog) the bonus is untouched; it tapers linearly to 0 as
-// expected approaches 1 (a near-certain favorite winning "as expected" earns no streak bonus).
-export function computeStreakBonus(priorStreak: number, expected: number): number {
-  const base = Math.min(Math.max(priorStreak - 2, 0), 5);
-  const scale = Math.min(Math.max(2 * (1 - expected), 0), 1);
-  return base * scale;
+// Ramps across five tiers. priorStreak is the count *before* the game being scored, so the first
+// paying tier at priorStreak 2 is a player's THIRD consecutive win — deliberately one game
+// earlier than the flat +1..+5 bonus this replaced, which didn't pay until the fourth. That also
+// lines the MMR up with FLAME_THRESHOLD (3), so the 🔥 next to a name and the extra MMR now start
+// on the same game instead of a game apart. From there it's one fifth of the way to maxMultiplier
+// per further win, hitting the ceiling on the seventh (at the live 1.5 default: 3rd win -> 1.1x,
+// 4th -> 1.2x, 5th -> 1.3x, 6th -> 1.4x, 7th+ -> 1.5x).
+//
+// expected is the winning team's pre-game win probability (possibly confidence-boosted — see
+// EloConfig.confidenceMultiplier) and tapers the multiplier back toward 1x as the win looks more
+// like a foregone conclusion: full value at expected<=0.5 (a coin flip, or an underdog win),
+// falling linearly to no bonus at all as expected approaches 1. A near-certain favorite winning
+// exactly as expected earns nothing extra for their streak, however long it has run.
+export function computeStreakMultiplier(priorStreak: number, expected: number, maxMultiplier: number): number {
+  const tier = Math.min(Math.max(priorStreak - 1, 0), 5);
+  const taper = Math.min(Math.max(2 * (1 - expected), 0), 1);
+  return 1 + (maxMultiplier - 1) * (tier / 5) * taper;
 }

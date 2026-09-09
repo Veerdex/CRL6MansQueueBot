@@ -6,7 +6,7 @@ import { discordFetch, editOriginalResponse, BRAND_COLOR, getRankEmoji } from ".
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { getOrCreatePlayer } from "./queue";
 import { recomputeBands } from "./bands";
-import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
+import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { getPriorRankWinStreak, getStreakIds, mention } from "./streaks";
 import { encodeMatchId } from "./matchId";
 import { reportResultEmbed } from "./report";
@@ -150,7 +150,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
   const loserLines: string[] = [];
   const pushLine = (sp: SeriesPlayerRow, line: string) => (sp.team === newWinner ? winnerLines : loserLines).push(line);
 
-  const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
+  const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier, streakMaxMultiplierRaw] = await Promise.all([
     getConfigNumber("k_factor", 32),
     getConfigNumber("s_scale", 400),
     getConfigNumber("provisional_games", 10),
@@ -160,34 +160,40 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
     getConfigNumber("mmr_min_delta", 2),
     getConfigNumber("streak_bonus_enabled", 1),
     getConfigNumber("mmr_confidence_multiplier", 1),
+    getConfigNumber("streak_bonus_max_multiplier", 1.5),
   ]);
-  const streakBonusEnabled = streakBonusEnabledRaw === 1;
+  // 1x is computeEloDeltas's documented no-op — see report.ts for why the toggle gates only the
+  // extra MMR and not streak tracking itself.
+  const streakMaxMultiplier = streakBonusEnabledRaw === 1 ? streakMaxMultiplierRaw : 1;
   // Same locked-in-at-pop/vote-resolution multipliers the original report used.
   // series_length_k_multiplier is passed as seriesLengthMultiplier below, not folded into
   // effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
   const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
-  const eloInputs = seriesPlayers.map((sp) => {
-    const p = playersById.get(sp.player_id)!;
-    return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
-  });
-  const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
-  const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
-
   // getPriorRankWinStreak/getPriorRankLossStreak always exclude this series by id (see
   // streaks.ts), so it doesn't matter that winner_team above was already flipped — this
-  // series is filtered out of the history entirely either way.
-  const bonusByPlayer = new Map<string, number>();
-  if (streakBonusEnabled) {
-    await Promise.all(
-      seriesPlayers.map(async (sp) => {
-        if (sp.team !== newWinner) return;
-        const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
-        const expected = newResultsById.get(sp.player_id)!.expected;
-        bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
-      }),
-    );
-  }
+  // series is filtered out of the history entirely either way. Read before the Elo call because
+  // the streak multiplier is applied inside it now rather than folded onto its output.
+  const priorStreakById = new Map<string, number>();
+  await Promise.all(
+    seriesPlayers.map(async (sp) => {
+      if (sp.team !== newWinner) return;
+      priorStreakById.set(sp.player_id, await getPriorRankWinStreak(supabase, sp.player_id, series.id));
+    }),
+  );
+
+  const eloInputs = seriesPlayers.map((sp) => {
+    const p = playersById.get(sp.player_id)!;
+    return {
+      playerId: p.id,
+      mmr: p.mmr,
+      team: sp.team,
+      priorRankGamesPlayed: p.rank_games_played,
+      priorRankWinStreak: priorStreakById.get(p.id) ?? 0,
+    };
+  });
+  const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, streakMaxMultiplier });
+  const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
 
   const finalDeltaByPlayer = new Map<string, number>();
   const correctedMmrByPlayer = new Map<string, number>();
@@ -195,7 +201,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
     const p = playersById.get(sp.player_id)!;
     const oldDelta = sp.mmr_delta ?? 0;
     const newResult = newResultsById.get(sp.player_id)!;
-    const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+    const newDelta = newResult.delta;
     finalDeltaByPlayer.set(sp.player_id, newDelta);
     correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
   }

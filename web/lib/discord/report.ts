@@ -7,7 +7,7 @@ import { getConfigNumber, getDisplayMMR } from "./config";
 import { getOrCreatePlayer, refreshQueueMessageAfterSettlement } from "./queue";
 import { hasAdminAccess } from "./admin";
 import { recomputeBands } from "./bands";
-import { computeEloDeltas, computeStreakBonus, type EloResult } from "@/lib/mmr/elo";
+import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { getPriorRankWinStreak, getPriorRankLossStreak, mention, ON_FIRE_THRESHOLD, FLAME_THRESHOLD, COLD_THRESHOLD } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { cleanupTestMatchRows } from "./testMatch";
@@ -206,7 +206,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       pushLine(sp, `<@${p.discord_id}> — test match, no stat changes ${emoji}`);
     }
   } else {
-    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
+    const [kFactor, sScale, provisionalGames, provisionalKMultiplier, mmrScale, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier, streakMaxMultiplierRaw] = await Promise.all([
       getConfigNumber("k_factor", 32),
       getConfigNumber("s_scale", 400),
       getConfigNumber("provisional_games", 10),
@@ -216,26 +216,22 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       getConfigNumber("mmr_min_delta", 2),
       getConfigNumber("streak_bonus_enabled", 1),
       getConfigNumber("mmr_confidence_multiplier", 1),
+      getConfigNumber("streak_bonus_max_multiplier", 1.5),
     ]);
-    const streakBonusEnabled = streakBonusEnabledRaw === 1;
+    // The toggle gates only the extra MMR, per CLAUDE.md's "this just disables the extra mmr"
+    // spec — the streak itself, the announcement embed and the fire-emoji decoration below all
+    // still run when it is off. 1x is computeEloDeltas's documented no-op for this knob.
+    const streakMaxMultiplier = streakBonusEnabledRaw === 1 ? streakMaxMultiplierRaw : 1;
     // Locked in at pop time (see bonusDay.ts) — not re-evaluated against "now", which could
     // have drifted outside the bonus window by the time a match actually gets reported.
     const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
-    const eloInputs = allSeriesPlayers.map((sp) => {
-      const p = playersById.get(sp.player_id)!;
-      return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
-    });
-    // series_length_k_multiplier is locked in at vote-resolution time (see teamFormation.ts) —
-    // defaults to 1 (no-op) when the series-length vote feature is off. Passed as
-    // seriesLengthMultiplier, not folded into effectiveKFactor above — see EloConfig's comment.
-    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
-    const eloResultsById = new Map<string, EloResult>(eloResults.map((r) => [r.playerId, r]));
-
-    // Win-streak MMR bonus (see CLAUDE.md, "MMR / Elo" — streak bonus). The settle claim above
-    // already flipped this series to status='reported', so it must be excluded from each
+    // Win-streak MMR multiplier (see CLAUDE.md, "MMR / Elo" — streak bonus). The settle claim
+    // above already flipped this series to status='reported', so it must be excluded from each
     // player's streak lookup here or it would double-count as its own most recent result —
-    // shifting both the bonus and the announcement threshold off by one game.
+    // shifting both the multiplier and the announcement threshold off by one game. Fetched before
+    // the Elo call, not after it: the multiplier is applied inside computeEloDeltas now, so the
+    // prior streak has to be an input to it rather than something folded onto its output.
     const newStreakById = new Map<string, number>();
     const priorStreakById = new Map<string, number>();
     // Mirror of newStreakById for the losing side — purely cosmetic (🥶 decoration below), no
@@ -257,19 +253,24 @@ async function processReport(interaction: DiscordInteraction, result: string | n
       }),
     );
 
-    // Folded directly into mmr_delta (not tracked as a separate column) so /admin unreport
-    // unwinds it for free — it just subtracts the stored delta, which already includes the
-    // bonus — with no extra bookkeeping. streakBonusEnabled gates only this arithmetic; the
-    // streak itself, the announcement embed, and the fire-emoji decoration below all still run
-    // when the toggle is off, per CLAUDE.md's "this just disables the extra mmr" spec.
-    const resultsById = new Map<string, EloResult>(
-      allSeriesPlayers.map((sp) => {
-        const base = eloResultsById.get(sp.player_id)!;
-        const bonus = sp.team === winner && streakBonusEnabled ? computeStreakBonus(priorStreakById.get(sp.player_id) ?? 0, base.expected) : 0;
-        const result: EloResult = bonus === 0 ? base : { ...base, delta: base.delta + bonus, newMmr: base.newMmr + bonus };
-        return [sp.player_id, result];
-      }),
-    );
+    const eloInputs = allSeriesPlayers.map((sp) => {
+      const p = playersById.get(sp.player_id)!;
+      return {
+        playerId: p.id,
+        mmr: p.mmr,
+        team: sp.team,
+        priorRankGamesPlayed: p.rank_games_played,
+        priorRankWinStreak: priorStreakById.get(p.id) ?? 0,
+      };
+    });
+    // series_length_k_multiplier is locked in at vote-resolution time (see teamFormation.ts) —
+    // defaults to 1 (no-op) when the series-length vote feature is off. Passed as
+    // seriesLengthMultiplier, not folded into effectiveKFactor above — see EloConfig's comment.
+    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, streakMaxMultiplier });
+    // The streak multiplier is baked into these deltas already (see EloConfig.streakMaxMultiplier),
+    // so nothing is added on afterwards and /admin unreport still unwinds a settle for free by
+    // subtracting the stored mmr_delta.
+    const resultsById = new Map<string, EloResult>(eloResults.map((r) => [r.playerId, r]));
 
     for (const sp of allSeriesPlayers) {
       const streak = newStreakById.get(sp.player_id) ?? 0;

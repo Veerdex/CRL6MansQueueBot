@@ -353,7 +353,7 @@ async function processCorrectReport(
   newWinner: "team_a" | "team_b",
 ) {
   const supabase = createAdminClient();
-  const { computeEloDeltas, computeStreakBonus } = await import("@/lib/mmr/elo");
+  const { computeEloDeltas } = await import("@/lib/mmr/elo");
   const { getConfigNumber } = await import("./config");
   const { getPriorRankWinStreak } = await import("./streaks");
 
@@ -401,7 +401,7 @@ async function processCorrectReport(
     .in("id", seriesPlayers.map((sp) => sp.player_id));
   const playersById = new Map((playerRows ?? []).map((p) => [p.id, p]));
 
-  const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier] = await Promise.all([
+  const [kFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, streakBonusEnabledRaw, confidenceMultiplier, streakMaxMultiplierRaw] = await Promise.all([
     getConfigNumber("k_factor", 32),
     getConfigNumber("s_scale", 400),
     getConfigNumber("provisional_games", 10),
@@ -410,39 +410,45 @@ async function processCorrectReport(
     getConfigNumber("mmr_min_delta", 2),
     getConfigNumber("streak_bonus_enabled", 1),
     getConfigNumber("mmr_confidence_multiplier", 1),
+    getConfigNumber("streak_bonus_max_multiplier", 1.5),
   ]);
-  const streakBonusEnabled = streakBonusEnabledRaw === 1;
+  // 1x is computeEloDeltas's documented no-op — see report.ts for why the toggle gates only the
+  // extra MMR and not streak tracking itself.
+  const streakMaxMultiplier = streakBonusEnabledRaw === 1 ? streakMaxMultiplierRaw : 1;
   // Same locked-in-at-pop/vote-resolution multipliers the original report used — a correction
   // reuses them rather than re-evaluating "now" so it stays consistent with whatever the
   // original settle applied. series_length_k_multiplier is passed as seriesLengthMultiplier
   // below, not folded into effectiveKFactor — see EloConfig.seriesLengthMultiplier's comment.
   const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
+  // Same win-streak multiplier report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"
+  // — streak bonus), recomputed here since correcting the winner changes who it even applies to.
+  // This series is excluded from its own streak lookup (same reasoning as report.ts — it's
+  // already status='reported'). Read before the Elo call because the multiplier is applied inside
+  // it now rather than folded onto its output. Doesn't attempt to re-fire the announcement embed
+  // or account for any later games played (and reported) since this series — a known, accepted
+  // limitation of correcting a match after the fact.
+  const priorStreakById = new Map<string, number>();
+  await Promise.all(
+    seriesPlayers.map(async (sp) => {
+      if (sp.team !== winnerTeam) return;
+      priorStreakById.set(sp.player_id, await getPriorRankWinStreak(supabase, sp.player_id, series.id));
+    }),
+  );
+
   const eloInputs = seriesPlayers.map((sp) => {
     const p = playersById.get(sp.player_id)!;
-    return { playerId: p.id, mmr: p.mmr, team: sp.team, priorRankGamesPlayed: p.rank_games_played };
+    return {
+      playerId: p.id,
+      mmr: p.mmr,
+      team: sp.team,
+      priorRankGamesPlayed: p.rank_games_played,
+      priorRankWinStreak: priorStreakById.get(p.id) ?? 0,
+    };
   });
 
-  const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier });
+  const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, streakMaxMultiplier });
   const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
-
-  // Same win-streak MMR bonus report.ts applies at initial settle (see CLAUDE.md, "MMR / Elo"
-  // — streak bonus), recomputed here since correcting the winner changes who it even applies
-  // to. This series is excluded from its own streak lookup (same reasoning as report.ts — it's
-  // already status='reported'). Doesn't attempt to re-fire the announcement embed or account
-  // for any later games that may have been played (and reported) since this series — a known,
-  // accepted limitation of correcting a match after the fact.
-  const bonusByPlayer = new Map<string, number>();
-  if (streakBonusEnabled) {
-    await Promise.all(
-      seriesPlayers.map(async (sp) => {
-        if (sp.team !== winnerTeam) return;
-        const priorStreak = await getPriorRankWinStreak(supabase, sp.player_id, series.id);
-        const expected = newResultsById.get(sp.player_id)!.expected;
-        bonusByPlayer.set(sp.player_id, computeStreakBonus(priorStreak, expected));
-      }),
-    );
-  }
 
   // Reverse old delta, apply new delta for each player. peak_mmr normally only ever rises
   // (Math.max against the stored value — same "not tracked while unranked" rule as report.ts's
@@ -459,7 +465,7 @@ async function processCorrectReport(
     const p = playersById.get(sp.player_id)!;
     const oldDelta = sp.mmr_delta ?? 0;
     const newResult = newResultsById.get(sp.player_id)!;
-    const newDelta = newResult.delta + (bonusByPlayer.get(sp.player_id) ?? 0);
+    const newDelta = newResult.delta;
     newDeltaByPlayer.set(sp.player_id, newDelta);
     correctedMmrByPlayer.set(sp.player_id, p.mmr - oldDelta + newDelta);
   }
@@ -740,7 +746,10 @@ async function processForceLeave(interaction: DiscordInteraction, actorId: strin
 // ---------------------------------------------------------------------------
 
 async function processRecomputeBands(interaction: DiscordInteraction, actorId: string, force: boolean) {
-  const summary = await recomputeBands({ force });
+  // syncAllRoles: the manual trigger is the remediation path for stale Discord roles, so it does
+  // the full-roster reconcile the daily cron does (see syncPlayerRoles in bands.ts) rather than
+  // only touching players whose band changed this run.
+  const summary = await recomputeBands({ force, syncAllRoles: true });
   await logAdminAction(
     actorId,
     "recompute_bands",
