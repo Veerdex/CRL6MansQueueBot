@@ -12,6 +12,7 @@
     "register-commands": "node --env-file=.env.local scripts/register-commands.mjs",
     "backfill-mmr-before": "tsx --env-file=.env.local scripts/backfill-mmr-before.ts",
     "backfill-peak-mmr": "tsx --env-file=.env.local scripts/backfill-peak-mmr.ts",
+    "fit-team-strength": "tsx --env-file=.env.local scripts/fit-team-strength.ts",
     "backfill-season-score": "tsx --env-file=.env.local scripts/backfill-season-score.ts"
   },
   "dependencies": {
