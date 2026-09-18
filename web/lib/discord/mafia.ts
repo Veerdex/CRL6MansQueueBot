@@ -20,7 +20,7 @@ const MAFIA_MAX_SIZE = 6;
 // There are deliberately fewer objectives than lobby seats, so a 6-mafia game has to repeat one —
 // assignObjectives handles that rather than the list being padded to six.
 export const MAFIA_OBJECTIVES = [
-  "Least points in the lobby",
+  "Lowest points on your team",
   "Can't score",
   "Minimum of 5 demos",
   "Own goal",
