@@ -200,6 +200,10 @@ export type DayOfWeekStatsRow = {
 // display names/interaction tokens only, no crl6mansqueuebot_players join anywhere.
 export type MafiaGameStatus = "waiting" | "starting" | "started" | "cancelled";
 
+// "classic" tells the mafia only that they're the mafia; "hidden_objective" also hands each of
+// them a specific sabotage objective — see migration 0050_mafia_modes.sql.
+export type MafiaGameMode = "classic" | "hidden_objective";
+
 export type MafiaGameRow = {
   id: string;
   channel_id: string;
@@ -212,6 +216,11 @@ export type MafiaGameRow = {
   // Optional lobby access code, set once at creation (register-commands.mjs's password: option)
   // — see migration 0036_mafia_password.sql. Null means the lobby is open to anyone.
   password: string | null;
+  mode: MafiaGameMode;
+  // The count the host requested (0-6), not the outcome: 0 means "coin flip between one mafia and
+  // none", resolved only at finalize time. Who actually drew mafia lives in MafiaPlayerRow.
+  mafia_count: number;
+  revealed_at: string | null;
 };
 
 export type MafiaPlayerRow = {
@@ -220,6 +229,10 @@ export type MafiaPlayerRow = {
   display_name: string;
   interaction_token: string;
   joined_at: string;
+  // Both only meaningful once the game reaches status 'started' — the join RPC inserts player rows
+  // long before roles exist, so until then every row carries the default innocent values.
+  is_mafia: boolean;
+  objective: string | null;
 };
 
 export type Database = {

@@ -2,7 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags, MessageComponentTypes, ButtonStyleTypes, TextStyleTypes } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { MafiaGameRow, MafiaPlayerRow } from "@/lib/supabase/types";
+import type { MafiaGameMode, MafiaGameRow, MafiaPlayerRow } from "@/lib/supabase/types";
 import { discordFetch, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, BRAND_COLOR, AMBER_COLOR, GOLD_COLOR, RICH_LEAVE_COLOR } from "./rest";
 import { getConfigNumber } from "./config";
 import { interactionUserId, interactionDisplayName, modalFieldValue, type DiscordInteraction } from "./types";
@@ -12,6 +12,56 @@ const MAFIA_PASSWORD_MODAL_CUSTOM_ID = "password";
 type AdminClient = ReturnType<typeof createAdminClient>;
 
 const MAFIA_MAX_SIZE = 6;
+
+// Hidden Objective mode's sabotage goals. A fixed list rather than a config row: CLAUDE.md sends
+// admin-tunable runtime behaviour to the config table "unless the design explicitly defines a
+// constant", and these five were specified exactly.
+//
+// There are deliberately fewer objectives than lobby seats, so a 6-mafia game has to repeat one —
+// assignObjectives handles that rather than the list being padded to six.
+export const MAFIA_OBJECTIVES = [
+  "Least points in the lobby",
+  "Can't score",
+  "Minimum of 5 demos",
+  "Own goal",
+  "Lose the game",
+] as const;
+
+function shuffled<T>(items: readonly T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+// The host's requested count is 0-6, but 0 is a special case rather than a literal zero: it means
+// "coin flip between one mafia and none", so nobody — the host included — knows whether there is
+// actually a mafia in play. Resolved here, at finalize time, and never written back to the game
+// row, which keeps recording the request.
+export function resolveMafiaCount(requested: number): number {
+  if (requested === 0) return Math.random() < 0.5 ? 1 : 0;
+  return Math.min(Math.max(requested, 0), MAFIA_MAX_SIZE);
+}
+
+// One objective per mafia, dealt without replacement so no two share a goal — until a 6-mafia
+// game exhausts the five, where the last one draws a repeat at random.
+export function assignObjectives(count: number): string[] {
+  const deck = shuffled(MAFIA_OBJECTIVES);
+  return Array.from({ length: count }, (_, i) => deck[i] ?? deck[Math.floor(Math.random() * deck.length)]);
+}
+
+// What the lobby is told publicly once the game starts. A requested count of 0 stays deliberately
+// vague: printing the resolved number would give away the coin flip and defeat the whole setting.
+function mafiaCountLabel(requested: number): string {
+  if (requested === 0) return "0 or 1 — nobody knows";
+  return `${requested} of ${MAFIA_MAX_SIZE}`;
+}
+
+function mafiaModeLabel(mode: MafiaGameMode): string {
+  return mode === "hidden_objective" ? "Hidden Objective" : "Classic";
+}
 
 function mafiaRoster(players: { discord_id: string }[]): string {
   return players.length ? players.map((p, i) => `${i + 1}. <@${p.discord_id}>`).join("\n") : "_nobody yet_";
@@ -39,13 +89,54 @@ function mafiaStartingEmbed(players: { discord_id: string }[], graceSeconds: num
   };
 }
 
-function mafiaStartedEmbed(players: { discord_id: string }[]) {
+function mafiaStartedEmbed(players: { discord_id: string }[], mode: MafiaGameMode, requestedCount: number) {
   return {
     color: GOLD_COLOR,
     title: "🔪 Mafia — Game Started!",
     description: "Roles have been sent to each player privately. Good luck!",
-    fields: [{ name: "Players", value: mafiaRoster(players) }],
+    fields: [
+      { name: "Mode", value: mafiaModeLabel(mode), inline: true },
+      { name: "Mafia", value: mafiaCountLabel(requestedCount), inline: true },
+      { name: "Players", value: mafiaRoster(players) },
+    ],
+    footer: { text: "Run /reveal when you're done to see who was who." },
   };
+}
+
+// Posted publicly by /reveal — the whole lobby finding out together is the point, so this is a
+// channel message rather than an ephemeral reply to whoever ran the command.
+function mafiaRevealEmbed(game: MafiaGameRow, players: MafiaPlayerRow[]) {
+  const mafia = players.filter((p) => p.is_mafia);
+  const fields = [{ name: "Mode", value: mafiaModeLabel(game.mode), inline: true }];
+
+  if (!mafia.length && game.mafia_count === 0) {
+    // The coin flip landed on "none" — worth spelling out, since otherwise an empty mafia list
+    // reads like something went wrong.
+    fields.push({ name: "Result", value: "**Nobody was the Mafia.** Everyone was innocent all along.", inline: false });
+  } else if (!mafia.length) {
+    // The host asked for at least one mafia, so an empty list means the finalize-time write never
+    // landed (migration 0050 not applied, most likely) rather than an innocent lobby. Saying so is
+    // the honest answer — asserting innocence here would be a lie.
+    fields.push({
+      name: "Result",
+      value: "Role data is missing for this game — the assignments weren't recorded, so there's nothing to reveal.",
+      inline: false,
+    });
+  } else {
+    fields.push({
+      name: mafia.length === 1 ? "The Mafia" : `The Mafia (${mafia.length})`,
+      value: mafia
+        .map((p) => `🔪 <@${p.discord_id}>${p.objective ? ` — _${p.objective}_` : ""}`)
+        .join("\n"),
+      inline: false,
+    });
+    const innocents = players.filter((p) => !p.is_mafia);
+    if (innocents.length) {
+      fields.push({ name: "Innocent", value: innocents.map((p) => `<@${p.discord_id}>`).join(", "), inline: false });
+    }
+  }
+
+  return { color: GOLD_COLOR, title: "🔎 Mafia — Revealed", fields };
 }
 
 function mafiaCancelledEmbed(reason: string, players: { discord_id: string }[]) {
@@ -109,9 +200,18 @@ async function processMafiaCommand(interaction: DiscordInteraction) {
   const passwordOption = interaction.data?.options?.find((o) => o.name === "password")?.value;
   const password = typeof passwordOption === "string" && passwordOption.trim() ? passwordOption.trim() : null;
 
+  const modeOption = interaction.data?.options?.find((o) => o.name === "mode")?.value;
+  const mode: MafiaGameMode = modeOption === "hidden_objective" ? "hidden_objective" : "classic";
+
+  // Discord enforces the 0-6 range via min_value/max_value on the option, but the clamp keeps the
+  // column's check constraint from being the thing that rejects a malformed payload.
+  const countOption = interaction.data?.options?.find((o) => o.name === "count")?.value;
+  const mafiaCount =
+    typeof countOption === "number" ? Math.min(Math.max(Math.trunc(countOption), 0), MAFIA_MAX_SIZE) : 1;
+
   const { data: game, error: insertError } = await supabase
     .from("crl6mansqueuebot_mafia_games")
-    .insert({ channel_id: channelId, guild_id: guildId, host_discord_id: discordId, password })
+    .insert({ channel_id: channelId, guild_id: guildId, host_discord_id: discordId, password, mode, mafia_count: mafiaCount })
     .select()
     .single();
 
@@ -283,23 +383,58 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
     .select("id");
   if (!claimed || claimed.length === 0) return;
 
-  const mafiaIndex = Math.floor(Math.random() * players.length);
+  const mafiaTotal = resolveMafiaCount(game.mafia_count);
+  const objectives = game.mode === "hidden_objective" ? assignObjectives(mafiaTotal) : [];
+
+  // Shuffle the seats, then take the first N — picking N distinct indices out of a shuffle rather
+  // than sampling repeatedly, so the same player can never be drawn twice.
+  const mafiaIds = new Set(shuffled(players).slice(0, mafiaTotal).map((p) => p.discord_id));
+
+  // Persisted so /reveal can name them afterwards — nothing about the assignment survived the
+  // interaction before this. Only the mafia rows are written: the join RPC already inserts every
+  // player as non-mafia with a null objective, which is exactly the innocent case.
+  const objectiveFor = new Map<string, string | null>();
+  let dealt = 0;
+  for (const p of players) {
+    if (!mafiaIds.has(p.discord_id)) continue;
+    const objective = objectives[dealt++] ?? null;
+    objectiveFor.set(p.discord_id, objective);
+    // .select() so a zero-row match is visible: PostgREST reports no error when an UPDATE's WHERE
+    // simply matches nothing, and the DM goes out either way (it uses the cached interaction
+    // token), so without this a player could be privately told they're the mafia while /reveal
+    // publicly reports nobody was.
+    const { data: saved, error } = await supabase
+      .from("crl6mansqueuebot_mafia_players")
+      .update({ is_mafia: true, objective })
+      .eq("game_id", game.id)
+      .eq("discord_id", p.discord_id)
+      .select("discord_id");
+    if (error || !saved?.length) {
+      console.error(`Mafia: failed to persist role for ${p.discord_id}`, error ?? "no matching player row");
+    }
+  }
 
   await Promise.all(
-    players.map((p, i) =>
-      sendFollowupMessage(p.interaction_token, {
-        content:
-          i === mafiaIndex
-            ? "🔪 **You are the Mafia!** Blend in and don't get caught."
-            : "🕵️ **You are Innocent.** Work with the group to figure out who the Mafia is!",
-      }).catch((err) => console.error(`Mafia: failed to deliver role reveal to ${p.discord_id}`, err)),
-    ),
+    players.map((p) => {
+      const objective = objectiveFor.get(p.discord_id);
+      let content: string;
+      if (!mafiaIds.has(p.discord_id)) {
+        content = "🕵️ **You are Innocent.** Work with the group to figure out who the Mafia is!";
+      } else if (objective) {
+        content = `🔪 **You are the Mafia!** Your hidden objective: **${objective}**\nPull it off without the others working out it was you.`;
+      } else {
+        content = "🔪 **You are the Mafia!** Blend in and don't get caught.";
+      }
+      return sendFollowupMessage(p.interaction_token, { content }).catch((err) =>
+        console.error(`Mafia: failed to deliver role reveal to ${p.discord_id}`, err),
+      );
+    }),
   );
 
   if (game.channel_id && game.message_id) {
     await discordFetch(`/channels/${game.channel_id}/messages/${game.message_id}`, {
       method: "PATCH",
-      body: JSON.stringify({ embeds: [mafiaStartedEmbed(players)], components: [] }),
+      body: JSON.stringify({ embeds: [mafiaStartedEmbed(players, game.mode, game.mafia_count)], components: [] }),
     }).catch((err) => console.error("Mafia: failed to post game-started message", err));
   }
 }
@@ -368,6 +503,69 @@ async function processMafiaLeave(interaction: DiscordInteraction, gameId: string
     method: "PATCH",
     body: JSON.stringify({ embeds: [mafiaWaitingEmbed(players, timeoutSeconds, !!game.password)], components: mafiaButtons(gameId) }),
   }).catch((err) => console.error("Mafia: failed to update lobby message on leave", err));
+}
+
+export function handleRevealCommand(interaction: DiscordInteraction) {
+  after(() => processReveal(interaction));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+// Reveals the most recently *started* game in this channel. Deliberately not restricted to the
+// newest game of any status: a lobby that filled and then had a fresh one opened alongside it
+// shouldn't make the finished game unrevealable. Re-runs are allowed and simply repost — the
+// reveal is public anyway, so there's nothing to leak, and blocking it would strand anyone who
+// missed the message. revealed_at only records when it first happened.
+async function processReveal(interaction: DiscordInteraction) {
+  const supabase = createAdminClient();
+  const discordId = interactionUserId(interaction);
+  const channelId = interaction.channel_id;
+
+  if (!discordId || !channelId) {
+    await editOriginalResponse(interaction.token, { content: "Couldn't identify you or this channel — try again." });
+    return;
+  }
+
+  const { data: game } = await supabase
+    .from("crl6mansqueuebot_mafia_games")
+    .select("*")
+    .eq("channel_id", channelId)
+    .eq("status", "started")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!game) {
+    await editOriginalResponse(interaction.token, {
+      content: "No Mafia game has been played in this channel yet — nothing to reveal.",
+    });
+    return;
+  }
+
+  const players = await fetchMafiaPlayers(supabase, game.id);
+  if (!players.some((p) => p.discord_id === discordId)) {
+    await editOriginalResponse(interaction.token, {
+      content: "Only the players from that game can reveal it.",
+    });
+    return;
+  }
+
+  await discordFetch(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ embeds: [mafiaRevealEmbed(game, players)] }),
+  }).catch((err) => console.error("Mafia: failed to post reveal", err));
+
+  if (!game.revealed_at) {
+    await supabase
+      .from("crl6mansqueuebot_mafia_games")
+      .update({ revealed_at: new Date().toISOString() })
+      .eq("id", game.id)
+      .is("revealed_at", null);
+  }
+
+  await deleteOriginalResponse(interaction.token);
 }
 
 // Called from the per-minute sweep (sweep/route.ts), both for lobbies that never filled within

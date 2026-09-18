@@ -934,9 +934,27 @@ const commands = [
   },
   {
     name: "mafia",
-    description: "Start a game of Mafia — waits for 6 players to join, then secretly assigns one as the Mafia.",
+    description: "Start a game of Mafia — waits for 6 players to join, then secretly assigns the Mafia.",
     type: 1,
     options: [
+      {
+        name: "mode",
+        description: "Classic, or Hidden Objective to give each Mafia a specific sabotage goal.",
+        type: STRING_OPTION,
+        required: false,
+        choices: [
+          { name: "Classic", value: "classic" },
+          { name: "Hidden Objective", value: "hidden_objective" },
+        ],
+      },
+      {
+        name: "count",
+        description: "How many Mafia (default 1). 0 means a coin flip between one Mafia and none.",
+        type: INTEGER_OPTION,
+        required: false,
+        min_value: 0,
+        max_value: 6,
+      },
       {
         name: "password",
         description: "Optional lobby password — players must enter it to join.",
@@ -944,6 +962,11 @@ const commands = [
         required: false,
       },
     ],
+  },
+  {
+    name: "reveal",
+    description: "Reveal who was the Mafia in this channel's last game (players from that game only).",
+    type: 1,
   },
 ];
 
