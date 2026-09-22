@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeSafeMedian, decayMmr } from "./seasonClose";
+import { computeSafeMedian, decayMmr, decayPlayerMmr } from "./seasonClose";
 
 describe("computeSafeMedian", () => {
   it("matches a plain median when the whole pool is already non-negative", () => {
@@ -133,5 +133,27 @@ describe("decay pool covers unplaced players", () => {
 
   it("leaves a never-played player at exactly 0", () => {
     expect(decayMmr(0, 52.933, 0.5)).toBe(0);
+  });
+});
+
+// An unplaced player below zero is held at the soft reset instead of pulled toward 0, so sitting
+// out a season can't be used to climb back up for free.
+describe("decayPlayerMmr", () => {
+  const median = 52.933;
+
+  it("holds an unplaced player below zero exactly where they are", () => {
+    expect(decayPlayerMmr(-53.474, false, median, 0.5)).toBe(-53.474);
+    expect(decayPlayerMmr(-0.01, false, median, 0.5)).toBe(-0.01);
+  });
+
+  it("still halves a placed player below zero", () => {
+    expect(decayPlayerMmr(-53.474, true, median, 0.5)).toBe(-26.737);
+  });
+
+  it("decays every player at or above zero the same, placed or not", () => {
+    for (const mmr of [0, 10.35, 116.307]) {
+      expect(decayPlayerMmr(mmr, false, median, 0.5)).toBe(decayMmr(mmr, median, 0.5));
+      expect(decayPlayerMmr(mmr, true, median, 0.5)).toBe(decayMmr(mmr, median, 0.5));
+    }
   });
 });

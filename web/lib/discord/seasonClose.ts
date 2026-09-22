@@ -219,6 +219,10 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 // Widening the pool also widens what computeSafeMedian sees, so the compression constant now
 // reflects the whole community rather than the placed subset.
 //
+// Exception: an unplaced player below zero keeps their MMR (decayPlayerMmr), so not playing is
+// never a way to climb back toward 0. They stay in the pool for the median; only their write is
+// skipped. is_placed is read here before resetAllPlacementsToUnranked() clears it.
+//
 // decayMmr/computeSafeMedian live in ../mmr/seasonDecay.ts (a plain, dependency-free module)
 // rather than here, so web/scripts/backfill-mmr-before.ts — a tsx script that can't rely on
 // Next.js's "react-server" resolution condition to no-op the "server-only" guard this file
@@ -226,14 +230,14 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 // pulls them from "./seasonClose" keeps working unchanged.
 // ---------------------------------------------------------------------------
 
-export { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
-import { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
+export { decayMmr, decayPlayerMmr, computeSafeMedian } from "../mmr/seasonDecay";
+import { decayPlayerMmr, computeSafeMedian } from "../mmr/seasonDecay";
 
 async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Promise<number> {
   const pool = await fetchAllPages((from, to) =>
     supabase
       .from("crl6mansqueuebot_players")
-      .select("id, mmr")
+      .select("id, mmr, is_placed")
       .eq("is_test_data", false)
       .order("id")
       .range(from, to)
@@ -243,8 +247,11 @@ async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Prom
 
   const median = computeSafeMedian(pool.map((p) => p.mmr));
 
+  const toDecay = pool
+    .map((p) => ({ id: p.id, mmr: p.mmr, next: decayPlayerMmr(p.mmr, p.is_placed, median, decayFactor) }))
+    .filter((p) => p.next !== p.mmr);
   await Promise.all(
-    pool.map((p) => supabase.from("crl6mansqueuebot_players").update({ mmr: decayMmr(p.mmr, median, decayFactor) }).eq("id", p.id)),
+    toDecay.map((p) => supabase.from("crl6mansqueuebot_players").update({ mmr: p.next }).eq("id", p.id)),
   );
-  return pool.length;
+  return toDecay.length;
 }

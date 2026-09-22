@@ -58,6 +58,17 @@ export function decayMmr(mmr: number, median: number, decayFactor: number): numb
   return (mmr * median) / (median + decayFactor * Math.abs(mmr));
 }
 
+// Per-player wrapper applyMmrDecay uses: an unplaced player below zero is held where they are
+// rather than pulled toward 0. Without this, sitting out (or never finishing placement) was a
+// free climb — every season's soft reset handed a negative, inactive player back part of their
+// deficit without them playing a game. Placed players below zero still recover through decayMmr
+// as before, and every player at or above zero decays as normal, placed or not. Held players still
+// count toward computeSafeMedian's pool; only their own write is skipped.
+export function decayPlayerMmr(mmr: number, isPlaced: boolean, median: number, decayFactor: number): number {
+  if (!isPlaced && mmr < 0) return mmr;
+  return decayMmr(mmr, median, decayFactor);
+}
+
 // A plain median of the placed pool's raw mmr can go negative — a live example: with
 // mmr_scale/mmr_shift chosen so display MMR looks like a normal positive range, more than half
 // the placed pool can still sit below raw MMR 0 (display MMR only looks healthy because of the
