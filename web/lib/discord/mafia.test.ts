@@ -38,14 +38,15 @@ describe("assignObjectives", () => {
     }
   });
 
-  // Six mafia but only five objectives — per spec the sixth draws a repeat rather than going
-  // without, so the run is still full length and every entry is still a real objective.
-  it("repeats one objective when all six players are mafia", () => {
+  // One objective per lobby seat is the whole point of the six-item list: an all-mafia game has
+  // to hand out six *different* goals, never a repeat.
+  it("gives all six players a distinct objective when everyone is mafia", () => {
+    expect(MAFIA_OBJECTIVES).toHaveLength(6);
     for (let i = 0; i < 50; i++) {
       const dealt = assignObjectives(6);
       expect(dealt).toHaveLength(6);
-      expect(new Set(dealt).size).toBe(MAFIA_OBJECTIVES.length);
-      for (const o of dealt) expect(MAFIA_OBJECTIVES).toContain(o);
+      expect(new Set(dealt).size).toBe(6);
+      expect([...dealt].sort()).toEqual([...MAFIA_OBJECTIVES].sort());
     }
   });
 

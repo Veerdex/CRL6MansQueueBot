@@ -15,16 +15,18 @@ const MAFIA_MAX_SIZE = 6;
 
 // Hidden Objective mode's sabotage goals. A fixed list rather than a config row: CLAUDE.md sends
 // admin-tunable runtime behaviour to the config table "unless the design explicitly defines a
-// constant", and these five were specified exactly.
+// constant", and these six were specified exactly.
 //
-// There are deliberately fewer objectives than lobby seats, so a 6-mafia game has to repeat one —
-// assignObjectives handles that rather than the list being padded to six.
+// There is now exactly one objective per lobby seat, so even an all-mafia game deals six distinct
+// goals — the list was deliberately padded to six for that reason, replacing an earlier five-item
+// version where a 6-mafia game had to repeat one.
 export const MAFIA_OBJECTIVES = [
   "Lowest points on your team",
   "Can't score",
   "Minimum of 5 demos",
   "Own goal",
   "Lose the game",
+  "Go to Overtime",
 ] as const;
 
 function shuffled<T>(items: readonly T[]): T[] {
@@ -45,11 +47,11 @@ export function resolveMafiaCount(requested: number): number {
   return Math.min(Math.max(requested, 0), MAFIA_MAX_SIZE);
 }
 
-// One objective per mafia, dealt without replacement so no two share a goal — until a 6-mafia
-// game exhausts the five, where the last one draws a repeat at random.
+// One objective per mafia, dealt without replacement so no two ever share a goal. resolveMafiaCount
+// clamps to MAFIA_MAX_SIZE and the deck is that same length, so the deck can no longer run out —
+// the repeat-draw fallback this used to need is gone with the sixth objective.
 export function assignObjectives(count: number): string[] {
-  const deck = shuffled(MAFIA_OBJECTIVES);
-  return Array.from({ length: count }, (_, i) => deck[i] ?? deck[Math.floor(Math.random() * deck.length)]);
+  return shuffled(MAFIA_OBJECTIVES).slice(0, count);
 }
 
 // What the lobby is told publicly once the game starts. A requested count of 0 stays deliberately
@@ -99,7 +101,7 @@ function mafiaStartedEmbed(players: { discord_id: string }[], mode: MafiaGameMod
       { name: "Mafia", value: mafiaCountLabel(requestedCount), inline: true },
       { name: "Players", value: mafiaRoster(players) },
     ],
-    footer: { text: "Run /reveal when you're done to see who was who." },
+    footer: { text: "Run /reveal once when you're done to see who the Mafia was." },
   };
 }
 
@@ -130,10 +132,8 @@ function mafiaRevealEmbed(game: MafiaGameRow, players: MafiaPlayerRow[]) {
         .join("\n"),
       inline: false,
     });
-    const innocents = players.filter((p) => !p.is_mafia);
-    if (innocents.length) {
-      fields.push({ name: "Innocent", value: innocents.map((p) => `<@${p.discord_id}>`).join(", "), inline: false });
-    }
+    // Only the mafia are named. Everyone in the lobby already knows who played, so listing the
+    // innocents adds nothing the mafia list doesn't already imply.
   }
 
   return { color: GOLD_COLOR, title: "🔎 Mafia — Revealed", fields };
@@ -515,9 +515,10 @@ export function handleRevealCommand(interaction: DiscordInteraction) {
 
 // Reveals the most recently *started* game in this channel. Deliberately not restricted to the
 // newest game of any status: a lobby that filled and then had a fresh one opened alongside it
-// shouldn't make the finished game unrevealable. Re-runs are allowed and simply repost — the
-// reveal is public anyway, so there's nothing to leak, and blocking it would strand anyone who
-// missed the message. revealed_at only records when it first happened.
+// shouldn't make the finished game unrevealable. **One reveal per game** — revealed_at doubles as
+// the record and the atomic claim, exactly as series_length does for the series-length vote, so
+// two people running /reveal at once still only post once. The reveal is public, so anyone who
+// missed it can scroll to the original message.
 async function processReveal(interaction: DiscordInteraction) {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
@@ -552,18 +553,27 @@ async function processReveal(interaction: DiscordInteraction) {
     return;
   }
 
+  // Claim before posting, not after: the same "atomic claim, then act" ordering every settlement
+  // path in this codebase uses. A second /reveal — or a simultaneous one from another player —
+  // finds revealed_at already set and never reaches the POST.
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_mafia_games")
+    .update({ revealed_at: new Date().toISOString() })
+    .eq("id", game.id)
+    .is("revealed_at", null)
+    .select("id");
+
+  if (!claimed || claimed.length === 0) {
+    await editOriginalResponse(interaction.token, {
+      content: "That game has already been revealed — scroll up for the results.",
+    });
+    return;
+  }
+
   await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
     body: JSON.stringify({ embeds: [mafiaRevealEmbed(game, players)] }),
   }).catch((err) => console.error("Mafia: failed to post reveal", err));
-
-  if (!game.revealed_at) {
-    await supabase
-      .from("crl6mansqueuebot_mafia_games")
-      .update({ revealed_at: new Date().toISOString() })
-      .eq("id", game.id)
-      .is("revealed_at", null);
-  }
 
   await deleteOriginalResponse(interaction.token);
 }
