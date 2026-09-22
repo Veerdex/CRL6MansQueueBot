@@ -923,7 +923,7 @@ async function sendDraftPickPrompt(
   const dmSent = await sendDirectMessage(turnPlayer.discord_id, dmContent, componentRows, [embed]);
 
   if (dmSent) {
-    const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} your picking - check your DMs!`;
+    const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} you're picking - check your DMs!`;
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
