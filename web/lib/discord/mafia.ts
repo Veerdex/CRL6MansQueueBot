@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags, MessageComponentTypes, ButtonStyleTypes, TextStyleTypes } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { MafiaGameMode, MafiaGameRow, MafiaPlayerRow } from "@/lib/supabase/types";
-import { discordFetch, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, BRAND_COLOR, AMBER_COLOR, GOLD_COLOR, RICH_LEAVE_COLOR } from "./rest";
+import { discordFetch, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, sendDirectMessage, BRAND_COLOR, AMBER_COLOR, GOLD_COLOR, RICH_LEAVE_COLOR } from "./rest";
 import { getConfigNumber } from "./config";
 import { interactionUserId, interactionDisplayName, modalFieldValue, type DiscordInteraction } from "./types";
 
@@ -95,7 +95,7 @@ function mafiaStartedEmbed(players: { discord_id: string }[], mode: MafiaGameMod
   return {
     color: GOLD_COLOR,
     title: "🔪 Mafia — Game Started!",
-    description: "Roles have been sent to each player privately. Good luck!",
+    description: "Roles have been sent to each player by DM — check your messages. Good luck!",
     fields: [
       { name: "Mode", value: mafiaModeLabel(mode), inline: true },
       { name: "Mafia", value: mafiaCountLabel(requestedCount), inline: true },
@@ -360,6 +360,16 @@ async function processMafiaJoin(interaction: DiscordInteraction, gameId: string,
   }).catch((err) => console.error("Mafia: failed to update lobby message on join", err));
 }
 
+// Roles go out by DM. A player with DMs closed falls back to an ephemeral followup on the join
+// click's cached interaction token (well inside its 15-minute window, since the lobby times out
+// long before that), so nobody is left without a role.
+async function deliverRole(player: MafiaPlayerRow, content: string) {
+  if (await sendDirectMessage(player.discord_id, content)) return;
+  await sendFollowupMessage(player.interaction_token, { content }).catch((err) =>
+    console.error(`Mafia: failed to deliver role reveal to ${player.discord_id}`, err),
+  );
+}
+
 async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRow, players: MafiaPlayerRow[]) {
   const graceSeconds = await getConfigNumber("mafia_grace_seconds", 5);
 
@@ -400,8 +410,7 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
     const objective = objectives[dealt++] ?? null;
     objectiveFor.set(p.discord_id, objective);
     // .select() so a zero-row match is visible: PostgREST reports no error when an UPDATE's WHERE
-    // simply matches nothing, and the DM goes out either way (it uses the cached interaction
-    // token), so without this a player could be privately told they're the mafia while /reveal
+    // simply matches nothing, and the DM goes out either way, so without this a player could be privately told they're the mafia while /reveal
     // publicly reports nobody was.
     const { data: saved, error } = await supabase
       .from("crl6mansqueuebot_mafia_players")
@@ -425,9 +434,7 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
       } else {
         content = "🔪 **You are the Mafia!** Blend in and don't get caught.";
       }
-      return sendFollowupMessage(p.interaction_token, { content }).catch((err) =>
-        console.error(`Mafia: failed to deliver role reveal to ${p.discord_id}`, err),
-      );
+      return deliverRole(p, content);
     }),
   );
 
