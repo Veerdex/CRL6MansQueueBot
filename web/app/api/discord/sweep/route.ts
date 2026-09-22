@@ -319,7 +319,14 @@ export async function POST(request: Request) {
   // got killed mid-flight) would otherwise block its channel's unique-active-lobby index
   // forever with no player-facing recourse — mirrors this route's orphaned-voice-channel
   // backstop elsewhere in this file.
-  const mafiaStartingCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  //
+  // There is no starting_at column, so this measures from created_at and has to clear the whole
+  // join window first: a lobby can legitimately enter 'starting' at any point up to
+  // mafia_timeout_seconds after creation, and cancelling one that just filled would kill a real
+  // game mid-grace. Hence timeout + 10 minutes rather than a flat 10 — with the window at its old
+  // 120s default the flat version happened to leave 8 minutes of slack, but at a 10-minute window
+  // it would have fired on a lobby five seconds into its grace period.
+  const mafiaStartingCutoff = new Date(Date.now() - (mafiaTimeoutSeconds + 10 * 60) * 1000).toISOString();
   const { data: stuckStartingLobbies } = await supabase
     .from("crl6mansqueuebot_mafia_games")
     .select("*")
