@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { PlayerRow, QueueType, SeriesRow } from "@/lib/supabase/types";
-import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, GOLD_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, RICH_INACTIVITY_COLOR, getRankEmoji } from "./rest";
+import { discordFetch, sendDirectMessage, editOriginalResponse, deleteOriginalResponse, getGuildId, BRAND_COLOR, SUPERCHARGED_COLOR, SUPERCHARGED_ANNOUNCE_COLOR, RICH_JOIN_COLOR, RICH_LEAVE_COLOR, RICH_INACTIVITY_COLOR, getRankEmoji } from "./rest";
 import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
@@ -45,9 +45,10 @@ async function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], stre
 }
 
 // One-player-per-line roster format (rank emoji + name + band + MMR) — shared by hybrid mode's
-// roster message and rich mode's both roster message and "Match Found!" announcement, so the
-// three don't drift out of sync with three copies of the same rendering logic.
-async function buildRosterLines(members: PlayerRow[], streaks: StreakIds): Promise<string[]> {
+// roster message, rich mode's roster message, the combined formation message's Match Found
+// roster, and the per-team lists on the "Teams formed!" summary, so they don't drift out of sync
+// with four copies of the same rendering logic.
+export async function buildRosterLines(members: PlayerRow[], streaks: StreakIds): Promise<string[]> {
   if (!members.length) return ["_Empty_"];
   const scale = await getConfigNumber("mmr_scale", 1);
   const shift = await getConfigNumber("mmr_shift", 0);
@@ -221,30 +222,12 @@ async function postHybridAnnouncement(channelId: string, headline: string, ping?
   }).catch((err) => console.error(`Failed to post hybrid queue announcement in ${channelId}`, err));
 }
 
-// Rich mode's pop-time announcement — a dedicated, always-posted "Match Found!" embed, separate
-// from (and in addition to) the roster-copy message queueMessageBody's richContext-less fallback
-// already posts as the pop's own single-message-per-event content. Only the *ordinary per-player
-// join card* gets replaced by the roster copy at pop — this announcement stays, unchanged from
-// before, as the actual "the match is starting" notification. @mentions all 6 players (same
-// "must actually notify" precedent as the "Teams formed!" summary and the first-join role ping —
-// embed-only mentions never notify).
-async function richMatchFoundEmbed(members: PlayerRow[], streaks: StreakIds): Promise<any> {
-  const lines = await buildRosterLines(members, streaks);
-  return {
-    color: GOLD_COLOR,
-    description: `### Match Found!\n${lines.join("\n")}`,
-    footer: { text: "Forming teams…" },
-  };
-}
-
-async function postRichMatchFoundAnnouncement(channelId: string, members: PlayerRow[], streaks: StreakIds) {
-  const embed = await richMatchFoundEmbed(members, streaks);
-  const mentions = members.map((m) => `<@${m.discord_id}>`).join(" ");
-  await discordFetch(`/channels/${channelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ content: mentions, embeds: [embed] }),
-  }).catch((err) => console.error(`Failed to post rich match-found announcement in ${channelId}`, err));
-}
+// The pop-time "Match Found!" announcement used to live here, as rich mode's own dedicated
+// message. It's now the top half of the single combined formation message teamFormation.ts
+// posts (renderFormationMessage's "### Match Found!" roster block), so the whole pop-to-teams
+// flow is one message instead of five. Posting it here as well would just duplicate that roster
+// one line above itself, so this no longer posts anything at pop — see CLAUDE.md, "Team
+// formation".
 
 // Posted once, alongside the first-join role ping (see the "first join" branch in the /q command
 // handler below) — a standalone bright-purple-bordered embed announcing that today is a
@@ -840,20 +823,15 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
       await refreshQueueMessage(supabase, queueType, `<@${discordId}> has joined the ${QUEUE_LABELS[queueType]}!`, undefined, undefined, knownMsgRow);
     }
 
-    // The gold "Match Found!" announcement and the roster-message freeze both claim the match is
-    // actually forming, so they must wait until handlePop confirms a series row actually exists —
-    // see handlePop's own comment for why this ordering matters (posting them unconditionally
-    // beforehand is the bug this guards against: a failed pop left a false "Match Found" up with
-    // no vote ever following it, and the 6 players silently still sitting in queue_members).
+    // The roster-message freeze claims the match is actually forming, so it must wait until
+    // handlePop confirms a series row actually exists — see handlePop's own comment for why this
+    // ordering matters (freezing unconditionally beforehand is the bug this guards against: a
+    // failed pop left a frozen roster up with no vote ever following it, and the 6 players
+    // silently still sitting in queue_members). The "Match Found!" roster itself is now part of
+    // the combined formation message handlePop's createMatchChannels call already posted.
     const popped = await handlePop(supabase, queueType, guildId, channelId);
-    if (popped) {
-      if (mode === "rich") {
-        const streaks = await getStreakIds(supabase, popped.members.map((m) => m.id));
-        await postRichMatchFoundAnnouncement(channelId, popped.members, streaks);
-      }
-      if (mode === "rich" || mode === "hybrid") {
-        await freezeQueueRosterMessage(supabase, queueType);
-      }
+    if (popped && (mode === "rich" || mode === "hybrid")) {
+      await freezeQueueRosterMessage(supabase, queueType);
     }
     // Pop succeeded (or failed with its own error already posted) — delete the deferred response
     // so it auto-dismisses either way.
@@ -1024,7 +1002,7 @@ export async function createMatchChannels(supabase: AdminClient, seriesId: strin
     // this is the entire guarantee that a disabled feature changes nothing about today's flow.
     const seriesLengthVoteEnabled = (await getConfigNumber("series_length_vote_enabled", 0)) === 1;
     if (seriesLengthVoteEnabled) {
-      await startSeriesLengthVote(supabase, guildId, seriesId, queueChannelId, members);
+      await startSeriesLengthVote(supabase, seriesId, queueChannelId);
     } else {
       await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members);
     }

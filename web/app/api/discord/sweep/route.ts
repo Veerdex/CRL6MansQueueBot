@@ -424,6 +424,12 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
     return;
   }
 
+  // The combined Match Found / vote / draft message is untracked, so nothing else clears it —
+  // without this it would sit above the timeout embed still advertising a match that just died.
+  if (series.queue_channel_id && series.formation_message_id) {
+    await discordFetch(`/channels/${series.queue_channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
+  }
+
   // Post timeout embed to the queue channel
   if (series.queue_channel_id) {
     await postTrackedQueueMessage(

@@ -13,8 +13,8 @@ import { getAdminRoleIds, hasAdminAccess } from "./admin";
 import { getConfigNumber, getDisplayMMR } from "./config";
 import { VIEW_CHANNEL, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
-import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer, refreshQueueMessageAfterSettlement } from "./queue";
-import { getStreakIds, mention, type StreakIds } from "./streaks";
+import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer, refreshQueueMessageAfterSettlement, buildRosterLines } from "./queue";
+import { getStreakIds, mention } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
 import { recordMatchTimeStats } from "./matchTimeStats";
 import { calculateTeamStrength } from "@/lib/mmr/teamStrength";
@@ -82,18 +82,6 @@ async function isSuperchargedSeries(supabase: AdminClient, seriesId: string): Pr
   return ((data as { bonus_day_multiplier?: number } | null)?.bonus_day_multiplier ?? 1) > 1;
 }
 
-function voteEmbed(balancedCount: number, captainsCount: number, timeoutSeconds: number, supercharged: boolean) {
-  const minutes = Math.round(timeoutSeconds / 60);
-  return {
-    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
-    description: `You have **${minutes} minute${minutes === 1 ? "" : "s"}** to vote!`,
-    fields: [
-      { name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true },
-      { name: "Captains", value: `${captainsCount} / 3`, inline: true },
-    ],
-  };
-}
-
 function voteButtons(seriesId: string) {
   return [
     {
@@ -107,23 +95,10 @@ function voteButtons(seriesId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Series-length vote message: Best of 3/5/7, first to 3/6 wins, same shape as the Balanced vs
-// Captains vote above. Runs *before* that vote when series_length_vote_enabled is on — see
-// startSeriesLengthVote/resolveSeriesLengthVote below.
+// Series-length vote: Best of 3/5/7, first to 3/6 wins. Runs as the first phase of the combined
+// formation message when series_length_vote_enabled is on — see startSeriesLengthVote/
+// resolveSeriesLengthVote below.
 // ---------------------------------------------------------------------------
-
-function seriesLengthVoteEmbed(bo3Count: number, bo5Count: number, bo7Count: number, timeoutSeconds: number, supercharged: boolean) {
-  const minutes = Math.round(timeoutSeconds / 60);
-  return {
-    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
-    description: `You have **${minutes} minute${minutes === 1 ? "" : "s"}** to vote on series length!`,
-    fields: [
-      { name: `${SERIES_LENGTH_K_MULTIPLIERS.bo3 * 100}%`, value: `Best of 3\n${bo3Count} / 3`, inline: true },
-      { name: `${SERIES_LENGTH_K_MULTIPLIERS.bo5 * 100}%`, value: `Best of 5\n${bo5Count} / 3`, inline: true },
-      { name: `${SERIES_LENGTH_K_MULTIPLIERS.bo7 * 100}%`, value: `Best of 7\n${bo7Count} / 3`, inline: true },
-    ],
-  };
-}
 
 function seriesLengthVoteButtons(seriesId: string) {
   return [
@@ -158,6 +133,124 @@ async function fetchLobbyRowsWithPlayers(supabase: AdminClient, seriesId: string
   return rows.map((row) => ({ row, player: byId.get(row.player_id) })).filter((x): x is { row: SeriesLobbyRow; player: PlayerRow } => Boolean(x.player));
 }
 
+// ---------------------------------------------------------------------------
+// The combined formation message. One message carries the whole pop-to-teams flow — the Match
+// Found roster on top, then whichever phase is live underneath it — PATCH-edited in place rather
+// than a fresh post per phase. It replaces five separate messages (rich mode's gold "Match
+// Found!", the series-length vote, "BO5 Chosen!", "Captains Chosen!"/the draft board, and the
+// vote message's own delete-and-repost) with one, and is deleted outright when teams form.
+//
+// Deliberately self-fetching: the series row *is* the phase machine (series_length_vote_active ->
+// vote_result -> teams), so deriving the phase from a fresh read is the only way every caller
+// agrees on what to draw. The one thing it can't derive is the live draft-turn status line, which
+// sendDraftPickPrompt passes in. The extra round-trips are irrelevant at six-mans traffic, and
+// matching the shape sendDraftPickPrompt already used (its own client, fetched state) keeps this
+// on the existing grain.
+// ---------------------------------------------------------------------------
+export async function renderFormationMessage(
+  supabase: AdminClient,
+  seriesId: string,
+  draftStatus?: string,
+): Promise<{ content: string; embeds: unknown[]; components: unknown[] }> {
+  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
+  const lobby = await fetchLobbyRowsWithPlayers(supabase, seriesId);
+  const members = lobby.map((x) => x.player);
+  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
+  const supercharged = ((series?.bonus_day_multiplier ?? 1) as number) > 1;
+  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+  const minutes = Math.round(timeoutSeconds / 60);
+  const minuteLabel = `${minutes} minute${minutes === 1 ? "" : "s"}`;
+
+  // Mentions live in `content`, not the embed — embed-only mentions never fire a notification.
+  // Discord doesn't re-notify on edit, so carrying them through every PATCH pings once, at the
+  // original post, exactly like the old separate "Match Found!" announcement did.
+  const decorate = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
+  const content = members.map((m) => decorate(m)).join(" ");
+
+  const rosterLines = await buildRosterLines(members, streaks);
+  const fields: { name: string; value: string; inline?: boolean }[] = [];
+  let components: unknown[] = [];
+  let footer: string | undefined;
+
+  const seriesLength = (series?.series_length ?? null) as SeriesLength | null;
+
+  if (series?.series_length_vote_active) {
+    // Phase 1 — series length. Counts are rendered under each option's K multiplier, the same
+    // layout the standalone series-length vote embed used.
+    const { data: votes } = await supabase.from("crl6mansqueuebot_series_length_votes").select("choice").eq("series_id", seriesId);
+    const counts: Record<SeriesLength, number> = {
+      bo3: (votes ?? []).filter((v) => v.choice === "bo3").length,
+      bo5: (votes ?? []).filter((v) => v.choice === "bo5").length,
+      bo7: (votes ?? []).filter((v) => v.choice === "bo7").length,
+    };
+    for (const len of ["bo3", "bo5", "bo7"] as SeriesLength[]) {
+      fields.push({
+        name: `${SERIES_LENGTH_K_MULTIPLIERS[len] * 100}%`,
+        value: `${SERIES_LENGTH_LABELS[len]}\n${counts[len]} / ${SERIES_LENGTH_VOTE_THRESHOLD}`,
+        inline: true,
+      });
+    }
+    components = seriesLengthVoteButtons(seriesId);
+    footer = `You have ${minuteLabel} to vote on series length.`;
+  } else {
+    // Every later phase keeps the resolved length pinned above it, replacing the tally it grew
+    // out of. Absent entirely when series_length_vote_enabled is off and no vote ever ran.
+    if (seriesLength) {
+      fields.push({
+        name: "Series Length",
+        value: `**${SERIES_LENGTH_LABELS[seriesLength]}** · ${SERIES_LENGTH_K_MULTIPLIERS[seriesLength] * 100}% MMR`,
+        inline: false,
+      });
+    }
+
+    if (!series?.vote_result) {
+      // Phase 2 — Balanced vs Captains.
+      const { data: votes } = await supabase.from("crl6mansqueuebot_series_votes").select("choice").eq("series_id", seriesId);
+      const balancedCount = (votes ?? []).filter((v) => v.choice === "balanced").length;
+      const captainsCount = (votes ?? []).filter((v) => v.choice === "captains").length;
+      fields.push({ name: "Balanced Teams", value: `${balancedCount} / 3`, inline: true });
+      fields.push({ name: "Captains", value: `${captainsCount} / 3`, inline: true });
+      components = voteButtons(seriesId);
+      footer = `You have ${minuteLabel} to vote on team formation.`;
+    } else if (series.vote_result === "captains") {
+      // Phase 3 — the draft. The captains replace the tally they won; the turn status line is
+      // the only part that keeps changing from here until teams form.
+      const captainA = lobby.find((x) => x.row.is_captain && x.row.team === "A")?.player;
+      const captainB = lobby.find((x) => x.row.is_captain && x.row.team === "B")?.player;
+      if (captainA && captainB) {
+        fields.push({ name: "Captain A", value: decorate(captainA), inline: true });
+        fields.push({ name: "Captain B", value: decorate(captainB), inline: true });
+      } else {
+        fields.push({ name: "Team Formation", value: "**Captains**", inline: false });
+      }
+      if (draftStatus) fields.push({ name: "Status", value: draftStatus, inline: false });
+    } else {
+      // Phase 3b — balanced. Only on screen for the moment between the vote resolving and
+      // finalizeTeams deleting this message outright.
+      fields.push({ name: "Team Formation", value: "**Balanced**", inline: false });
+    }
+  }
+
+  return {
+    content,
+    embeds: [
+      {
+        color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
+        description: `### Match Found!\n${rosterLines.join("\n")}`,
+        fields,
+        ...(footer ? { footer: { text: footer } } : {}),
+      },
+    ],
+    components,
+  };
+}
+
+// Every phase change is the same call: redraw the one message from current database state.
+async function patchFormationMessage(supabase: AdminClient, seriesId: string, channelId: string, messageId: string, draftStatus?: string) {
+  const body = await renderFormationMessage(supabase, seriesId, draftStatus);
+  await discordFetch(`/channels/${channelId}/messages/${messageId}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
 // Entry point called by queue.ts once the series is created (feature disabled, or the series-
 // length vote has just resolved) — posts the Balanced-vs-Captains vote message, then auto-casts
 // any player's saved /vote-default preference (still overridable per game by clicking a button).
@@ -178,25 +271,26 @@ export async function startTeamFormation(
   members: PlayerRow[],
   existingMessageId?: string,
 ) {
-  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
-  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
-  const supercharged = await isSuperchargedSeries(supabase, seriesId);
-  const body = { content: mentions, embeds: [voteEmbed(0, 0, timeoutSeconds, supercharged)], components: voteButtons(seriesId) };
+  // vote_started_at is re-stamped here, not just at pop, so the Balanced/Captains vote gets its
+  // own full window — the sweep route discriminates the two vote timeouts by
+  // series_length_vote_active and reads this column for both.
+  await supabase
+    .from("crl6mansqueuebot_series")
+    .update({ vote_started_at: new Date().toISOString() })
+    .eq("id", seriesId);
 
   let messageId: string;
   if (existingMessageId) {
+    // The series-length vote already posted the combined message — redraw it into this phase.
     messageId = existingMessageId;
-    await discordFetch(`/channels/${queueChannelId}/messages/${existingMessageId}`, { method: "PATCH", body: JSON.stringify(body) });
+    await patchFormationMessage(supabase, seriesId, queueChannelId, existingMessageId);
   } else {
+    const body = await renderFormationMessage(supabase, seriesId);
     const message = (await discordFetch(`/channels/${queueChannelId}/messages`, { method: "POST", body: JSON.stringify(body) })) as { id: string };
     messageId = message.id;
   }
 
-  await supabase
-    .from("crl6mansqueuebot_series")
-    .update({ formation_message_id: messageId, vote_started_at: new Date().toISOString() })
-    .eq("id", seriesId);
+  await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: messageId }).eq("id", seriesId);
 
   for (const member of members) {
     if (member.vote_default) {
@@ -228,12 +322,7 @@ export async function castVote(
   else if (balancedCount + captainsCount >= 6) winner = "captains"; // exact 3-3 tie
 
   if (!winner) {
-    const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-    const supercharged = await isSuperchargedSeries(supabase, seriesId);
-    await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ embeds: [voteEmbed(balancedCount, captainsCount, timeoutSeconds, supercharged)], components: voteButtons(seriesId) }),
-    });
+    await patchFormationMessage(supabase, seriesId, queueChannelId, messageId);
     return;
   }
 
@@ -248,22 +337,16 @@ export async function castVote(
     .select("id");
   if (!claimed || claimed.length === 0) return;
 
-  // Replace the vote message with a short "___ Chosen!" announcement — the announcement's own
-  // message id becomes the new formation_message_id, so the balanced-summary/captains-draft UI
-  // that follows (sendDraftPickPrompt PATCHes whatever formation_message_id currently is) picks
-  // up from here rather than trying to edit the now-deleted vote message.
-  const supercharged = await isSuperchargedSeries(supabase, seriesId);
-  await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, { method: "DELETE" }).catch(() => {});
-  const chosenMessage = (await discordFetch(`/channels/${queueChannelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ embeds: [{ color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR, description: `**${winner === "balanced" ? "Balanced" : "Captains"} Chosen!**` }] }),
-  })) as { id: string };
-  await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: chosenMessage.id }).eq("id", seriesId);
-
+  // Redraw the one combined formation message in place: the vote buttons drop away and the
+  // result takes their slot. beginCaptainsDraft/resolveBalanced keep editing this same id, so
+  // formation_message_id never has to be re-pointed mid-flow.
   if (winner === "balanced") {
-    await resolveBalanced(supabase, guildId, seriesId, queueChannelId, chosenMessage.id, members);
+    await patchFormationMessage(supabase, seriesId, queueChannelId, messageId);
+    await resolveBalanced(supabase, guildId, seriesId, queueChannelId, messageId, members);
   } else {
-    await beginCaptainsDraft(supabase, guildId, seriesId, queueChannelId, chosenMessage.id, members);
+    // The captains draft renders its own pass once the captains are picked, so skip the
+    // intermediate redraw here and let beginCaptainsDraft do it.
+    await beginCaptainsDraft(supabase, guildId, seriesId, queueChannelId, messageId, members);
   }
 }
 
@@ -274,20 +357,27 @@ export async function castVote(
 // ---------------------------------------------------------------------------
 
 // Entry point called by queue.ts instead of startTeamFormation when the feature is enabled.
-export async function startSeriesLengthVote(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, members: PlayerRow[]) {
-  const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-  const streaks = await getStreakIds(supabase, members.map((m) => m.id));
-  const mentions = members.map((m) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) })).join(" ");
-  const supercharged = await isSuperchargedSeries(supabase, seriesId);
-  const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ content: mentions, embeds: [seriesLengthVoteEmbed(0, 0, 0, timeoutSeconds, supercharged)], components: seriesLengthVoteButtons(seriesId) }),
-  })) as { id: string };
-
+export async function startSeriesLengthVote(supabase: AdminClient, seriesId: string, queueChannelId: string) {
+  // The flag has to be set before the render, since renderFormationMessage reads it off the row
+  // to decide which phase to draw. formation_message_id follows once Discord hands back the id.
   await supabase
     .from("crl6mansqueuebot_series")
-    .update({ formation_message_id: message.id, vote_started_at: new Date().toISOString(), series_length_vote_active: true })
+    .update({ vote_started_at: new Date().toISOString(), series_length_vote_active: true })
     .eq("id", seriesId);
+
+  let message: { id: string };
+  try {
+    const body = await renderFormationMessage(supabase, seriesId);
+    message = (await discordFetch(`/channels/${queueChannelId}/messages`, { method: "POST", body: JSON.stringify(body) })) as { id: string };
+  } catch (err) {
+    // Roll the flag back: with it set but no formation_message_id, resolveSeriesLengthByMajority
+    // early-returns forever and the series would hang until the two-hour void instead of falling
+    // through to the ordinary Balanced/Captains timeout.
+    await supabase.from("crl6mansqueuebot_series").update({ series_length_vote_active: false }).eq("id", seriesId);
+    throw err;
+  }
+
+  await supabase.from("crl6mansqueuebot_series").update({ formation_message_id: message.id }).eq("id", seriesId);
 }
 
 // Shared tail for both the click-resolved and timeout-majority-resolved paths: atomically claims
@@ -313,15 +403,8 @@ async function resolveSeriesLengthVote(
     .select("id");
   if (!claimed || claimed.length === 0) return;
 
-  // Announce the chosen series length as its own short-lived message — additive to, not a
-  // replacement for, the existing hand-off: startTeamFormation below still PATCH-edits the same
-  // `messageId` from the series-length vote UI directly into the Balanced/Captains vote UI.
-  const supercharged = await isSuperchargedSeries(supabase, seriesId);
-  await discordFetch(`/channels/${queueChannelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ embeds: [{ color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR, description: `**${winner.toUpperCase()} Chosen!**` }] }),
-  }).catch(() => {});
-
+  // No separate announcement: startTeamFormation PATCHes the same `messageId`, where the vote
+  // section is replaced by a "Series Length" field showing the winner.
   await startTeamFormation(supabase, guildId, seriesId, queueChannelId, members, messageId);
 }
 
@@ -352,15 +435,7 @@ export async function castSeriesLengthVote(
   else if (totalVotes >= 6) winner = resolveSeriesLengthTieBreak(counts); // exact 2-2-2 tie
 
   if (!winner) {
-    const timeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
-    const supercharged = await isSuperchargedSeries(supabase, seriesId);
-    await discordFetch(`/channels/${queueChannelId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        embeds: [seriesLengthVoteEmbed(counts.bo3, counts.bo5, counts.bo7, timeoutSeconds, supercharged)],
-        components: seriesLengthVoteButtons(seriesId),
-      }),
-    });
+    await patchFormationMessage(supabase, seriesId, queueChannelId, messageId);
     return;
   }
 
@@ -813,19 +888,6 @@ function expectedPickCount(turnCaptain: Team, remainingCount: number): number {
   return turnCaptain === "B" ? Math.max(1, remainingCount - 1) : 1;
 }
 
-function captainsDraftEmbed(captainA: PlayerRow, captainB: PlayerRow, turnCaptain: Team, status: string, streaks: StreakIds, supercharged: boolean) {
-  const turnName = turnCaptain === "A" ? "Captain A" : "Captain B";
-  return {
-    color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
-    title: "Captains Draft",
-    fields: [
-      { name: "Captain A", value: mention(captainA.discord_id, { onFire: streaks.onFireIds.has(captainA.id), cold: streaks.coldIds.has(captainA.id) }), inline: true },
-      { name: "Captain B", value: mention(captainB.discord_id, { onFire: streaks.onFireIds.has(captainB.id), cold: streaks.coldIds.has(captainB.id) }), inline: true },
-      { name: "Status", value: status, inline: false },
-    ],
-  };
-}
-
 // Picks are made via DM to whichever captain currently has the turn (not channel buttons —
 // see CLAUDE.md, "Other user commands"/pop-to-report flow: "The bot will send a DM to the
 // first captain... Then a message for the second captain..."). Discord gives bots no way to
@@ -852,14 +914,7 @@ async function sendDraftPickPrompt(
 
   if (turnPlayer.is_test_data) {
     const statusText = `Waiting on ${mention(turnPlayer.discord_id, turnPlayerDecoration)} (test bot)...`;
-    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks, supercharged)],
-        components: [],
-      }),
-    });
+    await patchFormationMessage(supabase, seriesId, textChannelId, messageId, statusText);
     return;
   }
 
@@ -924,23 +979,14 @@ async function sendDraftPickPrompt(
 
   if (dmSent) {
     const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} you're picking - check your DMs!`;
-    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks, supercharged)],
-        components: [],
-      }),
-    });
+    await patchFormationMessage(supabase, seriesId, textChannelId, messageId, statusText);
   } else {
     const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} - Your DMs are closed. Pick from the ${pickCount > 1 ? "menu" : "buttons"} below:`;
+    // DM-closed fallback: same combined message, but the pick controls ride along on it.
+    const body = await renderFormationMessage(supabase, seriesId, statusText);
     await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({
-        content: "",
-        embeds: [captainsDraftEmbed(captainA, captainB, turnCaptain, statusText, streaks, supercharged)],
-        components: componentRows,
-      }),
+      body: JSON.stringify({ ...body, components: componentRows }),
     });
   }
 }
@@ -1219,10 +1265,17 @@ async function finalizeTeams(
   // and stays null until the series is actually reported (see report.ts).
   const { data: seriesData } = await supabase
     .from("crl6mansqueuebot_series")
-    .select("created_at, bonus_day_multiplier, is_test_data")
+    .select("created_at, bonus_day_multiplier, is_test_data, series_length, vote_result, formation_message_id")
     .eq("id", seriesId)
     .single();
-  const fetchedSeriesData = seriesData as { created_at?: string; bonus_day_multiplier?: number; is_test_data?: boolean } | null;
+  const fetchedSeriesData = seriesData as {
+    created_at?: string;
+    bonus_day_multiplier?: number;
+    is_test_data?: boolean;
+    series_length?: SeriesLength | null;
+    vote_result?: VoteChoice | null;
+    formation_message_id?: string | null;
+  } | null;
   const supercharged = (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1;
   const formationColor = supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR;
 
@@ -1261,8 +1314,15 @@ async function finalizeTeams(
 
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
   const memberMention = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
-  const teamALine = teamA.map(memberMention).join(" ");
-  const teamBLine = teamB.map(memberMention).join(" ");
+  const teamALines = (await buildRosterLines(teamA, streaks)).join("\n");
+  const teamBLines = (await buildRosterLines(teamB, streaks)).join("\n");
+
+  // The combined Match Found / vote / draft message is deliberately untracked (it predates the
+  // series lifecycle, and every other path clears it by formation_message_id), so the tracked-
+  // message loop below can't reach it — delete it here so "Teams formed!" is all that remains.
+  if (fetchedSeriesData?.formation_message_id) {
+    await discordFetch(`/channels/${queueChannelId}/messages/${fetchedSeriesData.formation_message_id}`, { method: "DELETE" }).catch(() => {});
+  }
 
   // Delete all non-permanent messages, then post the "Teams formed!" message
   const { data: trackedMessages } = await supabase
@@ -1288,6 +1348,14 @@ async function finalizeTeams(
   // actually trigger a Discord notification — see CLAUDE.md, "Queue channels" for the same
   // content-vs-embed distinction on the first-join role ping.
   const allMentions = members.map(memberMention).join(" ");
+
+  // Subtitle carries forward the two things the now-deleted formation message showed: the
+  // series length the lobby voted for, and which formation mode produced these teams.
+  const seriesLength = fetchedSeriesData?.series_length ?? null;
+  const subtitleParts: string[] = [];
+  if (seriesLength) subtitleParts.push(`**${SERIES_LENGTH_LABELS[seriesLength]}**`);
+  if (fetchedSeriesData?.vote_result) subtitleParts.push(fetchedSeriesData.vote_result === "balanced" ? "Balanced" : "Captains");
+
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
     body: JSON.stringify({
@@ -1296,9 +1364,10 @@ async function finalizeTeams(
         {
           color: formationColor,
           title: "Teams formed!",
+          ...(subtitleParts.length ? { description: subtitleParts.join(" · ") } : {}),
           fields: [
-            { name: "Team Blue", value: teamALine, inline: true },
-            { name: "Team Orange", value: teamBLine, inline: true },
+            { name: "Team Blue", value: teamALines, inline: false },
+            { name: "Team Orange", value: teamBLines, inline: false },
           ],
           footer: { text: "Teams are ready. Join your team's voice channel to start playing. Run /report in the report channel when done." },
         },
