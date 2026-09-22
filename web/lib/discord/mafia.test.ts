@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MAFIA_OBJECTIVES, assignObjectives, resolveMafiaCount } from "./mafia";
+import { MAFIA_OBJECTIVES, assignObjectives, mafiaGuessComponents, mafiaGuessLine, resolveMafiaCount } from "./mafia";
+import type { MafiaPlayerRow } from "@/lib/supabase/types";
 
 describe("resolveMafiaCount", () => {
   it("returns the requested count for 1-6", () => {
@@ -53,5 +54,50 @@ describe("assignObjectives", () => {
   it("does not always deal the objectives in list order", () => {
     const firsts = new Set(Array.from({ length: 100 }, () => assignObjectives(1)[0]));
     expect(firsts.size).toBeGreaterThan(1);
+  });
+});
+
+function player(id: string, guess: string[] | null = null): MafiaPlayerRow {
+  return {
+    game_id: "g",
+    discord_id: id,
+    display_name: `name-${id}`,
+    interaction_token: "t",
+    joined_at: "",
+    is_mafia: false,
+    objective: null,
+    guess,
+  };
+}
+
+describe("mafiaGuessLine", () => {
+  it("marks each pick right or wrong", () => {
+    expect(mafiaGuessLine(player("a", ["b", "c"]), new Set(["b"]))).toBe("<@a> → <@b> ✅, <@c> ❌");
+  });
+
+  it("scores No Mafia against whether anyone drew mafia", () => {
+    expect(mafiaGuessLine(player("a", []), new Set())).toBe("<@a> → No Mafia ✅");
+    expect(mafiaGuessLine(player("a", []), new Set(["b"]))).toBe("<@a> → No Mafia ❌");
+  });
+
+  it("shows a player who never guessed", () => {
+    expect(mafiaGuessLine(player("a"), new Set(["b"]))).toBe("<@a> → _no guess_");
+  });
+});
+
+describe("mafiaGuessComponents", () => {
+  const players = ["a", "b", "c", "d", "e", "f"].map((id) => player(id));
+  type Select = { options: { value: string }[]; max_values: number };
+  const selectOf = (rows: unknown[]) => (rows[0] as { components: Select[] }).components[0];
+
+  it("lists everyone but the voter, allowing any number of picks", () => {
+    const select = selectOf(mafiaGuessComponents("g", players, "a", 2));
+    expect(select.options.map((o) => o.value)).toEqual(["b", "c", "d", "e", "f"]);
+    expect(select.max_values).toBe(5);
+  });
+
+  it("only offers No Mafia in a 0-or-1 lobby", () => {
+    expect(mafiaGuessComponents("g", players, "a", 0)).toHaveLength(2);
+    expect(mafiaGuessComponents("g", players, "a", 1)).toHaveLength(1);
   });
 });

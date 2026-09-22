@@ -233,6 +233,9 @@ export type MafiaPlayerRow = {
   // long before roles exist, so until then every row carries the default innocent values.
   is_mafia: boolean;
   objective: string | null;
+  // Current guess at who the Mafia is (migration 0051). Null = no guess yet, [] = "No Mafia",
+  // otherwise the suspects' Discord ids. Changeable until the game is revealed.
+  guess: string[] | null;
 };
 
 export type Database = {
@@ -366,7 +369,7 @@ export type Database = {
       };
       crl6mansqueuebot_mafia_players: {
         Row: MafiaPlayerRow;
-        Insert: MafiaPlayerRow;
+        Insert: Omit<MafiaPlayerRow, "guess"> & { guess?: string[] | null };
         Update: Partial<MafiaPlayerRow>;
         Relationships: [];
       };

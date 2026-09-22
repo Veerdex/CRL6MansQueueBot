@@ -120,7 +120,7 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/abandon target:<@user>` — run inside your match channel to vote a player as abandoned. 3 votes cancels the series.",
     "`/correct` — vote to flip your last match's result if it was mis-reported. 5 of 6 players needed.",
     "`/mafia [mode:] [count:] [password:]` — start a game of Mafia in this channel; Join/Leave buttons fill a 6-player lobby, then the Mafia are secretly picked. `mode:` Hidden Objective gives each Mafia a specific sabotage goal instead. `count:` sets how many Mafia (default 1; 0 is a coin flip between one and none). Set a password to require it on Join.",
-    "`/reveal` — after a Mafia game, show who was the Mafia (and their objectives). Only that game's players can run it, and only once.",
+    "`/reveal` — after a Mafia game, show who was the Mafia (and their objectives) and how everyone's guesses did. Players guess with the **Make your guess** button on the game message. Only that game's players can run it, and only once.",
     "`/help` — show this message.",
   ];
 

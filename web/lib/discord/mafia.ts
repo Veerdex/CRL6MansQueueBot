@@ -95,7 +95,7 @@ function mafiaStartedEmbed(players: { discord_id: string }[], mode: MafiaGameMod
   return {
     color: GOLD_COLOR,
     title: "🔪 Mafia — Game Started!",
-    description: "Roles have been sent to each player by DM — check your messages. Good luck!",
+    description: "Roles have been sent to each player by DM — check your messages. Good luck!\nThink you know who it is? Hit **Make your guess** below — you can change it until `/reveal`.",
     fields: [
       { name: "Mode", value: mafiaModeLabel(mode), inline: true },
       { name: "Mafia", value: mafiaCountLabel(requestedCount), inline: true },
@@ -128,13 +128,21 @@ function mafiaRevealEmbed(game: MafiaGameRow, players: MafiaPlayerRow[]) {
     fields.push({
       name: mafia.length === 1 ? "The Mafia" : `The Mafia (${mafia.length})`,
       value: mafia
-        .map((p) => `🔪 <@${p.discord_id}>${p.objective ? ` — _${p.objective}_` : ""}`)
+        .map((p) => {
+          const namedBy = players.filter((v) => v.discord_id !== p.discord_id && v.guess?.includes(p.discord_id)).length;
+          return `🔪 <@${p.discord_id}>${p.objective ? ` — _${p.objective}_` : ""} · named by ${namedBy}/${players.length - 1}`;
+        })
         .join("\n"),
       inline: false,
     });
     // Only the mafia are named. Everyone in the lobby already knows who played, so listing the
     // innocents adds nothing the mafia list doesn't already imply.
   }
+
+  // Skipped when role data is missing (the branch above): every guess would read ❌ against an
+  // empty mafia list that isn't the real answer.
+  const mafiaIds = new Set(mafia.map((p) => p.discord_id));
+  if (mafia.length || game.mafia_count === 0) fields.push({ name: "Guesses", value: players.map((p) => mafiaGuessLine(p, mafiaIds)).join("\n"), inline: false });
 
   return { color: GOLD_COLOR, title: "🔎 Mafia — Revealed", fields };
 }
@@ -158,6 +166,67 @@ function mafiaButtons(gameId: string) {
       ],
     },
   ];
+}
+
+function mafiaGuessButton(gameId: string) {
+  return [
+    {
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.PRIMARY, label: "Make your guess", emoji: { name: "🔎" }, custom_id: `mafia_guess:${gameId}` },
+      ],
+    },
+  ];
+}
+
+// The private picker a player gets from "Make your guess": a multi-select of everyone but
+// themselves (any number, so it works for every mafia count), plus a "No Mafia" button only in a
+// 0-or-1 coin-flip lobby — anywhere else the host asked for at least one mafia, so "nobody" is
+// publicly known to be wrong. A select can't be submitted empty, which is why "No Mafia" is a
+// separate button rather than an empty selection.
+export function mafiaGuessComponents(gameId: string, players: MafiaPlayerRow[], voterId: string, requestedCount: number) {
+  const suspects = players.filter((p) => p.discord_id !== voterId);
+  const rows: unknown[] = [
+    {
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        {
+          type: MessageComponentTypes.STRING_SELECT,
+          custom_id: `mafia_guess_pick:${gameId}`,
+          placeholder: "Pick who you think the Mafia is",
+          min_values: 1,
+          max_values: suspects.length,
+          options: suspects.map((p) => ({ label: p.display_name.slice(0, 100), value: p.discord_id })),
+        },
+      ],
+    },
+  ];
+  if (requestedCount === 0) {
+    rows.push({
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        { type: MessageComponentTypes.BUTTON, style: ButtonStyleTypes.SECONDARY, label: "No Mafia", custom_id: `mafia_guess_none:${gameId}` },
+      ],
+    });
+  }
+  return rows;
+}
+
+function describeGuess(guess: string[] | null): string {
+  if (guess === null) return "_no guess yet_";
+  if (guess.length === 0) return "**No Mafia**";
+  return guess.map((id) => `<@${id}>`).join(", ");
+}
+
+// One /reveal line per player: their picks, each marked ✅ (was mafia) or ❌ (wasn't). A "No Mafia"
+// guess is ✅ only when nobody drew mafia.
+export function mafiaGuessLine(player: MafiaPlayerRow, mafiaIds: Set<string>): string {
+  const guess = player.guess;
+  let picks: string;
+  if (guess === null) picks = "_no guess_";
+  else if (guess.length === 0) picks = `No Mafia ${mafiaIds.size === 0 ? "✅" : "❌"}`;
+  else picks = guess.map((id) => `<@${id}> ${mafiaIds.has(id) ? "✅" : "❌"}`).join(", ");
+  return `<@${player.discord_id}> → ${picks}`;
 }
 
 // processMafiaJoin/processMafiaLeave both run via after() scheduling, *after* their button click
@@ -434,6 +503,7 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
       } else {
         content = "🔪 **You are the Mafia!** Blend in and don't get caught.";
       }
+      content += "\n\nLock in your guess with **Make your guess** on the game message in the channel.";
       return deliverRole(p, content);
     }),
   );
@@ -441,7 +511,7 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
   if (game.channel_id && game.message_id) {
     await discordFetch(`/channels/${game.channel_id}/messages/${game.message_id}`, {
       method: "PATCH",
-      body: JSON.stringify({ embeds: [mafiaStartedEmbed(players, game.mode, game.mafia_count)], components: [] }),
+      body: JSON.stringify({ embeds: [mafiaStartedEmbed(players, game.mode, game.mafia_count)], components: mafiaGuessButton(game.id) }),
     }).catch((err) => console.error("Mafia: failed to post game-started message", err));
   }
 }
@@ -582,7 +652,108 @@ async function processReveal(interaction: DiscordInteraction) {
     body: JSON.stringify({ embeds: [mafiaRevealEmbed(game, players)] }),
   }).catch((err) => console.error("Mafia: failed to post reveal", err));
 
+  // Guessing is over once revealed, so drop the "Make your guess" button. Late clicks on a stale
+  // client are still refused by the revealed_at check in the guess handlers.
+  if (game.message_id) {
+    await discordFetch(`/channels/${channelId}/messages/${game.message_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ components: [] }),
+    }).catch((err) => console.error("Mafia: failed to remove guess button", err));
+  }
+
   await deleteOriginalResponse(interaction.token);
+}
+
+// ---------------------------------------------------------------------------
+// Guessing. "Make your guess" on the Game Started message opens a private picker
+// (mafiaGuessComponents); picking players or "No Mafia" saves the guess to the player's own row,
+// overwriting any earlier one. Everyone in the game can guess, the mafia included — the picker
+// looks identical for every role. Guesses lock once /reveal sets revealed_at.
+// ---------------------------------------------------------------------------
+
+type GuessContext = { game: MafiaGameRow; players: MafiaPlayerRow[]; voterId: string };
+
+// Shared checks for all three guess interactions. Returns an error message for the player, or the
+// loaded game.
+async function loadGuessContext(supabase: AdminClient, interaction: DiscordInteraction, gameId: string): Promise<GuessContext | string> {
+  const voterId = interactionUserId(interaction);
+  if (!voterId) return "Couldn't identify you — try again.";
+
+  const { data: game } = await supabase.from("crl6mansqueuebot_mafia_games").select("*").eq("id", gameId).maybeSingle();
+  if (!game || game.status !== "started") return "This game isn't running.";
+  if (game.revealed_at) return "This game has already been revealed — guessing is closed.";
+
+  const players = await fetchMafiaPlayers(supabase, gameId);
+  if (!players.some((p) => p.discord_id === voterId)) return "Only the players in this game can guess.";
+
+  return { game: game as MafiaGameRow, players, voterId };
+}
+
+function guessPrompt(guess: string[] | null): string {
+  return `🔎 **Who's the Mafia?**\nYour current guess: ${describeGuess(guess)}\nPick below — you can change it any time until \`/reveal\`.`;
+}
+
+export function handleMafiaGuessButton(interaction: DiscordInteraction, gameId: string) {
+  after(() => processMafiaGuessButton(interaction, gameId));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+async function processMafiaGuessButton(interaction: DiscordInteraction, gameId: string) {
+  const supabase = createAdminClient();
+  const ctx = await loadGuessContext(supabase, interaction, gameId);
+  if (typeof ctx === "string") {
+    await editOriginalResponse(interaction.token, { content: ctx }).catch(() => {});
+    return;
+  }
+  const me = ctx.players.find((p) => p.discord_id === ctx.voterId)!;
+  await editOriginalResponse(interaction.token, {
+    content: guessPrompt(me.guess),
+    components: mafiaGuessComponents(gameId, ctx.players, ctx.voterId, ctx.game.mafia_count),
+  }).catch((err) => console.error("Mafia: failed to show guess picker", err));
+}
+
+// Both submit paths ack with DEFERRED_UPDATE_MESSAGE, so editOriginalResponse below rewrites the
+// private picker message itself with the saved guess.
+export function handleMafiaGuessSubmit(interaction: DiscordInteraction, gameId: string, suspects: string[] | null) {
+  after(() => processMafiaGuessSubmit(interaction, gameId, suspects ?? []));
+  return { type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE };
+}
+
+async function processMafiaGuessSubmit(interaction: DiscordInteraction, gameId: string, suspects: string[]) {
+  const supabase = createAdminClient();
+  const ctx = await loadGuessContext(supabase, interaction, gameId);
+  if (typeof ctx === "string") {
+    await editOriginalResponse(interaction.token, { content: ctx, components: [] }).catch(() => {});
+    return;
+  }
+
+  // Only ids of other players in this game survive — a crafted payload can't slip in yourself or
+  // an outsider. "No Mafia" (empty) is only accepted in a coin-flip lobby, same as the button.
+  const valid = new Set(ctx.players.filter((p) => p.discord_id !== ctx.voterId).map((p) => p.discord_id));
+  const guess = [...new Set(suspects)].filter((id) => valid.has(id));
+  if (guess.length === 0 && (suspects.length > 0 || ctx.game.mafia_count !== 0)) {
+    await editOriginalResponse(interaction.token, { content: "That's not a valid guess — try again." }).catch(() => {});
+    return;
+  }
+
+  const { error } = await supabase
+    .from("crl6mansqueuebot_mafia_players")
+    .update({ guess })
+    .eq("game_id", gameId)
+    .eq("discord_id", ctx.voterId);
+  if (error) {
+    console.error("Mafia: failed to save guess", error);
+    await editOriginalResponse(interaction.token, { content: "Something went wrong saving your guess — try again." }).catch(() => {});
+    return;
+  }
+
+  await editOriginalResponse(interaction.token, {
+    content: `✅ Guess saved.\n${guessPrompt(guess)}`,
+    components: mafiaGuessComponents(gameId, ctx.players, ctx.voterId, ctx.game.mafia_count),
+  }).catch((err) => console.error("Mafia: failed to confirm guess", err));
 }
 
 // Called from the per-minute sweep (sweep/route.ts), both for lobbies that never filled within

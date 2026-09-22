@@ -27,7 +27,15 @@ import { handleChancesCommand } from "@/lib/discord/chances";
 import { handleProfileCommand } from "@/lib/discord/profile";
 import { handleAdminCommand } from "@/lib/discord/adminTools";
 import { handleTestMatchCommand, handleEndTestCommand } from "@/lib/discord/testMatch";
-import { handleMafiaCommand, handleMafiaJoinButton, handleMafiaJoinModalSubmit, handleMafiaLeaveButton, handleRevealCommand } from "@/lib/discord/mafia";
+import {
+  handleMafiaCommand,
+  handleMafiaJoinButton,
+  handleMafiaJoinModalSubmit,
+  handleMafiaLeaveButton,
+  handleMafiaGuessButton,
+  handleMafiaGuessSubmit,
+  handleRevealCommand,
+} from "@/lib/discord/mafia";
 
 // /report posts a public result message, then sleeps 30s before deleting the match channels
 // (see CLAUDE.md, "Series end") — comfortably inside this, but well past the ~10s a plain
@@ -96,6 +104,18 @@ export async function POST(request: Request) {
 
     if (action === "mafia_leave" && arg1) {
       return NextResponse.json(handleMafiaLeaveButton(interaction, arg1));
+    }
+
+    if (action === "mafia_guess" && arg1) {
+      return NextResponse.json(handleMafiaGuessButton(interaction, arg1));
+    }
+
+    if (action === "mafia_guess_pick" && arg1) {
+      return NextResponse.json(handleMafiaGuessSubmit(interaction, arg1, interaction.data?.values ?? []));
+    }
+
+    if (action === "mafia_guess_none" && arg1) {
+      return NextResponse.json(handleMafiaGuessSubmit(interaction, arg1, null));
     }
 
     return NextResponse.json({
