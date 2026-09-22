@@ -54,7 +54,7 @@ export default async function RootLayout({
                   Info
                 </Link>
                 <Link href="/match-times" className="text-muted hover:text-foreground transition-opacity hover:opacity-80">
-                  Match Times
+                  Data
                 </Link>
                 <Link href="/history" className="text-muted hover:text-foreground transition-opacity hover:opacity-80">
                   History
