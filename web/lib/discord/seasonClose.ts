@@ -226,14 +226,14 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 // pulls them from "./seasonClose" keeps working unchanged.
 // ---------------------------------------------------------------------------
 
-export { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
-import { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
+export { decayMmr, decayPlayerMmr, computeSafeMedian } from "../mmr/seasonDecay";
+import { decayPlayerMmr, computeSafeMedian } from "../mmr/seasonDecay";
 
 async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Promise<number> {
   const pool = await fetchAllPages((from, to) =>
     supabase
       .from("crl6mansqueuebot_players")
-      .select("id, mmr")
+      .select("id, mmr, is_placed")
       .eq("is_test_data", false)
       .order("id")
       .range(from, to)
@@ -241,10 +241,23 @@ async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Prom
   );
   if (pool.length === 0) return 0;
 
+  // Over the WHOLE pool, including the unplaced-negative players decayPlayerMmr will exempt below.
+  // The median is a scale constant describing the distribution, not a list of who is being changed
+  // — dropping the exempt players from it would silently alter how everyone *else* decays, which
+  // is not what the exemption is for.
   const median = computeSafeMedian(pool.map((p) => p.mmr));
 
-  await Promise.all(
-    pool.map((p) => supabase.from("crl6mansqueuebot_players").update({ mmr: decayMmr(p.mmr, median, decayFactor) }).eq("id", p.id)),
-  );
-  return pool.length;
+  // Exempt players are skipped outright rather than written back with their own value: a no-op
+  // UPDATE per exempt player is pure round trips (21 of them on the live pool as of this change),
+  // and this runs inside /newseason's request.
+  // Carries `before` rather than indexing back into `pool`, so inserting any filter upstream of
+  // this map can't silently misalign the comparison against the wrong player's rating.
+  const updates = pool
+    .map((p) => ({ id: p.id, before: p.mmr, mmr: decayPlayerMmr(p.mmr, p.is_placed, median, decayFactor) }))
+    .filter((u) => u.mmr !== u.before);
+
+  await Promise.all(updates.map((u) => supabase.from("crl6mansqueuebot_players").update({ mmr: u.mmr }).eq("id", u.id)));
+  // The count of players actually moved, not the pool size — an exempt player was not decayed and
+  // saying otherwise would make the summary claim writes that never happened.
+  return updates.length;
 }

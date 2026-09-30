@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeSafeMedian, decayMmr } from "./seasonClose";
+import { computeSafeMedian, decayMmr, decayPlayerMmr } from "./seasonClose";
 
 describe("computeSafeMedian", () => {
   it("matches a plain median when the whole pool is already non-negative", () => {
@@ -133,5 +133,71 @@ describe("decay pool covers unplaced players", () => {
 
   it("leaves a never-played player at exactly 0", () => {
     expect(decayMmr(0, 52.933, 0.5)).toBe(0);
+  });
+});
+
+// An unplaced player below 0 is frozen instead of halved, so sitting out a season stops being a
+// way to climb back toward par without queueing. Everyone else decays exactly as before.
+describe("decayPlayerMmr — unplaced negatives are exempt", () => {
+  const MEDIAN = 61.469; // the live safe median at the time of this change
+  const F = 0.5; // the live decay_factor
+
+  it("leaves an unplaced player below 0 exactly unchanged", () => {
+    // lasonya_man, the worst live case: -22.10 would have halved to -11.05, a free +80 display.
+    expect(decayPlayerMmr(-22.0972, false, MEDIAN, F)).toBe(-22.0972);
+    expect(decayPlayerMmr(-0.37, false, MEDIAN, F)).toBe(-0.37);
+    // Independent of median and decay_factor — nothing about the formula reaches them.
+    expect(decayPlayerMmr(-30, false, 25, 0.25)).toBe(-30);
+    expect(decayPlayerMmr(-30, false, 999, 4)).toBe(-30);
+  });
+
+  it("still halves a PLACED player below 0", () => {
+    // Deliberately scoped to unplaced (user decision) — nyx, -61.65 and placed, still compresses.
+    expect(decayPlayerMmr(-61.6528, true, MEDIAN, F)).toBeCloseTo(-30.8264, 10);
+    expect(decayPlayerMmr(-30, true, MEDIAN, F)).toBe(-15);
+  });
+
+  it("still compresses an UNPLACED player at or above 0", () => {
+    // The exemption is strictly below zero: an unplaced positive is an ordinary pool member.
+    expect(decayPlayerMmr(40, false, MEDIAN, F)).toBe(decayMmr(40, MEDIAN, F));
+    expect(decayPlayerMmr(40, false, MEDIAN, F)).toBeLessThan(40);
+    expect(decayPlayerMmr(0, false, MEDIAN, F)).toBe(0);
+  });
+
+  it("matches decayMmr exactly for every non-exempt case", () => {
+    for (const mmr of [-61.65, -30, -0.01, 0, 0.01, 10.83, 91.03, 126.29]) {
+      expect(decayPlayerMmr(mmr, true, MEDIAN, F)).toBe(decayMmr(mmr, MEDIAN, F));
+      if (mmr >= 0) expect(decayPlayerMmr(mmr, false, MEDIAN, F)).toBe(decayMmr(mmr, MEDIAN, F));
+    }
+  });
+
+  it("does not change the median every other player decays against", () => {
+    // The exempt players stay IN the pool for computeSafeMedian (user decision) — the median is a
+    // scale constant for the distribution, so dropping them would move everyone else's result.
+    const pool = [-22.0972, -11.91, -3.35, 0, 10.8285, 46.9986, 120.773];
+    const median = computeSafeMedian(pool);
+    const exemptDropped = computeSafeMedian(pool.filter((m) => m >= 0));
+    expect(median).not.toBeCloseTo(exemptDropped, 3);
+    // A placed player's result is the one computed from the full-pool median.
+    expect(decayPlayerMmr(120.773, true, median, F)).toBe(decayMmr(120.773, median, F));
+  });
+
+  // The exemption is per-season and escapable: placement is cleared for the whole roster right
+  // after decay, so a frozen player who places next season decays normally at the close after.
+  it("decays a previously-frozen player once they have placed", () => {
+    const frozen = decayPlayerMmr(-22.0972, false, MEDIAN, F);
+    expect(frozen).toBe(-22.0972);
+    expect(decayPlayerMmr(frozen, true, MEDIAN, F)).toBeCloseTo(-11.0486, 10);
+  });
+
+  // decayMmr's strictly-increasing guarantee now holds only WITHIN each group, not across the
+  // placed/unplaced split. Documented and intended — unplaced players are Unranked, excluded from
+  // the leaderboard and band cutoffs, and every placement is cleared moments later anyway.
+  it("can reorder an exempt player against a placed one, by design", () => {
+    const exemptUnplaced = decayPlayerMmr(-30, false, MEDIAN, F);
+    const placedBelowThem = decayPlayerMmr(-40, true, MEDIAN, F);
+    expect(exemptUnplaced).toBe(-30);
+    expect(placedBelowThem).toBe(-20);
+    expect(placedBelowThem).toBeGreaterThan(exemptUnplaced);
   });
 });
