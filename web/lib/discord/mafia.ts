@@ -2,9 +2,10 @@ import "server-only";
 import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags, MessageComponentTypes, ButtonStyleTypes, TextStyleTypes } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { MafiaGameMode, MafiaGameRow, MafiaPlayerRow } from "@/lib/supabase/types";
+import type { MafiaGameMode, MafiaGameRow, MafiaPlayerRow, MafiaTeam } from "@/lib/supabase/types";
 import { discordFetch, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, BRAND_COLOR, AMBER_COLOR, GOLD_COLOR, RICH_LEAVE_COLOR } from "./rest";
 import { getConfigNumber } from "./config";
+import { bestBalancedSplit } from "./teamFormation";
 import { interactionUserId, interactionDisplayName, modalFieldValue, type DiscordInteraction } from "./types";
 
 const MAFIA_PASSWORD_MODAL_CUSTOM_ID = "password";
@@ -28,6 +29,37 @@ export const MAFIA_OBJECTIVES = [
   "Lose the game",
   "Go to Overtime",
 ] as const;
+
+// Team Mafia's goals. Unlike MAFIA_OBJECTIVES these are things a team is trying to *achieve*, not
+// sabotage — there is no mafia in this mode at all. Both teams are dealt one every game, so the
+// list only has to be long enough to draw two distinct goals from.
+export const MAFIA_TEAM_OBJECTIVES = [
+  "Get 9 demos",
+  "Score a team pinch",
+  "Go to overtime",
+  "Win by two goals",
+  "Score an air team play",
+] as const;
+
+// What a team's objective and the win itself are each worth. Deliberately lopsided: the objective
+// outscores the win, so a team can complete its goal, lose the match, and still finish ahead of a
+// team that won without completing theirs.
+const TEAM_OBJECTIVE_POINTS = 2;
+const TEAM_WIN_POINTS = 1;
+
+// The rating a lobby member with no crl6mansqueuebot_players row is balanced at. Expressed in
+// *display* MMR and converted with the live mmr_scale/mmr_shift, per the spec ("default to 1100,
+// not 1000") — 1000 is display-zero, i.e. raw 0, which would model a newcomer as the worst player
+// in any lobby containing a single below-par regular. A player who *does* have a row uses their
+// real MMR whether or not they are placed.
+export const MAFIA_TEAM_FALLBACK_DISPLAY_MMR = 1100;
+
+export function mafiaFallbackRating(scale: number, shift: number): number {
+  // scale 0 would make the display transform non-invertible; raw 0 is the only sane answer, and it
+  // is also what every player falls back to, so the split stays balanced rather than arbitrary.
+  if (!scale) return 0;
+  return (MAFIA_TEAM_FALLBACK_DISPLAY_MMR - shift) / scale;
+}
 
 function shuffled<T>(items: readonly T[]): T[] {
   const out = [...items];
@@ -54,6 +86,32 @@ export function assignObjectives(count: number): string[] {
   return shuffled(MAFIA_OBJECTIVES).slice(0, count);
 }
 
+// Two distinct goals, one per team — never the same one twice, by explicit user choice: several of
+// these ("Go to overtime" especially) would otherwise be completed by both teams at once, which
+// makes the objective worth nothing.
+export function assignTeamObjectives(): [string, string] {
+  const [blue, orange] = shuffled(MAFIA_TEAM_OBJECTIVES);
+  return [blue, orange];
+}
+
+// Splits a full lobby into two MMR-balanced sides, reusing teamFormation.ts's bestBalancedSplit —
+// the same brute force over all 10 unique 3v3 divisions, minimising the calculateTeamStrength gap,
+// that the real six-mans Balanced vote uses. Mafia players have no players row to pass, so ratings
+// come in through `ratingFor` (see mafiaFallbackRating for the no-row case).
+//
+// Which side gets Blue is a coin flip rather than bestBalancedSplit's teamA: its enumeration is
+// `i < j < k` over the member list, so teamA always contains members[0] — without the flip the
+// first player to join (the host) would be on Blue in every single game.
+export function splitMafiaTeams<T extends { discord_id: string }>(
+  players: T[],
+  ratingFor: (discordId: string) => number,
+): { blue: T[]; orange: T[] } {
+  const seats = players.map((p) => ({ id: p.discord_id, mmr: ratingFor(p.discord_id), player: p }));
+  const { teamA, teamB } = bestBalancedSplit(seats);
+  const [first, second] = Math.random() < 0.5 ? [teamA, teamB] : [teamB, teamA];
+  return { blue: first.map((s) => s.player), orange: second.map((s) => s.player) };
+}
+
 // What the lobby is told publicly once the game starts. A requested count of 0 stays deliberately
 // vague: printing the resolved number would give away the coin flip and defeat the whole setting.
 function mafiaCountLabel(requested: number): string {
@@ -62,8 +120,26 @@ function mafiaCountLabel(requested: number): string {
 }
 
 function mafiaModeLabel(mode: MafiaGameMode): string {
-  return mode === "hidden_objective" ? "Hidden Objective" : "Classic";
+  if (mode === "hidden_objective") return "Hidden Objective";
+  if (mode === "team_objective") return "Team Mafia";
+  return "Classic";
 }
+
+const TEAM_EMOJI: Record<MafiaTeam, string> = { blue: "🔵", orange: "🟠" };
+const TEAM_LABEL: Record<MafiaTeam, string> = { blue: "Blue", orange: "Orange" };
+
+function teamRoster(players: MafiaPlayerRow[], team: MafiaTeam): string {
+  const side = players.filter((p) => p.team === team);
+  return side.length ? side.map((p) => `<@${p.discord_id}>`).join("\n") : "_nobody_";
+}
+
+// Every member of a team carries the same objective string, so any one of them answers for the
+// side. Null when the game predates migration 0051 or the finalize-time write didn't land.
+function teamObjective(players: MafiaPlayerRow[], team: MafiaTeam): string | null {
+  return players.find((p) => p.team === team)?.objective ?? null;
+}
+
+const TEAM_SCORING_LINE = `Objective **${TEAM_OBJECTIVE_POINTS} pts** · Win **${TEAM_WIN_POINTS} pt**`;
 
 function mafiaRoster(players: { discord_id: string }[]): string {
   return players.length ? players.map((p, i) => `${i + 1}. <@${p.discord_id}>`).join("\n") : "_nobody yet_";
@@ -91,6 +167,21 @@ function mafiaStartingEmbed(players: { discord_id: string }[], graceSeconds: num
   };
 }
 
+// Team Mafia's public start message: the team assignment, and nothing else. Each player's own
+// objective goes out privately alongside it, and both objectives stay secret until /reveal.
+function mafiaTeamStartedEmbed(players: MafiaPlayerRow[]) {
+  return {
+    color: GOLD_COLOR,
+    title: "🔪 Team Mafia — Game Started!",
+    description: `Each team's objective has been sent privately. ${TEAM_SCORING_LINE} — complete yours and you can still come out ahead after losing.`,
+    fields: [
+      { name: `${TEAM_EMOJI.blue} Blue`, value: teamRoster(players, "blue"), inline: true },
+      { name: `${TEAM_EMOJI.orange} Orange`, value: teamRoster(players, "orange"), inline: true },
+    ],
+    footer: { text: "Run /reveal once when you're done to see both objectives." },
+  };
+}
+
 function mafiaStartedEmbed(players: { discord_id: string }[], mode: MafiaGameMode, requestedCount: number) {
   return {
     color: GOLD_COLOR,
@@ -107,7 +198,38 @@ function mafiaStartedEmbed(players: { discord_id: string }[], mode: MafiaGameMod
 
 // Posted publicly by /reveal — the whole lobby finding out together is the point, so this is a
 // channel message rather than an ephemeral reply to whoever ran the command.
+// Team Mafia's reveal: both objectives, side by side, so the lobby can settle the score. The bot
+// never learns who won or whether either goal was actually met — that stays with the players, so
+// this prints the scoring rather than a result.
+function mafiaTeamRevealEmbed(players: MafiaPlayerRow[]) {
+  const fields = [{ name: "Mode", value: "Team Mafia", inline: false }];
+
+  const teams: MafiaTeam[] = ["blue", "orange"];
+  if (teams.every((t) => teamObjective(players, t) === null)) {
+    // Same honesty as the mafia path: no objectives on file means the finalize-time write never
+    // landed (migration 0051 not applied, most likely), not that the teams had nothing to do.
+    fields.push({
+      name: "Result",
+      value: "Objective data is missing for this game — the assignments weren't recorded, so there's nothing to reveal.",
+      inline: false,
+    });
+  } else {
+    for (const team of teams) {
+      fields.push({
+        name: `${TEAM_EMOJI[team]} ${TEAM_LABEL[team]}`,
+        value: `**${teamObjective(players, team) ?? "_not recorded_"}**\n${teamRoster(players, team)}`,
+        inline: true,
+      });
+    }
+    fields.push({ name: "Scoring", value: `${TEAM_SCORING_LINE}\nHighest total wins.`, inline: false });
+  }
+
+  return { color: GOLD_COLOR, title: "🔎 Team Mafia — Objectives Revealed", fields };
+}
+
 function mafiaRevealEmbed(game: MafiaGameRow, players: MafiaPlayerRow[]) {
+  if (game.mode === "team_objective") return mafiaTeamRevealEmbed(players);
+
   const mafia = players.filter((p) => p.is_mafia);
   const fields = [{ name: "Mode", value: mafiaModeLabel(game.mode), inline: true }];
 
@@ -201,7 +323,8 @@ async function processMafiaCommand(interaction: DiscordInteraction) {
   const password = typeof passwordOption === "string" && passwordOption.trim() ? passwordOption.trim() : null;
 
   const modeOption = interaction.data?.options?.find((o) => o.name === "mode")?.value;
-  const mode: MafiaGameMode = modeOption === "hidden_objective" ? "hidden_objective" : "classic";
+  const mode: MafiaGameMode =
+    modeOption === "hidden_objective" || modeOption === "team_objective" ? modeOption : "classic";
 
   // Discord enforces the 0-6 range via min_value/max_value on the option, but the clamp keeps the
   // column's check constraint from being the thing that rejects a malformed payload.
@@ -360,6 +483,75 @@ async function processMafiaJoin(interaction: DiscordInteraction, gameId: string,
   }).catch((err) => console.error("Mafia: failed to update lobby message on join", err));
 }
 
+// Every lobby member's rating for the balance, keyed by Discord id. Mafia is otherwise fully
+// independent of the six-mans side, and stays so here: this is a read-only lookup, a player with
+// no row simply falls back (see mafiaFallbackRating), and nothing is written back.
+async function fetchTeamRatings(supabase: AdminClient, discordIds: string[]): Promise<Map<string, number>> {
+  const fallback = await getConfigNumber("mmr_scale", 1).then(async (scale) =>
+    mafiaFallbackRating(scale, await getConfigNumber("mmr_shift", 0)),
+  );
+
+  const { data } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("discord_id, mmr")
+    .in("discord_id", discordIds);
+
+  const ratings = new Map<string, number>(discordIds.map((id) => [id, fallback]));
+  for (const row of data ?? []) ratings.set(row.discord_id, row.mmr);
+  return ratings;
+}
+
+async function runTeamObjectiveAssignment(supabase: AdminClient, game: MafiaGameRow, players: MafiaPlayerRow[]) {
+  const ratings = await fetchTeamRatings(supabase, players.map((p) => p.discord_id));
+  const { blue, orange } = splitMafiaTeams(players, (id) => ratings.get(id) ?? 0);
+  const [blueObjective, orangeObjective] = assignTeamObjectives();
+
+  const assignment = new Map<string, { team: MafiaTeam; objective: string }>();
+  for (const p of blue) assignment.set(p.discord_id, { team: "blue", objective: blueObjective });
+  for (const p of orange) assignment.set(p.discord_id, { team: "orange", objective: orangeObjective });
+
+  // Persisted so /reveal can print both objectives after the fact — the ephemerals below don't
+  // survive the interaction. .select() so a zero-row match is visible: PostgREST reports no error
+  // when an UPDATE simply matches nothing, and the private message goes out either way, so
+  // without this a team could be told its objective while /reveal reports none on file.
+  for (const p of players) {
+    const seat = assignment.get(p.discord_id);
+    if (!seat) continue;
+    const { data: saved, error } = await supabase
+      .from("crl6mansqueuebot_mafia_players")
+      .update({ team: seat.team, objective: seat.objective })
+      .eq("game_id", game.id)
+      .eq("discord_id", p.discord_id)
+      .select("discord_id");
+    if (error || !saved?.length) {
+      console.error(`Mafia: failed to persist team assignment for ${p.discord_id}`, error ?? "no matching player row");
+    }
+  }
+
+  await Promise.all(
+    players.map((p) => {
+      const seat = assignment.get(p.discord_id);
+      if (!seat) return Promise.resolve();
+      const content =
+        `${TEAM_EMOJI[seat.team]} **Your objective (${TEAM_LABEL[seat.team]}):** ${seat.objective}\n` +
+        `${TEAM_SCORING_LINE} — keep it from ${TEAM_LABEL[seat.team === "blue" ? "orange" : "blue"]}.`;
+      return sendFollowupMessage(p.interaction_token, { content }).catch((err) =>
+        console.error(`Mafia: failed to deliver team objective to ${p.discord_id}`, err),
+      );
+    }),
+  );
+
+  if (game.channel_id && game.message_id) {
+    // The rows in hand predate the UPDATE above, so carry the assignment into the copy the embed
+    // renders rather than re-reading them.
+    const assigned = players.map((p) => ({ ...p, team: assignment.get(p.discord_id)?.team ?? null }));
+    await discordFetch(`/channels/${game.channel_id}/messages/${game.message_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ embeds: [mafiaTeamStartedEmbed(assigned)], components: [] }),
+    }).catch((err) => console.error("Mafia: failed to post team-game-started message", err));
+  }
+}
+
 async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRow, players: MafiaPlayerRow[]) {
   const graceSeconds = await getConfigNumber("mafia_grace_seconds", 5);
 
@@ -382,6 +574,14 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
     .eq("status", "starting")
     .select("id");
   if (!claimed || claimed.length === 0) return;
+
+  // Team Mafia has no mafia to pick and no per-player role, so it diverges completely from here:
+  // two balanced teams, one shared objective each. mafia_count is ignored (and stays whatever the
+  // host happened to pass, the same way it records a *request* rather than an outcome elsewhere).
+  if (game.mode === "team_objective") {
+    await runTeamObjectiveAssignment(supabase, game, players);
+    return;
+  }
 
   const mafiaTotal = resolveMafiaCount(game.mafia_count);
   const objectives = game.mode === "hidden_objective" ? assignObjectives(mafiaTotal) : [];

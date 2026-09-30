@@ -196,13 +196,21 @@ export type DayOfWeekStatsRow = {
   count: number;
 };
 
-// /mafia mini-game — see CLAUDE.md, "Mafia". Fully independent of PlayerRow: raw Discord ids/
-// display names/interaction tokens only, no crl6mansqueuebot_players join anywhere.
+// /mafia mini-game — see CLAUDE.md, "Mafia". Stores raw Discord ids/display names/interaction
+// tokens only; no crl6mansqueuebot_players row is ever joined or required, so anyone in the server
+// can play. "team_objective" is the one mode that *reads* PlayerRow.mmr (to balance the two teams),
+// but only as a lookup with a fallback — a player with no row still plays, and nothing is written
+// back to the six-mans side.
 export type MafiaGameStatus = "waiting" | "starting" | "started" | "cancelled";
 
 // "classic" tells the mafia only that they're the mafia; "hidden_objective" also hands each of
-// them a specific sabotage objective — see migration 0050_mafia_modes.sql.
-export type MafiaGameMode = "classic" | "hidden_objective";
+// them a specific sabotage objective (migration 0050_mafia_modes.sql); "team_objective" has no
+// mafia at all — it splits the lobby into two MMR-balanced 3v3 teams, each dealt one objective
+// (migration 0051_mafia_team_objective.sql).
+export type MafiaGameMode = "classic" | "hidden_objective" | "team_objective";
+
+// Which side a player was put on in a "team_objective" game. Null in every other mode.
+export type MafiaTeam = "blue" | "orange";
 
 export type MafiaGameRow = {
   id: string;
@@ -229,10 +237,14 @@ export type MafiaPlayerRow = {
   display_name: string;
   interaction_token: string;
   joined_at: string;
-  // Both only meaningful once the game reaches status 'started' — the join RPC inserts player rows
-  // long before roles exist, so until then every row carries the default innocent values.
+  // All three only meaningful once the game reaches status 'started' — the join RPC inserts player
+  // rows long before roles exist, so until then every row carries the default innocent values.
   is_mafia: boolean;
+  // The player's own sabotage goal in "hidden_objective", or their *team's* shared goal in
+  // "team_objective" (all three teammates carry the same string). Null in "classic".
   objective: string | null;
+  // "team_objective" only — null in every other mode. See migration 0051.
+  team: MafiaTeam | null;
 };
 
 export type Database = {

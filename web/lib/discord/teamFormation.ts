@@ -663,8 +663,12 @@ async function processCancelCommand(interaction: DiscordInteraction, seriesIdOve
 // (calculateTeamStrength — see web/lib/mmr/teamStrength.ts, also used by the Elo engine).
 // ---------------------------------------------------------------------------
 
-export function bestBalancedSplit(members: PlayerRow[]): { teamA: PlayerRow[]; teamB: PlayerRow[] } {
-  let best: { teamA: PlayerRow[]; teamB: PlayerRow[]; diff: number } | null = null;
+// Generic over anything carrying an id and an mmr, rather than PlayerRow specifically: the split
+// only ever reads those two fields, and Mafia's Team Mafia mode (mafia.ts) balances its two sides
+// with the same brute force over lobby members that have no players row at all. Callers passing a
+// PlayerRow[] get a PlayerRow[] back, so every existing call site is unchanged.
+export function bestBalancedSplit<T extends { id: string; mmr: number }>(members: T[]): { teamA: T[]; teamB: T[] } {
+  let best: { teamA: T[]; teamB: T[]; diff: number } | null = null;
   const seenSplits = new Set<string>();
 
   for (let i = 0; i < members.length; i++) {

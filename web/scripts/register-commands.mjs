@@ -939,17 +939,18 @@ const commands = [
     options: [
       {
         name: "mode",
-        description: "Classic, or Hidden Objective to give each Mafia a specific sabotage goal.",
+        description: "Classic, Hidden Objective (sabotage goal per Mafia), or Team Mafia (two teams, an objective each).",
         type: STRING_OPTION,
         required: false,
         choices: [
           { name: "Classic", value: "classic" },
           { name: "Hidden Objective", value: "hidden_objective" },
+          { name: "Team Mafia", value: "team_objective" },
         ],
       },
       {
         name: "count",
-        description: "How many Mafia (default 1). 0 means a coin flip between one Mafia and none.",
+        description: "How many Mafia (default 1). 0 is a coin flip between one and none. Ignored in Team Mafia.",
         type: INTEGER_OPTION,
         required: false,
         min_value: 0,
@@ -965,7 +966,7 @@ const commands = [
   },
   {
     name: "reveal",
-    description: "Reveal who was the Mafia in this channel's last game (players from that game only).",
+    description: "Reveal the last game's Mafia, or both team objectives (players from that game only).",
     type: 1,
   },
 ];
