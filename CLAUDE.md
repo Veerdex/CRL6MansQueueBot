@@ -46,7 +46,7 @@ Implemented and deployed: leaderboard, queue system, team formation, Elo engine,
 
 After a queue pops, players choose Balanced or Captains. Existing vote defaults may be auto-cast. Captains mode randomly selects two captains from the top three MMR players, randomizes who picks first, uses a 1-2 draft order, then auto-assigns the final player. Balanced mode brute-forces valid 3v3 divisions to minimize team MMR difference.
 
-An optional admin-controlled series-length vote runs first when enabled. Players choose BO3, BO5, or BO7; first to three resolves. Timeout resolves by current majority, with ties favoring the shorter series. K multipliers are BO3 0.6x, BO5 1.0x, and BO7 1.4x. The selected length and multiplier are snapshotted on the series.
+An optional admin-controlled series-length vote runs first when enabled. Players choose BO3, BO5, or BO7; first to three resolves, except BO7, which needs four. BO7 is therefore decided only by its own threshold: when no option reaches its threshold — at six votes or at timeout — the winner is the higher of BO3/BO5, with ties favoring the shorter series. K multipliers are BO3 0.6x, BO5 1.0x, and BO7 1.4x. The selected length and multiplier are snapshotted on the series.
 
 ## MMR, placement, bands, and seasons
 

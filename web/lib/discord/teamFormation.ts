@@ -42,8 +42,18 @@ async function replyError(interaction: DiscordInteraction, content: string) {
 // constants, not admin-configurable (only the whole feature's on/off state is, via /admin
 // series-length-vote toggle) — same precedent as CANCEL_VOTE_THRESHOLD above, since the user
 // supplied exact fixed values rather than asking for them to be tunable.
-const SERIES_LENGTH_VOTE_THRESHOLD = 3;
+// BO7 needs a 4th vote where BO3/BO5 need 3 — the longest series is the biggest time
+// commitment, so it only happens on a clear supermajority rather than on a bare plurality of a
+// split lobby. See resolveSeriesLengthWinner/resolveSeriesLengthTieBreak below for what that
+// extra vote actually costs BO7 in the fallback paths.
+const SERIES_LENGTH_VOTE_THRESHOLDS: Record<SeriesLength, number> = { bo3: 3, bo5: 3, bo7: 4 };
 const SERIES_LENGTH_ORDER: SeriesLength[] = ["bo3", "bo5", "bo7"];
+// Who is still in contention once nobody has reached their own threshold. BO7 is absent on
+// purpose: its bar is 4, so letting it win a fallback on 3 would make the higher bar
+// unreachable-but-irrelevant — with 6 voters and BO7 on 3, the other 3 votes can only split 2-1
+// or 1-2, leaving BO7 the strict plurality every single time. Excluding it is what makes "BO7
+// needs 4" mean anything at all.
+const SERIES_LENGTH_FALLBACK_ORDER: SeriesLength[] = ["bo3", "bo5"];
 export const SERIES_LENGTH_K_MULTIPLIERS: Record<SeriesLength, number> = { bo3: 0.6, bo5: 1.0, bo7: 1.4 };
 export const SERIES_LENGTH_LABELS: Record<SeriesLength, string> = { bo3: "Best of 3", bo5: "Best of 5", bo7: "Best of 7" };
 // /report's cooldown after teams are formed (see report.ts) — long enough that a series of this
@@ -54,18 +64,34 @@ export const SERIES_LENGTH_LABELS: Record<SeriesLength, string> = { bo3: "Best o
 // 0039_series_length_vote.sql), so report.ts falls back to the bo3 value for those.
 export const REPORT_COOLDOWN_MINUTES_BY_LENGTH: Record<SeriesLength, number> = { bo3: 10, bo5: 15, bo7: 20 };
 
-// Picks whichever series length currently has the most votes; ties (including a 0-0-0 tie, i.e.
-// nobody voted at all) favor the shorter series, since SERIES_LENGTH_ORDER is walked bo3->bo5->bo7
-// and only a *strictly* greater count replaces the running winner. Pure and exported so it's
-// unit-testable independent of DB access, same as bonusDay.ts's isDayInRange. Used both for the
-// "all 6 voted, nobody hit 3" case (necessarily an exact 2-2-2 split) and for the sweep route's
-// timeout-driven majority resolution.
+// Last resort when no option reached its own threshold: whichever of BO3/BO5 has more votes,
+// ties (including a 0-0-0 tie, i.e. nobody voted at all) favoring the shorter series, since
+// SERIES_LENGTH_FALLBACK_ORDER is walked bo3->bo5 and only a *strictly* greater count replaces
+// the running winner. BO7 is not a candidate here — it wins on 4 votes or not at all. Pure and
+// exported so it's unit-testable independent of DB access, same as bonusDay.ts's isDayInRange.
+// Used for the "all 6 voted, nobody hit their threshold" case and for the sweep route's
+// timeout-driven resolution.
 export function resolveSeriesLengthTieBreak(counts: Record<SeriesLength, number>): SeriesLength {
   let winner: SeriesLength = "bo3";
-  for (const length of SERIES_LENGTH_ORDER) {
+  for (const length of SERIES_LENGTH_FALLBACK_ORDER) {
     if (counts[length] > counts[winner]) winner = length;
   }
   return winner;
+}
+
+// The live tally rule, pure so the thresholds are testable without a vote row in the database:
+// first option to reach its own threshold wins outright (walked bo3->bo5->bo7, so a simultaneous
+// 3-3 between BO3 and BO5 on the 6th vote goes to the shorter series, as it always has), and
+// once all six have voted with nobody there, the fallback above decides. The no-winner-at-6
+// states are exactly 2-2-2, 2-1-3 and 1-2-3 — the latter two being new, since before BO7's bar
+// moved to 4 a full lobby could only stall on an even three-way split. Returns null while the
+// vote is still genuinely open, which is the caller's cue to just redraw the tally.
+export function resolveSeriesLengthWinner(counts: Record<SeriesLength, number>): SeriesLength | null {
+  for (const length of SERIES_LENGTH_ORDER) {
+    if (counts[length] >= SERIES_LENGTH_VOTE_THRESHOLDS[length]) return length;
+  }
+  const totalVotes = SERIES_LENGTH_ORDER.reduce((sum, length) => sum + counts[length], 0);
+  return totalVotes >= 6 ? resolveSeriesLengthTieBreak(counts) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +121,7 @@ function voteButtons(seriesId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Series-length vote: Best of 3/5/7, first to 3/6 wins. Runs as the first phase of the combined
+// Series-length vote: Best of 3/5/7, first to 3 of 6 wins (BO7 needs 4). Runs as the first phase of the combined
 // formation message when series_length_vote_enabled is on — see startSeriesLengthVote/
 // resolveSeriesLengthVote below.
 // ---------------------------------------------------------------------------
@@ -186,7 +212,7 @@ export async function renderFormationMessage(
     for (const len of ["bo3", "bo5", "bo7"] as SeriesLength[]) {
       fields.push({
         name: `${SERIES_LENGTH_K_MULTIPLIERS[len] * 100}%`,
-        value: `${SERIES_LENGTH_LABELS[len]}\n${counts[len]} / ${SERIES_LENGTH_VOTE_THRESHOLD}`,
+        value: `${SERIES_LENGTH_LABELS[len]}\n${counts[len]} / ${SERIES_LENGTH_VOTE_THRESHOLDS[len]}`,
         inline: true,
       });
     }
@@ -483,13 +509,7 @@ export async function castSeriesLengthVote(
     bo5: (votes ?? []).filter((v) => v.choice === "bo5").length,
     bo7: (votes ?? []).filter((v) => v.choice === "bo7").length,
   };
-  const totalVotes = counts.bo3 + counts.bo5 + counts.bo7;
-
-  let winner: SeriesLength | null = null;
-  if (counts.bo3 >= SERIES_LENGTH_VOTE_THRESHOLD) winner = "bo3";
-  else if (counts.bo5 >= SERIES_LENGTH_VOTE_THRESHOLD) winner = "bo5";
-  else if (counts.bo7 >= SERIES_LENGTH_VOTE_THRESHOLD) winner = "bo7";
-  else if (totalVotes >= 6) winner = resolveSeriesLengthTieBreak(counts); // exact 2-2-2 tie
+  const winner = resolveSeriesLengthWinner(counts);
 
   if (!winner) {
     await patchFormationMessage(supabase, seriesId, queueChannelId, messageId);
@@ -502,6 +522,11 @@ export async function castSeriesLengthVote(
 // Called by the sweep route once vote_timeout_seconds has elapsed with no winner reached —
 // resolves by whichever option currently has the most votes, lowest-length tie-break (including
 // the 0-0-0 case where nobody voted at all). Never voids the series — see CLAUDE.md.
+// BO7's higher threshold applies here too: resolving the timeout on a plain plurality would hand
+// BO7 the series on 3 votes just by letting the clock run out, which is the one loophole that
+// would make the extra vote meaningless. resolveSeriesLengthWinner is still consulted first so a
+// tally that did reach a threshold (a click whose resolution failed, say) settles as voted
+// instead of being re-decided by the fallback.
 export async function resolveSeriesLengthByMajority(supabase: AdminClient, series: SeriesRow): Promise<void> {
   if (!series.formation_message_id || !series.queue_channel_id) return;
   const guildId = await getGuildId();
@@ -511,7 +536,7 @@ export async function resolveSeriesLengthByMajority(supabase: AdminClient, serie
     bo5: (votes ?? []).filter((v) => v.choice === "bo5").length,
     bo7: (votes ?? []).filter((v) => v.choice === "bo7").length,
   };
-  const winner = resolveSeriesLengthTieBreak(counts);
+  const winner = resolveSeriesLengthWinner(counts) ?? resolveSeriesLengthTieBreak(counts);
   const members = await fetchLobbyMembers(supabase, series.id);
   await resolveSeriesLengthVote(supabase, guildId, series.id, series.queue_channel_id, series.formation_message_id, members, winner);
 }

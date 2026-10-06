@@ -142,8 +142,10 @@ describe("renderFormationMessage", () => {
   it("phase 1: draws the series-length tally with its buttons while the vote is active", async () => {
     const result = await render({ series: { ...BASE, series_length_vote_active: true }, lengthVotes: ["bo5", "bo5", "bo7"] });
     expect(fieldNames(result)).toEqual(["60%", "100%", "140%"]);
+    expect(embed(result).fields[0].value).toContain("0 / 3");
     expect(embed(result).fields[1].value).toContain("2 / 3");
-    expect(embed(result).fields[2].value).toContain("1 / 3");
+    // Per-length denominator: BO7 needs 4 votes where BO3/BO5 need 3.
+    expect(embed(result).fields[2].value).toContain("1 / 4");
     expect(embed(result).footer?.text).toBe("You have 2 minutes to vote on series length.");
     expect(result.components).toHaveLength(1);
   });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { bestBalancedSplit, deriveTurnCaptain, selectCaptainCandidates, resolveSeriesLengthTieBreak } from "./teamFormation";
+import {
+  bestBalancedSplit,
+  deriveTurnCaptain,
+  selectCaptainCandidates,
+  resolveSeriesLengthTieBreak,
+  resolveSeriesLengthWinner,
+} from "./teamFormation";
 import type { SeriesLength } from "@/lib/supabase/types";
 import type { PlayerRow } from "@/lib/supabase/types";
 
@@ -161,7 +167,15 @@ describe("resolveSeriesLengthTieBreak", () => {
 
   it("picks the option with the most votes", () => {
     expect(resolveSeriesLengthTieBreak(counts(1, 2, 0))).toBe("bo5");
-    expect(resolveSeriesLengthTieBreak(counts(0, 1, 2))).toBe("bo7");
+    expect(resolveSeriesLengthTieBreak(counts(2, 1, 0))).toBe("bo3");
+  });
+
+  // BO7 wins on its own 4-vote threshold or not at all, so it is not a candidate in the
+  // fallback even when it is the outright plurality. This used to resolve to bo7.
+  it("never picks bo7, even when bo7 leads", () => {
+    expect(resolveSeriesLengthTieBreak(counts(0, 1, 2))).toBe("bo5");
+    expect(resolveSeriesLengthTieBreak(counts(1, 0, 3))).toBe("bo3");
+    expect(resolveSeriesLengthTieBreak(counts(0, 0, 5))).toBe("bo3");
   });
 
   it("a 0-0-0 tie (nobody voted) resolves to bo3", () => {
@@ -172,11 +186,46 @@ describe("resolveSeriesLengthTieBreak", () => {
     expect(resolveSeriesLengthTieBreak(counts(2, 2, 2))).toBe("bo3");
   });
 
-  it("a tie between bo5 and bo7 (bo3 not tied for the lead) still favors the lower of the two leaders", () => {
+  it("bo5 ahead of bo3 wins regardless of bo7's count", () => {
     expect(resolveSeriesLengthTieBreak(counts(0, 2, 2))).toBe("bo5");
   });
 
-  it("a tie between bo3 and bo7 favors bo3", () => {
+  it("a tie between bo3 and bo5 favors bo3", () => {
     expect(resolveSeriesLengthTieBreak(counts(2, 0, 2))).toBe("bo3");
+    expect(resolveSeriesLengthTieBreak(counts(2, 2, 0))).toBe("bo3");
+  });
+});
+
+describe("resolveSeriesLengthWinner", () => {
+  const counts = (bo3: number, bo5: number, bo7: number): Record<SeriesLength, number> => ({ bo3, bo5, bo7 });
+
+  it("returns null while the vote is still open", () => {
+    expect(resolveSeriesLengthWinner(counts(0, 0, 0))).toBeNull();
+    expect(resolveSeriesLengthWinner(counts(2, 2, 1))).toBeNull();
+  });
+
+  it("bo3 and bo5 win outright on 3", () => {
+    expect(resolveSeriesLengthWinner(counts(3, 0, 0))).toBe("bo3");
+    expect(resolveSeriesLengthWinner(counts(0, 3, 0))).toBe("bo5");
+  });
+
+  // The whole point of the change: 3 is no longer enough for the longest series.
+  it("bo7 needs 4, not 3", () => {
+    expect(resolveSeriesLengthWinner(counts(0, 0, 3))).toBeNull();
+    expect(resolveSeriesLengthWinner(counts(0, 0, 4))).toBe("bo7");
+  });
+
+  it("a simultaneous 3-3 between bo3 and bo5 goes to the shorter series", () => {
+    expect(resolveSeriesLengthWinner(counts(3, 3, 0))).toBe("bo3");
+  });
+
+  // Newly reachable: before bo7's bar moved to 4, a full lobby could only stall on 2-2-2.
+  it("a full lobby that stalls with bo7 leading on 3 falls back to the best of bo3/bo5", () => {
+    expect(resolveSeriesLengthWinner(counts(2, 1, 3))).toBe("bo3");
+    expect(resolveSeriesLengthWinner(counts(1, 2, 3))).toBe("bo5");
+  });
+
+  it("an exact 2-2-2 split at 6 votes still resolves to bo3", () => {
+    expect(resolveSeriesLengthWinner(counts(2, 2, 2))).toBe("bo3");
   });
 });
