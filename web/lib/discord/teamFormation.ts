@@ -224,7 +224,10 @@ export async function renderFormationMessage(
     if (seriesLength) {
       fields.push({
         name: "Series Length",
-        value: `**${SERIES_LENGTH_LABELS[seriesLength]}** · ${SERIES_LENGTH_K_MULTIPLIERS[seriesLength] * 100}% MMR`,
+        // `###` rather than bold. Discord scopes a header to the whole line, so the multiplier
+        // drops to its own line beneath instead of trailing after a `·` — otherwise it would
+        // render at header size too.
+        value: `### ${SERIES_LENGTH_LABELS[seriesLength]}\n${SERIES_LENGTH_K_MULTIPLIERS[seriesLength] * 100}% MMR`,
         inline: false,
       });
     }
@@ -1628,9 +1631,11 @@ async function finalizeTeams(
   // Subtitle carries forward the two things the now-deleted formation message showed: the
   // series length the lobby voted for, and which formation mode produced these teams.
   const seriesLength = fetchedSeriesData?.series_length ?? null;
-  const subtitleParts: string[] = [];
-  if (seriesLength) subtitleParts.push(`**${SERIES_LENGTH_LABELS[seriesLength]}**`);
-  if (fetchedSeriesData?.vote_result) subtitleParts.push(fetchedSeriesData.vote_result === "balanced" ? "Balanced" : "Captains");
+  // One line each, not `·`-joined: the length renders as a `###` header, which Discord scopes
+  // to the whole line, so the formation mode would otherwise be swept into the header too.
+  const subtitleLines: string[] = [];
+  if (seriesLength) subtitleLines.push(`### ${SERIES_LENGTH_LABELS[seriesLength]}`);
+  if (fetchedSeriesData?.vote_result) subtitleLines.push(fetchedSeriesData.vote_result === "balanced" ? "Balanced" : "Captains");
 
   const message = (await discordFetch(`/channels/${queueChannelId}/messages`, {
     method: "POST",
@@ -1640,7 +1645,7 @@ async function finalizeTeams(
         {
           color: formationColor,
           title: "Teams formed!",
-          ...(subtitleParts.length ? { description: subtitleParts.join(" · ") } : {}),
+          ...(subtitleLines.length ? { description: subtitleLines.join("\n") } : {}),
           fields: [
             { name: "Team Blue", value: teamALines, inline: false },
             { name: "Team Orange", value: teamBLines, inline: false },

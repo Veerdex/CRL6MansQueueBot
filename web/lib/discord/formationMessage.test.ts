@@ -153,7 +153,7 @@ describe("renderFormationMessage", () => {
   it("phase 2: replaces the tally with the resolved length and shows the formation vote", async () => {
     const result = await render({ series: { ...BASE, series_length: "bo5" }, formationVotes: ["captains", "balanced"] });
     expect(fieldNames(result)).toEqual(["Series Length", "Balanced Teams", "Captains"]);
-    expect(embed(result).fields[0].value).toBe("**Best of 5** · 100% MMR");
+    expect(embed(result).fields[0].value).toBe("### Best of 5\n100% MMR");
     expect(embed(result).fields[1].value).toBe("1 / 3");
     expect(embed(result).fields[2].value).toBe("1 / 3");
     expect(embed(result).footer?.text).toBe("You have 2 minutes to vote on team formation.");
@@ -206,7 +206,7 @@ describe("renderFormationMessage", () => {
   it("phase 3b: labels a balanced resolution", async () => {
     const result = await render({ series: { ...BASE, series_length: "bo3", vote_result: "balanced" } });
     expect(fieldNames(result)).toEqual(["Series Length", "Team Formation"]);
-    expect(embed(result).fields[0].value).toBe("**Best of 3** · 60% MMR");
+    expect(embed(result).fields[0].value).toBe("### Best of 3\n60% MMR");
     expect(embed(result).fields[1].value).toBe("**Balanced**");
     expect(result.components).toEqual([]);
   });
