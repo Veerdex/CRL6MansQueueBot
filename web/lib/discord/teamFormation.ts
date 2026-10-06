@@ -658,10 +658,20 @@ async function registerCancelVoteAndMaybeVoid(
     await discordFetch(`/channels/${series.queue_channel_id}/messages/${series.formation_message_id}`, { method: "DELETE" }).catch(() => {});
   }
   if (series.queue_channel_id) {
+    // Embed rather than plain content: this is the same class of notice as the sweep's timeout
+    // void (voidStaleSeries) and the pre-threshold progress announcement below, both of which are
+    // already embeds, and it reads as the odd one out against them. 0xef476f is the established
+    // series-died red those notices use. No mention in the text, so nothing is lost by moving it
+    // out of top-level content (see CLAUDE.md, "Discord channel behavior").
     await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
       method: "POST",
       body: JSON.stringify({
-        content: `**Series cancelled** — ${CANCEL_VOTE_THRESHOLD} players voted to cancel. No MMR change.`,
+        embeds: [
+          {
+            color: 0xef476f,
+            description: `**Series cancelled** — ${CANCEL_VOTE_THRESHOLD} players voted to cancel. No MMR change.`,
+          },
+        ],
       }),
     }).catch(() => {});
   }
