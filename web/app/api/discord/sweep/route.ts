@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage, GOLD_COLOR } from "@/lib/discord/rest";
 import { getConfigNumber, getConfigValue, deleteConfigValue } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
-import { reclaimStrayMatchRoles } from "@/lib/discord/matchRole";
+import { reclaimStrayMatchRoles, releaseMatchRole } from "@/lib/discord/matchRole";
 import { postTrackedQueueMessage, refreshQueueMessage, refreshQueueMessageAfterSettlement, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
@@ -175,6 +175,32 @@ export async function POST(request: Request) {
   for (const series of orphanCandidates ?? []) {
     await deleteMatchChannels(supabase, series);
     orphansCleaned += 1;
+  }
+
+  // Settled series that still hold their match role. Every teardown path releases its own, so
+  // this only catches a release that didn't complete — but without it those leak *permanently*,
+  // because neither pass around it would ever retry them. The orphan pass above only selects
+  // status = 'reported' with a voice id still set, so (a) a voided series — /cancel, an admin
+  // void, a vote-silence timeout — whose teardown was cut short is outside it entirely, and
+  // (b) a reported series whose role claim failed after the channels were already deleted has
+  // had its voice ids cleared and has dropped out of it too. The stray reclaim below doesn't
+  // cover them either, since it treats any row holding a role id as a legitimate claim.
+  //
+  // releaseMatchRole's atomic claim makes racing report.ts's own 30s-delayed teardown harmless,
+  // and releasing a touch early costs nothing — nothing pings a series after "Teams formed!".
+  // It also does the teams-formed message rewrite, which the stray reclaim can't.
+  let matchRolesReleased = 0;
+  const { data: settledWithRole, error: settledRoleError } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .not("match_role_id", "is", null)
+    .not("status", "in", "(forming,active)");
+  if (settledRoleError) {
+    console.error("Sweep: failed to fetch settled series still holding a match role", settledRoleError);
+  }
+  for (const series of settledWithRole ?? []) {
+    await releaseMatchRole(supabase, series);
+    matchRolesReleased += 1;
   }
 
   // Stray match roles. Every teardown path deletes its own role, so this only ever catches a
@@ -456,6 +482,7 @@ export async function POST(request: Request) {
     seriesLengthResolved,
     draftPicksForced,
     orphansCleaned,
+    matchRolesReleased,
     matchRolesReclaimed,
     queueMembersRemoved,
     subRequestsExpired,

@@ -121,8 +121,10 @@ export async function createMatchRole(
       body: JSON.stringify({
         name: matchRoleName(matchNumber),
         color: rainbowRoleColor(),
-        // The whole point — a non-mentionable role can only be pinged by someone holding
-        // MENTION_EVERYONE, and the ping has to work from an ordinary bot message.
+        // The bot could ping a non-mentionable role too (it holds MENTION_EVERYONE via
+        // ADMINISTRATOR), but then the ping would break silently the day that permission is
+        // narrowed. The cost of true is that any member can also ping the six while the match
+        // is live, which seems fine for a role that exists for one match and is then deleted.
         mentionable: true,
         permissions: "0",
         hoist: false,
@@ -259,7 +261,9 @@ export async function reclaimStrayMatchRoles(supabase: AdminClient): Promise<num
   if (candidates.length === 0) return 0;
 
   // Every series still pointing at a role, whatever its status — a reported series whose
-  // teardown hasn't run yet still owns its role.
+  // teardown hasn't run yet still owns its role. Safe to be this broad only because the sweep
+  // releases settled series' roles in a pass of its own; without that, a row left stuck holding
+  // a role id would shelter that role from here forever.
   const { data: live, error } = await supabase
     .from("crl6mansqueuebot_series")
     .select("match_role_id")

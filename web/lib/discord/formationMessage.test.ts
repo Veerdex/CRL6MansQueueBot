@@ -139,6 +139,25 @@ describe("renderFormationMessage", () => {
     expect(embed(result).description).toContain(`${Math.round(1200 * 7.25 + 1000)} MMR`);
   });
 
+  it("pings the match role instead of the six players once the series has one", async () => {
+    const result = await render({ series: { ...BASE, match_role_id: "9001" } });
+    expect(result.content).toBe("<@&9001>");
+    // The roster itself is unaffected — only the notifying content line changes.
+    for (const m of MEMBERS) {
+      expect(embed(result).description).toContain(`<@${m.discord_id}>`);
+      expect(result.content).not.toContain(`<@${m.discord_id}>`);
+    }
+  });
+
+  it("falls back to individual mentions when the series has no match role", async () => {
+    // Covers a failed role creation, a test series, and a database without migration 0053.
+    for (const series of [BASE, { ...BASE, match_role_id: null }]) {
+      const result = await render({ series });
+      expect(result.content).not.toContain("<@&");
+      for (const m of MEMBERS) expect(result.content).toContain(`<@${m.discord_id}>`);
+    }
+  });
+
   it("phase 1: draws the series-length tally with its buttons while the vote is active", async () => {
     const result = await render({ series: { ...BASE, series_length_vote_active: true }, lengthVotes: ["bo5", "bo5", "bo7"] });
     expect(fieldNames(result)).toEqual(["60%", "100%", "140%"]);
