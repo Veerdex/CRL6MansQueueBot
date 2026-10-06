@@ -21,12 +21,14 @@ function deferredEphemeral(run: () => Promise<void>) {
 export type SeasonResetSummary = {
   closedSeasonNumber: number | null;
   newSeasonNumber: number;
+  mmrReset: number;
   playersReset: number;
 };
 
 // Shared by the manual /newseason command and the automatic scheduled-reset sweep trigger
-// (see scheduledReset.ts) — atomically closes any currently active season (standings, MMR
-// soft reset, everyone back to Unranked — see seasonClose.ts and CLAUDE.md, "Seasons") and
+// (see scheduledReset.ts) — atomically closes any currently active season (standings, every
+// rating hard-reset to 0, everyone back to Unranked — see seasonClose.ts and CLAUDE.md,
+// "Seasons") and
 // opens the next one, then runs recomputeBands() once against the freshly-opened season so a
 // stale Prism holder from last season's now-reset games-played count is cleared immediately
 // rather than waiting for their own next report.
@@ -36,10 +38,11 @@ export async function performSeasonReset(): Promise<SeasonResetSummary> {
 
   // Atomic claim: same UPDATE...WHERE-status pattern as report.ts/teamFormation.ts. A double
   // fire (Discord retry, an admin re-clicking because the deferred ACK gave no instant
-  // feedback, or a sweep tick racing a manual /newseason) must not run the soft reset twice —
-  // a double-decay would compress every player's MMR toward the median twice over, silently
-  // corrupting ratings. Only the first caller sees a matching row; a retry sees 0 rows back
-  // and skips straight to opening the next season with no `current` to report.
+  // feedback, or a sweep tick racing a manual /newseason) must not run the close twice. The MMR
+  // reset itself is now idempotent (a second pass finds everyone already at 0), but the standings
+  // archive and the placement/role teardown are not, and a second close would record a whole
+  // season of empty standings over the real ones. Only the first caller sees a matching row; a
+  // retry sees 0 rows back and skips straight to opening the next season with no `current`.
   const { data: closedRows } = await supabase
     .from("crl6mansqueuebot_seasons")
     .update({ is_active: false, end_date: today })
@@ -48,9 +51,11 @@ export async function performSeasonReset(): Promise<SeasonResetSummary> {
   const current = closedRows?.[0] ?? null;
 
   let playersReset = 0;
+  let mmrReset = 0;
   if (current) {
     const summary = await closeSeason(current);
     playersReset = summary.playersReset;
+    mmrReset = summary.mmrReset;
   }
 
   const { data: latest } = await supabase
@@ -81,12 +86,12 @@ export async function performSeasonReset(): Promise<SeasonResetSummary> {
     console.error("Nickname medal sync failed after season close", error);
   }
 
-  return { closedSeasonNumber: current?.season_number ?? null, newSeasonNumber: nextNumber, playersReset };
+  return { closedSeasonNumber: current?.season_number ?? null, newSeasonNumber: nextNumber, mmrReset, playersReset };
 }
 
 // ---------------------------------------------------------------------------
-// /newseason — owner-or-admin-role gated. Closes any current season (median-compression MMR
-// soft reset, season_history standings, every placed player reset back to Unranked — see
+// /newseason — owner-or-admin-role gated. Closes any current season (every rating hard-reset to
+// raw 0 / display 1000, season_history standings, every placed player back to Unranked — see
 // seasonClose.ts and CLAUDE.md, "Seasons") and opens the next one, then runs recomputeBands()
 // (bands.ts) once against the freshly-opened season —
 // Prism is a live top-N overlay gated on *this season's* Rank Queue games played, so without an
@@ -131,7 +136,7 @@ async function processNewSeason(interaction: DiscordInteraction, confirmation: s
   await logAdminAction(actorId, "new_season", undefined, `season_number=${summary.newSeasonNumber}`);
   await editOriginalResponse(interaction.token, {
     content: summary.closedSeasonNumber
-      ? `Closed season ${summary.closedSeasonNumber} (standings recorded, MMR soft-reset, ${summary.playersReset} player(s) reset to Unranked) and started season ${summary.newSeasonNumber} (Prism cut refreshed for the new season).`
+      ? `Closed season ${summary.closedSeasonNumber} (standings recorded, ${summary.mmrReset} player(s) MMR hard-reset to starting, ${summary.playersReset} player(s) reset to Unranked) and started season ${summary.newSeasonNumber} (Prism cut refreshed for the new season).`
       : `Started season ${summary.newSeasonNumber} (no prior active season).`,
   });
 }

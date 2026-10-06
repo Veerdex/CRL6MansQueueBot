@@ -155,7 +155,7 @@ describe("reconstructMmrHistory", () => {
     expect(result.finalMmrByPlayer.get("p2")).toBeLessThan(200);
   });
 
-  it("reconstructs decay for a season with zero reported series, anchored after the prior season's decay point", () => {
+  it("reconstructs a season with zero reported series, anchored after the prior season's close", () => {
     const result = reconstructMmrHistory({
       playerIds: ["p1"],
       seriesBatches: Array.from({ length: 5 }, (_, i) => ({
@@ -166,7 +166,7 @@ describe("reconstructMmrHistory", () => {
         players: [{ playerId: "p1", mmrDelta: 20 }],
       })),
       adminAdjustments: [],
-      // season2 has no series at all (player sat out that whole season) but must still decay.
+      // season2 has no series at all (player sat out that whole season) but must still close.
       seasons: [
         { seasonId: "season1", seasonNumber: 1 },
         { seasonId: "season2", seasonNumber: 2 },
@@ -176,9 +176,11 @@ describe("reconstructMmrHistory", () => {
       placementGamesRequired: 5,
     });
 
+    // Season 1 closes with the soft decay; season 2's close is the hard reset, so whatever
+    // season 1 left behind is wiped regardless of its value.
     const afterSeason1 = decayMmr(100, computeSafeMedian([100]), 0.25);
-    const afterSeason2 = decayMmr(afterSeason1, computeSafeMedian([afterSeason1]), 0.25);
-    expect(result.finalMmrByPlayer.get("p1")).toBeCloseTo(afterSeason2, 10);
+    expect(afterSeason1).toBeGreaterThan(0);
+    expect(result.finalMmrByPlayer.get("p1")).toBe(0);
   });
 
   it("snaps to a season_history checkpoint at season close and records a drift warning when it disagrees with the simulation", () => {
@@ -358,5 +360,107 @@ describe("reconstructMmrHistory", () => {
 
     // Placed by s1 at mmr 50 (peak seeds at 50), then the later admin override to 800 raises it.
     expect(result.peakMmrByPlayer.get("p1")).toBe(800);
+  });
+  // From season 2's close on, a boundary zeroes everyone outright instead of compressing them
+  // (seasonClose.ts's resetAllMmrToZero). Season 1's close genuinely was a soft decay and its
+  // results were never rewritten, so the replay has to keep both rules and pick per season.
+  it("hard-resets every player to 0 at a season-2 close, regardless of where they finished", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1", "p2", "p3"],
+      seriesBatches: [
+        {
+          seriesId: "s1",
+          seasonId: "season2",
+          reportedAt: "2026-02-01T00:00:00Z",
+          isRank: true,
+          players: [{ playerId: "p1", mmrDelta: 300 }, { playerId: "p2", mmrDelta: -120 }],
+        },
+      ],
+      adminAdjustments: [],
+      seasons: [{ seasonId: "season2", seasonNumber: 2 }],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 5,
+    });
+
+    // Top of the ladder, bottom of the ladder, and a player who never queued all land together.
+    expect(result.finalMmrByPlayer.get("p1")).toBe(0);
+    expect(result.finalMmrByPlayer.get("p2")).toBe(0);
+    expect(result.finalMmrByPlayer.get("p3")).toBe(0);
+    // mmr_before is captured mid-season, so the reset must not reach back and rewrite it.
+    expect(result.mmrBeforeBySeries.get("s1")?.get("p1")).toBe(0);
+  });
+
+  it("still soft-decays a season-1 close rather than zeroing it", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: [
+        {
+          seriesId: "s1",
+          seasonId: "season1",
+          reportedAt: "2026-01-01T00:00:00Z",
+          isRank: true,
+          players: [{ playerId: "p1", mmrDelta: 100 }],
+        },
+      ],
+      adminAdjustments: [],
+      seasons: [{ seasonId: "season1", seasonNumber: 1 }],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 5,
+    });
+
+    expect(result.finalMmrByPlayer.get("p1")).toBeCloseTo(decayMmr(100, computeSafeMedian([100]), 0.25), 10);
+    expect(result.finalMmrByPlayer.get("p1")).not.toBe(0);
+  });
+
+  // The checkpoint snap runs first and is pure diagnostics at a hard-reset boundary: the
+  // recorded close value still decides whether a drift warning fires, then everyone goes to 0.
+  it("records checkpoint drift at a hard-reset boundary but still ends at 0", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: [
+        {
+          seriesId: "s1",
+          seasonId: "season2",
+          reportedAt: "2026-02-01T00:00:00Z",
+          isRank: true,
+          players: [{ playerId: "p1", mmrDelta: 50 }],
+        },
+      ],
+      adminAdjustments: [],
+      seasons: [{ seasonId: "season2", seasonNumber: 2 }],
+      seasonHistoryCheckpoints: [{ seasonId: "season2", playerId: "p1", mmrAtClose: 80 }],
+      decayFactor: 0.25,
+      placementGamesRequired: 5,
+    });
+
+    expect(result.driftWarnings).toHaveLength(1);
+    expect(result.driftWarnings[0].drift).toBeCloseTo(30, 10);
+    expect(result.finalMmrByPlayer.get("p1")).toBe(0);
+  });
+
+  // A season with no number cannot be classified, so it keeps the pre-hard-reset behavior rather
+  // than silently wiping a boundary the caller never described.
+  it("falls back to the soft decay for a season carrying no number", () => {
+    const result = reconstructMmrHistory({
+      playerIds: ["p1"],
+      seriesBatches: [
+        {
+          seriesId: "s1",
+          seasonId: "mystery",
+          reportedAt: "2026-01-01T00:00:00Z",
+          isRank: true,
+          players: [{ playerId: "p1", mmrDelta: 100 }],
+        },
+      ],
+      adminAdjustments: [],
+      seasons: [{ seasonId: "mystery", seasonNumber: undefined as unknown as number }],
+      seasonHistoryCheckpoints: [],
+      decayFactor: 0.25,
+      placementGamesRequired: 5,
+    });
+
+    expect(result.finalMmrByPlayer.get("p1")).toBeCloseTo(decayMmr(100, computeSafeMedian([100]), 0.25), 10);
   });
 });

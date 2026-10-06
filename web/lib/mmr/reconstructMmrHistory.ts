@@ -6,8 +6,10 @@
 // Approach: replay every player's MMR forward from 0 (MMR's real starting value) through a single
 // chronologically-ordered timeline of events — series reports (both queue types) and admin
 // /admin adjust-mmr corrections — snapshotting each series' participants' pre-report MMR along the
-// way, and applying the real season-close soft-reset decay formula (imported directly from
-// seasonClose.ts, not reimplemented) at each season boundary.
+// way, and applying the real season-close reset (imported directly from seasonDecay.ts, not
+// reimplemented) at each season boundary. Which reset that is depends on the season: season 1's
+// close was the hyperbolic soft decay, every close from season 2 on is a hard reset to 0 — see
+// seasonCloseHardResets.
 //
 // Deliberately NOT modeled (see CLAUDE.md's admission that an exact backfill isn't possible):
 // - /admin unreport: the reversed series is status='void', so it's excluded from the
@@ -16,7 +18,7 @@
 //   corrected, if applicable) series_players.mmr_delta directly, so a correction's effect is
 //   already baked into the value this module replays — the only imprecision is using the
 //   series' original reported_at as its timeline position rather than the later correction time.
-import { decayMmr, computeSafeMedian } from "./seasonDecay";
+import { decayMmr, computeSafeMedian, seasonCloseHardResets } from "./seasonDecay";
 
 export interface SeriesBatchInput {
   seriesId: string;
@@ -75,7 +77,7 @@ export interface ReconstructMmrHistoryResult {
   // while unranked — see CLAUDE.md's "Peak MMR" section).
   peakMmrByPlayer: Map<string, number>;
   // Divergences between the simulation and season_history's recorded ground truth at a season
-  // close — the simulation snaps to the recorded value when this happens (see runDecayForSeason
+  // close — the simulation snaps to the recorded value when this happens (see runSeasonCloseForSeason
   // below), so drift never compounds past one season boundary, but it's surfaced here as a
   // diagnostic since a nonzero drift usually means an unmodeled event (e.g. a mid-season admin
   // correction this module doesn't have audit-log coverage for) happened to that player.
@@ -132,6 +134,7 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
   });
 
   const orderedSeasons = [...input.seasons].sort((a, b) => a.seasonNumber - b.seasonNumber);
+  const seasonNumberById = new Map(input.seasons.map((s) => [s.seasonId, s.seasonNumber]));
 
   // A season with zero series ever reported still needs its decay pass reconstructed (season
   // close decays every non-test player, not just that season's participants) — anchored
@@ -173,7 +176,7 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
     checkpointByKey.set(`${c.seasonId}:${c.playerId}`, c.mmrAtClose);
   }
 
-  const runDecayForSeason = (seasonId: string) => {
+  const runSeasonCloseForSeason = (seasonId: string) => {
     // Snap to season_history's recorded pre-decay MMR where we have it — genuine ground truth
     // that bounds simulation drift to within a single season rather than letting it compound.
     for (const playerId of input.playerIds) {
@@ -192,11 +195,23 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
       mmr.set(playerId, checkpoint);
     }
 
-    // Mirrors applyMmrDecay's real pool: every non-test player, placed or not. This used to
+    // Mirrors the real close's pool: every non-test player, placed or not. This used to
     // approximate "currently placed at that past moment" from each player's simulated cumulative
     // rank-games-played count, which is no longer needed now that placement doesn't gate the
-    // decay pool at all — one less unmodeled approximation in the replay.
+    // pool at all — one less unmodeled approximation in the replay.
     if (input.playerIds.length === 0) return;
+
+    // Which rule this particular boundary used. A close from HARD_RESET_FROM_SEASON_NUMBER onward
+    // zeroes everyone (seasonClose.ts's resetAllMmrToZero); earlier closes ran the soft decay and
+    // their results were never rewritten, so replaying them with the hard reset would wrongly
+    // flatten a real, still-live piece of history. A season carrying no number falls back to the
+    // decay, matching how this function behaved before hard resets existed.
+    const seasonNumber = seasonNumberById.get(seasonId);
+    if (seasonNumber !== undefined && seasonCloseHardResets(seasonNumber)) {
+      for (const id of input.playerIds) mmr.set(id, 0);
+      return;
+    }
+
     const median = computeSafeMedian(input.playerIds.map((id) => mmr.get(id) ?? 0));
     for (const id of input.playerIds) {
       mmr.set(id, decayMmr(mmr.get(id) ?? 0, median, input.decayFactor));
@@ -204,7 +219,7 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
   };
 
   const preLoopSeasons = decaysByIndex.get(-1);
-  if (preLoopSeasons) for (const seasonId of preLoopSeasons) runDecayForSeason(seasonId);
+  if (preLoopSeasons) for (const seasonId of preLoopSeasons) runSeasonCloseForSeason(seasonId);
 
   events.forEach((e, i) => {
     if (e.kind === "series") {
@@ -223,7 +238,7 @@ export function reconstructMmrHistory(input: ReconstructMmrHistoryInput): Recons
     }
 
     const seasonIds = decaysByIndex.get(i);
-    if (seasonIds) for (const seasonId of seasonIds) runDecayForSeason(seasonId);
+    if (seasonIds) for (const seasonId of seasonIds) runSeasonCloseForSeason(seasonId);
   });
 
   return { mmrBeforeBySeries, finalMmrByPlayer: mmr, peakMmrByPlayer: peakMmr, driftWarnings };

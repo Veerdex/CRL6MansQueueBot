@@ -12,10 +12,10 @@ import { advanceMatchTimeStatsDayCounters } from "@/lib/discord/bonusDay";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // The scheduled season reset below runs a full closeSeason(): paged standings reads, a
-// season_history upsert, one MMR decay write per player, then a placement reset that fires two
+// season_history upsert, a single MMR reset write, then a placement reset that fires two
 // Discord role calls per previously-placed player. That is well past the ~10s a plain serverless
 // invocation allows, and the reset deletes its own config key *before* running (a claim, so a
-// double-fire can't double-decay) — so a timeout partway through leaves no scheduled retry behind
+// double-fire can't double-close) — so a timeout partway through leaves no scheduled retry behind
 // it and recovery is a manual /newseason. 300s is Vercel's own default today, so this pins the
 // ceiling rather than raising it — worth stating outright so the reset can't silently inherit a
 // shorter budget the way interactions/route.ts deliberately caps itself at 60.

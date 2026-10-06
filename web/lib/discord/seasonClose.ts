@@ -1,11 +1,10 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getConfigNumber } from "./config";
 import { resetAllPlacementsToUnranked } from "./bands";
 import type { SeasonRow } from "@/lib/supabase/types";
 import { seasonScoresByPlayerId } from "../mmr/allTimeRating";
 
-type CloseSummary = { participants: number; top10: number; playersDecayed: number; playersReset: number };
+type CloseSummary = { participants: number; top10: number; mmrReset: number; playersReset: number };
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -70,8 +69,6 @@ async function fetchAllPages<T>(page: (from: number, to: number) => PromiseLike<
 export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<CloseSummary> {
   const supabase = createAdminClient();
 
-  const decayFactor = await getConfigNumber("decay_factor", 0.25);
-
   // ---- Season standings: season_rank for every participant (>=1 reported game that season,
   // either queue — see CLAUDE.md, "Queueing"), and made_top10 for whoever ended the season
   // holding Prism — see the note above. The `made_top10` column name predates prism_top_n
@@ -111,9 +108,9 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
 
   const participantIds = [...gamesPlayedByPlayerId.keys()];
   if (participantIds.length === 0) {
-    const playersDecayed = await applyMmrDecay(supabase, decayFactor);
+    const mmrReset = await resetAllMmrToZero(supabase);
     const playersReset = await resetAllPlacementsToUnranked();
-    return { participants: 0, top10: 0, playersDecayed, playersReset };
+    return { participants: 0, top10: 0, mmrReset, playersReset };
   }
 
   const players = (
@@ -178,7 +175,7 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
     season_score: seasonScores.get(r.player.id) ?? 0,
   }));
   // Throw rather than continue: everything below this point is destructive and irreversible
-  // (applyMmrDecay, then resetAllPlacementsToUnranked), and these rows are the only record of the
+  // (resetAllMmrToZero, then resetAllPlacementsToUnranked), and these rows are the only record of the
   // standings it destroys. supabase-js resolves on a failed write instead of throwing, so without
   // this check a rejected upsert is completely silent — and PostgREST *rejects* a write naming a
   // column the table doesn't have (PGRST204) rather than dropping the field, which makes "the
@@ -194,70 +191,49 @@ export async function closeSeason(closedSeason: Pick<SeasonRow, "id">): Promise<
   // Prism role sync used to happen here (strip/grant against last season's `is_prism` holders).
   // That's now handled live by bands.ts's recomputeBands() for the ordinary case (re-evaluated on
   // every report/daily cron). At season-reset time specifically, though, resetAllPlacementsToUnranked
-  // (called below, via applyMmrDecay's sibling call) clears `is_prism` and the Prism role itself —
+  // (called below, via resetAllMmrToZero's sibling call) clears `is_prism` and the Prism role itself —
   // fixed this session, since a later recomputeBands() call can't reconsider a player it just reset
   // out of its own pool (is_placed/rank_games_played both get zeroed), so it could never actually
   // "clear out anyone who no longer qualifies" the way this comment used to (incorrectly) claim.
 
-  const playersDecayed = await applyMmrDecay(supabase, decayFactor);
+  const mmrReset = await resetAllMmrToZero(supabase);
   const playersReset = await resetAllPlacementsToUnranked();
 
-  return { participants: ranked.length, top10: top10Ids.size, playersDecayed, playersReset };
+  return { participants: ranked.length, top10: top10Ids.size, mmrReset, playersReset };
 }
 
 // ---------------------------------------------------------------------------
-// Soft reset — every non-test player, placed or not (and not just this season's participants —
-// see CLAUDE.md, "Seasons"), applied after standings are already written.
+// Hard reset — every non-test player, placed or not (and not just this season's participants —
+// see CLAUDE.md, "Seasons"), set to raw MMR 0, applied after standings are already written.
 //
-// The pool used to filter on is_placed = true, which left unplaced players carrying an
-// un-decayed rating into a season where everyone else had been compressed. Because the two
-// groups interleave across the whole ladder, that let an unplaced player start the new season
-// *above* a placed player they had finished below — the decay formula's "never reorders players"
-// guarantee only ever held within the pool, never across its boundary. Decaying everyone closes
-// that gap and costs nothing for the never-played case: decayMmr(0, ...) is exactly 0.
+// Raw 0 is display 1000 under the live transform (display = raw * mmr_scale + mmr_shift, 7.25 and
+// 1000), and it is exactly where a brand-new player starts: the column default is 0 and every
+// insert site uses 0. A season therefore now begins with the entire community genuinely level,
+// returning players and newcomers alike, instead of carrying a compressed copy of last season's
+// ladder forward.
 //
-// Widening the pool also widens what computeSafeMedian sees, so the compression constant now
-// reflects the whole community rather than the placed subset.
+// This replaces the hyperbolic soft decay (decayMmr, ../mmr/seasonDecay.ts) and with it the
+// unplaced-below-zero exemption that existed only because a soft reset moved absent players
+// *toward* 0 for free. A hard reset moves everyone to the same place, so sitting out buys nothing
+// relative to anyone else and there is nothing left to exempt. decayMmr/computeSafeMedian stay
+// exported from here because reconstructMmrHistory.ts still replays season 1's close with them.
 //
-// decayMmr/computeSafeMedian live in ../mmr/seasonDecay.ts (a plain, dependency-free module)
-// rather than here, so web/scripts/backfill-mmr-before.ts — a tsx script that can't rely on
-// Next.js's "react-server" resolution condition to no-op the "server-only" guard this file
-// carries — can import them directly. Re-exported below so every existing import site/test that
-// pulls them from "./seasonClose" keeps working unchanged.
+// peak_mmr is deliberately untouched, as at every other reset: it is a lifetime high-water mark
+// that nothing in the system ever lowers (see bands.ts's resetAllPlacementsToUnranked).
+//
+// One filtered UPDATE rather than a read plus a write per player — this runs inside /newseason's
+// request, and the old per-row fan-out was pure round trips. .neq("mmr", 0) keeps the returned
+// count honest ("players actually moved") and skips rewriting rows already at 0.
 // ---------------------------------------------------------------------------
 
-export { decayMmr, decayPlayerMmr, computeSafeMedian } from "../mmr/seasonDecay";
-import { decayPlayerMmr, computeSafeMedian } from "../mmr/seasonDecay";
+export { decayMmr, computeSafeMedian } from "../mmr/seasonDecay";
 
-async function applyMmrDecay(supabase: SupabaseAdmin, decayFactor: number): Promise<number> {
-  const pool = await fetchAllPages((from, to) =>
-    supabase
-      .from("crl6mansqueuebot_players")
-      .select("id, mmr, is_placed")
-      .eq("is_test_data", false)
-      .order("id")
-      .range(from, to)
-      .then(({ data }) => data ?? []),
-  );
-  if (pool.length === 0) return 0;
-
-  // Over the WHOLE pool, including the unplaced-negative players decayPlayerMmr will exempt below.
-  // The median is a scale constant describing the distribution, not a list of who is being changed
-  // — dropping the exempt players from it would silently alter how everyone *else* decays, which
-  // is not what the exemption is for.
-  const median = computeSafeMedian(pool.map((p) => p.mmr));
-
-  // Exempt players are skipped outright rather than written back with their own value: a no-op
-  // UPDATE per exempt player is pure round trips (21 of them on the live pool as of this change),
-  // and this runs inside /newseason's request.
-  // Carries `before` rather than indexing back into `pool`, so inserting any filter upstream of
-  // this map can't silently misalign the comparison against the wrong player's rating.
-  const updates = pool
-    .map((p) => ({ id: p.id, before: p.mmr, mmr: decayPlayerMmr(p.mmr, p.is_placed, median, decayFactor) }))
-    .filter((u) => u.mmr !== u.before);
-
-  await Promise.all(updates.map((u) => supabase.from("crl6mansqueuebot_players").update({ mmr: u.mmr }).eq("id", u.id)));
-  // The count of players actually moved, not the pool size — an exempt player was not decayed and
-  // saying otherwise would make the summary claim writes that never happened.
-  return updates.length;
+async function resetAllMmrToZero(supabase: SupabaseAdmin): Promise<number> {
+  const { data } = await supabase
+    .from("crl6mansqueuebot_players")
+    .update({ mmr: 0 })
+    .eq("is_test_data", false)
+    .neq("mmr", 0)
+    .select("id");
+  return data?.length ?? 0;
 }

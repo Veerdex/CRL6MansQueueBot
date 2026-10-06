@@ -5,6 +5,12 @@
 // condition to make the server-only guard a no-op the way Next/Vitest do). seasonClose.ts
 // re-exports both functions so its own existing import sites/tests are unaffected.
 //
+// NO LONGER THE LIVE SEASON-CLOSE RULE. From season 2's close onward a close is a HARD reset:
+// every non-test player goes to raw MMR 0 outright (see seasonCloseHardResets below, and
+// seasonClose.ts's resetAllMmrToZero). decayMmr survives only so reconstructMmrHistory.ts can
+// still replay season 1's close, which genuinely was a soft decay — deleting it would silently
+// rewrite that boundary in every historical mmr_before/peak_mmr recomputation.
+//
 // CURRENTLY DISABLED — see SYMMETRIC_NEGATIVE_DECAY below. The live behavior is the older
 // `mmr / 2` halving for below-zero players; everything the next paragraph describes applies only
 // to the mmr >= 0 half until that constant is flipped to true. The symmetric form is kept here,
@@ -45,45 +51,22 @@
 // migration to be hand-applied before it could take effect.
 const SYMMETRIC_NEGATIVE_DECAY = false;
 
-// Roster-aware wrapper over decayMmr: the rule the season close actually applies to a player.
+// The season number from whose CLOSE every rating is reset to 0 outright instead of decayed.
 //
-// An unplaced player below 0 is left EXACTLY as they are, rather than halved toward it. The
-// halving is a recovery mechanic for the bottom of the ladder (commit 814ee7c), but for a player
-// who never placed it was a pure reward for absence: their MMR moved toward 0 every close, so
-// sitting out a season was strictly better than playing, and a player could ride repeated closes
-// back up to par having never queued. On the live pool at the time this was written, 21 unplaced
-// players sat below 0 and would have been handed 64.8 raw MMR (~469 display points) between them
-// for doing nothing, the worst single case being +80 display — more than a supercharged BO7 win.
+// Season 1's close (2026-09-01) ran the soft decay below and nothing has rewritten those values,
+// so a replay of that boundary must keep using decayMmr. Season 2's close (2026-10-01) also ran
+// the soft decay, but the whole roster was then reset to 0 by hand the same day, before a single
+// season-3 series was played — so its NET effect was a hard reset, and that is what the replay has
+// to reproduce. Every close from here on is a hard reset by design.
 //
-// Scoped to unplaced deliberately. A *placed* player below 0 still halves: they completed a real
-// placement run, and compressing the ladder toward the middle is what the soft reset is for. This
-// is a user decision, not a derivation — the same absence argument does technically apply to them.
-//
-// isPlaced is read at decay time, which seasonClose.ts runs BEFORE
-// resetAllPlacementsToUnranked() wipes is_placed/rank_games_played across the whole roster, so it
-// means "placed during the season being closed" rather than "placed right now" (right now, just
-// after a close, is nobody). The exemption is therefore per-season and escapable: a frozen player
-// who plays their placement games next season is placed at the following close and decays
-// normally.
-//
-// Deliberately NOT folded into decayMmr itself. That function stays a pure function of
-// (mmr, median, decayFactor) because reconstructMmrHistory.ts imports it for the live history
-// replay behind recomputeTruePeakMmr (/correct, /admin correct-report), and that replay's `placed`
-// set is never cleared at a season boundary — it models "ever placed", not per-season placement,
-// so it cannot express this rule correctly without also modelling the placement reset. Leaving the
-// replay on the plain formula keeps it exactly as accurate as it was: it is already documented
-// best-effort, snaps to season_history checkpoints at every boundary, and its only consumer (peak
-// MMR) clamps at Math.max(current, 0) for placed players only, so a below-zero divergence cannot
-// move a peak.
-//
-// Note this breaks decayMmr's "never reorders players" property *across* the placed/unplaced
-// split — an exempt unplaced player at -30 stays put while a placed player at -40 halves to -20
-// and passes them. That is intended and harmless: ordering only matters for the leaderboard and
-// band cutoffs, both of which exclude unplaced players, and every placement is cleared moments
-// later anyway. Within either group the ordering guarantee still holds.
-export function decayPlayerMmr(mmr: number, isPlaced: boolean, median: number, decayFactor: number): number {
-  if (!isPlaced && mmr < 0) return mmr;
-  return decayMmr(mmr, median, decayFactor);
+// A plain constant rather than a config key or a per-caller input: it is a statement about what
+// already happened to the live data, not runtime behavior an admin should be able to tune, and
+// both replay callers (peakMmrRecompute.ts, scripts/backfill-mmr-before.ts) would only ever
+// hardcode the same value.
+export const HARD_RESET_FROM_SEASON_NUMBER = 2;
+
+export function seasonCloseHardResets(seasonNumber: number): boolean {
+  return seasonNumber >= HARD_RESET_FROM_SEASON_NUMBER;
 }
 
 export function decayMmr(mmr: number, median: number, decayFactor: number): number {
