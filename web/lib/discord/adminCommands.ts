@@ -117,7 +117,6 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/report` — run inside your match channel to report the result (inferred from your own team). Settles immediately.",
     "`/sub nominee:<@user>` — run inside your match channel to nominate a replacement for yourself; they must accept via a button.",
     "`/nominate target:<@user> nominee:<@user>` — run inside your match channel to request a sub for any player in the match (disconnected, etc.), including yourself.",
-    "`/abandon target:<@user>` — run inside your match channel to vote a player as abandoned. 3 votes cancels the series.",
     "`/correct` — vote to flip your last match's result if it was mis-reported. 5 of 6 players needed.",
     "`/mafia [mode:] [count:] [password:]` — start a game of Mafia in this channel; Join/Leave buttons fill a 6-player lobby, then the Mafia are secretly picked. `mode:` Hidden Objective gives each Mafia a specific sabotage goal instead; Team Mafia has no Mafia at all — it splits the lobby into two MMR-balanced teams (Blue and Orange) and privately deals each side an objective worth 2 points, with the win worth 1. `count:` sets how many Mafia (default 1; 0 is a coin flip between one and none), and is ignored in Team Mafia. Set a password to require it on Join.",
     "`/reveal` — after a Mafia game, show who was the Mafia (and their objectives), or in Team Mafia both teams' objectives. Only that game's players can run it, and only once.",

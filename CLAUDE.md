@@ -31,7 +31,7 @@ Read the full memory **only when relevant to the task**. Search it for the featu
 
 ## Current phase status
 
-Implemented and deployed: leaderboard, queue system, team formation, Elo engine, bands and role synchronization, reporting, substitutes, abandonment/cancellation, seasons, admin tools, and audit logging. Remaining website features beyond the implemented leaderboard/analytics surfaces are handled one phase at a time.
+Implemented and deployed: leaderboard, queue system, team formation, Elo engine, bands and role synchronization, reporting, substitutes, cancellation, seasons, admin tools, and audit logging. Remaining website features beyond the implemented leaderboard/analytics surfaces are handled one phase at a time.
 
 ## Core queue and series rules
 
@@ -39,7 +39,6 @@ Implemented and deployed: leaderboard, queue system, team formation, Elo engine,
 - Queue joins/leaves must use atomic RPC/check-and-write behavior so simultaneous joins cannot exceed six.
 - A series expires after two unreported hours and is voided with no MMR change.
 - `/cancel` voids a forming or active series after four of six votes. Every sub-threshold vote gets a small public progress announcement.
-- `/abandon target:` voids after three of the other five players report the same absent player. Self-targeting is rejected.
 - All settlement paths must atomically claim an unsettled series before changing records, clearing pending state, posting results, or tearing down channels.
 
 ## Team formation
@@ -72,7 +71,7 @@ The configured weekly bonus period increases both gains and losses using a multi
 - `/correct` (no options) always targets the caller's own most-recently-reported, non-test match. Once 5 of that match's 6 players have each run it, the winner flips, MMR/bands/streaks recompute the same way `/admin correct-report` does, and a fresh report summary posts. One-time only per match, atomically claimed like every other settlement path. Every report embed advertises it in a footer line.
 - `/sub nominee:` nominates a replacement for the caller. `/nominate target: nominee:` lets a participant nominate for another participant.
 - The nominee must accept. Recheck that the nominee is not locked in another active series before swapping them into the same team seat.
-- Rank MMR applies to the players who finish the series. Remove stale abandon votes and queue membership during substitution.
+- Rank MMR applies to the players who finish the series. Remove queue membership during substitution.
 - Pending substitute requests expire through the sweep route.
 - Series teardown moves participants who are currently inside that series' team voice channels to the configured lobby, then deletes match channels. Never move a participant from an unrelated voice channel.
 - Teardown is best-effort but database settlement must not be blocked by Discord cleanup failure. The sweep route retries orphaned channel cleanup.
@@ -89,7 +88,7 @@ The configured weekly bonus period increases both gains and losses using a multi
 
 ## Commands and administration
 
-User flows include queue join/leave/status, reporting, voting/drafting, substitute nomination and acceptance, abandonment, cancellation, help, leaderboard/stat views, and supported mini-games. Follow existing dispatch and registration patterns whenever adding or changing commands.
+User flows include queue join/leave/status, reporting, voting/drafting, substitute nomination and acceptance, cancellation, help, leaderboard/stat views, and supported mini-games. Follow existing dispatch and registration patterns whenever adding or changing commands.
 
 Admin authorization is role-based and uses configured Discord admin roles. Admin changes must be audited with structured before/after or change metadata. Existing controls cover configuration, queue/channel setup, season operations, band recomputation, player/MMR corrections, report correction/unreporting, series cancellation, test matches, avatar refresh, message modes, bonus settings, and feature toggles. Search the full memory and current command registration before modifying the admin surface.
 

@@ -569,7 +569,7 @@ async function freezeQueueRosterMessage(supabase: AdminClient, queueType: QueueT
     .eq("queue_type", queueType);
 }
 
-// Refreshes the queue's tracked status message after a series settles (report/abandon/cancel/
+// Refreshes the queue's tracked status message after a series settles (report/cancel/
 // sweep timeout) — but only in modes freezeQueueRosterMessage never touched at pop time. Rich and
 // hybrid modes already left message_id null there specifically so the channel shows nothing until
 // the next real /q or /l posts a fresh message (see freezeQueueRosterMessage's comment) — calling
@@ -607,7 +607,7 @@ export async function initQueueMessage(queueType: QueueType, channelId: string) 
 
 // `onCreated` fires only when this call actually inserts a new player row (not on lookups of an
 // existing one) — used by the queue join path to grant the "Unranked" role on a player's first
-// ever queue, without every other caller (report, sub, abandon, etc.) needing to know about it.
+// ever queue, without every other caller (report, sub, etc.) needing to know about it.
 export async function getOrCreatePlayer(
   supabase: AdminClient,
   discordId: string,
@@ -659,7 +659,7 @@ export async function isPlayerLockedInActiveSeries(supabase: AdminClient, player
 }
 
 // Same lobby∪series_players lookup as isPlayerLockedInActiveSeries, but returns the series
-// row itself rather than a boolean — used by /sub and /abandon to resolve "the caller's
+// row itself rather than a boolean — used by /sub to resolve "the caller's
 // match" by membership instead of by channel. queue_channel_id is a shared queue channel, not
 // a per-match channel, so multiple concurrently forming/active series can
 // have the same queue_channel_id; a player can only be locked into one at a time, so

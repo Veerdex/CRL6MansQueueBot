@@ -627,7 +627,7 @@ async function processVoteButton(interaction: DiscordInteraction, seriesId: stri
 
 // Casts (or re-casts) `playerId`'s cancel vote against `series` and, once CANCEL_VOTE_THRESHOLD
 // is reached, atomically voids it (same UPDATE...WHERE-status-IN claim pattern used throughout
-// this codebase, so a race against a simultaneous /report or /abandon can't double-settle).
+// this codebase, so a race against a simultaneous /report can't double-settle).
 // Called by the /cancel slash command below, for both 'forming' and 'active' series. Voice
 // channels only exist once a series is 'active' (finalizeTeams creates them) —
 // deleteMatchChannels no-ops on the null ids a still-'forming' series has.
@@ -684,7 +684,7 @@ async function registerCancelVoteAndMaybeVoid(
   // refreshQueueMessageAfterSettlement's own comment for why rich/hybrid modes skip this instead.
   await refreshQueueMessageAfterSettlement(supabase, series.queue_type);
 
-  // Same 30s closing-warning window /report and /abandon use before the actual voice-channel
+  // Same 30s closing-warning window /report uses before the actual voice-channel
   // teardown — no-op for a still-'forming' void, since voice channels don't exist yet.
   await new Promise((resolve) => setTimeout(resolve, 30_000));
   await deleteMatchChannels(supabase, series);
@@ -696,9 +696,9 @@ async function registerCancelVoteAndMaybeVoid(
 // /cancel — usable by any of the 6 players in a popped match, in either 'forming' or 'active'
 // status (no vote-message button anymore — removed since it duplicated /cancel as a voting
 // option; this command is now the only way to cast a cancel vote). Casts a no-fault cancel
-// vote toward the same CANCEL_VOTE_THRESHOLD; no target, unlike /abandon (see
-// CLAUDE.md, "Mid-series abandonment") which blames a specific player and needs only 3 of the
-// remaining 5. `id:` is an optional admin-gated override, same pattern as /report/`/sub`/`/abandon`.
+// vote toward the same CANCEL_VOTE_THRESHOLD; no target. Since /abandon's removal this is the
+// only player-side way to void a live series — the targeted "3 of the remaining 5 blame one
+// player" path is gone. `id:` is an optional admin-gated override, same pattern as /report/`/sub`.
 // ---------------------------------------------------------------------------
 
 export function handleCancelCommand(interaction: DiscordInteraction) {

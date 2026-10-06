@@ -16,9 +16,8 @@ import type { SeriesRow, SeriesPlayerRow, Team } from "@/lib/supabase/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-// Votes required to flip a mis-reported match — "5 of 6" per the user's spec. Unlike
-// /abandon's "3 of the remaining 5" (a target can't vote for themself), all 6 participants
-// including the requester can vote here, since nobody is being blamed.
+// Votes required to flip a mis-reported match — "5 of 6" per the user's spec. All 6
+// participants including the requester can vote, since nobody is being blamed.
 const CORRECT_VOTE_THRESHOLD = 5;
 
 // ---------------------------------------------------------------------------

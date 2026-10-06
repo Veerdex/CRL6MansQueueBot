@@ -301,11 +301,6 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
   // sitting in, mirroring the pop-time cross-removal in queue.ts's handlePop.
   await supabase.from("crl6mansqueuebot_queue_members").delete().eq("player_id", nominee.id);
 
-  // Stale-vote cleanup: the leaving player is out via a legitimate sub now, so any
-  // abandon_votes referencing them (as voter or target) would otherwise let a delayed 3rd
-  // vote wrongly void the series after they've already been properly replaced.
-  await supabase.from("crl6mansqueuebot_abandon_votes").delete().eq("series_id", seriesId).or(`voter_player_id.eq.${leavingPlayerId},target_player_id.eq.${leavingPlayerId}`);
-
   if (series.queue_channel_id) {
     await discordFetch(`/channels/${series.queue_channel_id}/permissions/${nominee.discord_id}`, {
       method: "PUT",

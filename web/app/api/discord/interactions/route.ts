@@ -18,7 +18,6 @@ import { handleScheduleResetCommand } from "@/lib/discord/scheduledReset";
 import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleNominateCommand, handleSubAcceptButton } from "@/lib/discord/sub";
-import { handleAbandonCommand } from "@/lib/discord/abandon";
 import { handleCorrectCommand } from "@/lib/discord/correct";
 import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand, handleSeriesLengthVoteButton } from "@/lib/discord/teamFormation";
 import type { VoteChoice, SeriesLength } from "@/lib/supabase/types";
@@ -220,10 +219,6 @@ export async function POST(request: Request) {
 
     if (commandName === "nominate") {
       return NextResponse.json(handleNominateCommand(interaction));
-    }
-
-    if (commandName === "abandon") {
-      return NextResponse.json(handleAbandonCommand(interaction));
     }
 
     if (commandName === "cancel") {

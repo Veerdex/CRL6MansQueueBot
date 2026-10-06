@@ -17,7 +17,7 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 // the id: override was admin-gated and the no-id: case was open to any player); the whole
 // command now requires admin access, checked once up front, the same way /admin's own
 // dispatcher gates its entire subtree. With no id:, resolved by the caller's own membership
-// (getLockedSeriesForPlayer, same helper /abandon/sub use) — an admin can check their own
+// (getLockedSeriesForPlayer, same helper /sub uses) — an admin can check their own
 // match's chances the same way a report/dispute would need to. `id:` is an override to check
 // any match from outside it. Since an id:-override caller isn't necessarily a participant,
 // that path shows both teams' percentages instead of picking a "your team" side (falls back

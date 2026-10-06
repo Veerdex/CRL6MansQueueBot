@@ -280,7 +280,7 @@ async function resolveReportedSeriesId(supabase: AdminClient, idOrMatchNumber: s
 // ---------------------------------------------------------------------------
 // /admin unreport id:<series_id> — reverses a reported series back to 'void' (reusing the
 // existing status rather than adding a new one; the audit log entry is what distinguishes an
-// admin-corrected void from a genuine timeout/abandon void). Unwinds each affected player's
+// admin-corrected void from a genuine timeout/cancel void). Unwinds each affected player's
 // mmr_delta (rank-queue series only) and the games-played counters /report incremented,
 // mirroring report.ts's writes in reverse. Match channels are already long gone by the time a
 // series is reported (deleted 30s after /report), so there's nothing to clean up there.
@@ -540,7 +540,7 @@ async function processCorrectReport(
 // ---------------------------------------------------------------------------
 // /admin cancel-series [id] — void an in-progress (forming/active) series. Shares
 // claimSeriesVoid/closeMatchChannelsAfterDelay (matchChannels.ts) with /admin force-leave's
-// active-series case, and the same reply-then-delay ordering /report and /abandon use so the
+// active-series case, and the same reply-then-delay ordering /report and /cancel use so the
 // admin's ephemeral confirmation isn't blocked on the 30s closing warning. With no id:, resolves
 // to whichever match the calling admin is currently sitting in (via membership, not channel —
 // queue_channel_id is a shared queue channel, so multiple concurrently active series can share
@@ -676,7 +676,7 @@ async function processAdjustMmr(
 // ---------------------------------------------------------------------------
 // /admin force-leave target:<@user> — dequeues the player if only queued, and/or voids any
 // active series they're locked into. An admin bypass for a stuck/unresponsive player when the
-// other 5 can't gather 3 /abandon votes.
+// other 5 can't gather the 4 /cancel votes.
 // ---------------------------------------------------------------------------
 
 async function findActiveSeriesForPlayer(supabase: AdminClient, playerId: string): Promise<SeriesRow[]> {

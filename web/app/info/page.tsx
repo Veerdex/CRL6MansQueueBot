@@ -153,8 +153,7 @@ export default async function InfoPage() {
             <li>
               Didn&apos;t get reported? A match <em>auto-cancels</em> after {seriesTimeoutHours} hour
               {seriesTimeoutHours === 1 ? "" : "s"} with no MMR change. You can also vote it away early with{" "}
-              <strong>/cancel</strong> (4 of 6 players) or call out an AFK teammate with{" "}
-              <strong>/abandon</strong> (3 of the other 5).
+              <strong>/cancel</strong> (4 of 6 players) — the way to deal with an AFK teammate.
             </li>
           </ul>
         </Section>

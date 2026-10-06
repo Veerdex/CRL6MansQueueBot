@@ -483,7 +483,7 @@ async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, s
   }
 
   await clearPendingSeriesState(supabase, series.id);
-  // Same staleness fix as /cancel, /abandon, /report — the queue status message is left
+  // Same staleness fix as /cancel and /report — the queue status message is left
   // un-refreshed at pop time, so it keeps showing the pre-pop roster as "currently queued"
   // through however the series ends unless something explicitly refreshes it afterward. See
   // refreshQueueMessageAfterSettlement's own comment for why rich/hybrid modes skip this instead.
