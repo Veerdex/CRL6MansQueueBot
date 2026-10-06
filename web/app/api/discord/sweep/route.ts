@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage, GOLD_COLOR } from "@/lib/discord/rest";
 import { getConfigNumber, getConfigValue, deleteConfigValue } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
+import { reclaimStrayMatchRoles } from "@/lib/discord/matchRole";
 import { postTrackedQueueMessage, refreshQueueMessage, refreshQueueMessageAfterSettlement, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
@@ -174,6 +175,18 @@ export async function POST(request: Request) {
   for (const series of orphanCandidates ?? []) {
     await deleteMatchChannels(supabase, series);
     orphansCleaned += 1;
+  }
+
+  // Stray match roles. Every teardown path deletes its own role, so this only ever catches a
+  // leak — but it is load-bearing rather than tidy-up: Discord caps a guild at 250 roles and
+  // this one already sits around 204, and hitting the ceiling blocks *all* role creation
+  // server-wide, band roles included. See matchRole.ts for the age floor that keeps it from
+  // deleting a role created seconds ago whose id hasn't been written back yet.
+  let matchRolesReclaimed = 0;
+  try {
+    matchRolesReclaimed = await reclaimStrayMatchRoles(supabase);
+  } catch (err) {
+    console.error("Sweep: failed to reclaim stray match roles", err);
   }
 
   // Queue member timeout: auto-remove players who've been queued too long without a pop.
@@ -443,6 +456,7 @@ export async function POST(request: Request) {
     seriesLengthResolved,
     draftPicksForced,
     orphansCleaned,
+    matchRolesReclaimed,
     queueMembersRemoved,
     subRequestsExpired,
     mafiaLobbiesCancelled,

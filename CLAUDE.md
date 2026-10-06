@@ -73,7 +73,7 @@ The configured weekly bonus period increases both gains and losses using a multi
 - The nominee must accept. Recheck that the nominee is not locked in another active series before swapping them into the same team seat.
 - Rank MMR applies to the players who finish the series. Remove queue membership during substitution.
 - Pending substitute requests expire through the sweep route.
-- Series teardown moves participants who are currently inside that series' team voice channels to the configured lobby, then deletes match channels. Never move a participant from an unrelated voice channel.
+- Series teardown moves participants who are currently inside that series' team voice channels to the configured lobby, then deletes match channels and the series' temporary match role. Never move a participant from an unrelated voice channel.
 - Teardown is best-effort but database settlement must not be blocked by Discord cleanup failure. The sweep route retries orphaned channel cleanup.
 
 ## Discord channel behavior
@@ -82,6 +82,7 @@ The configured weekly bonus period increases both gains and losses using a multi
 - `/status` returns an ephemeral one-off roster using the hybrid roster format.
 - A sixth join still renders the ordinary rich join card. A separate gold Match Found message preserves the full six-player roster.
 - Mentions that must notify belong in top-level message content, not inside embeds.
+- A popped series gets a temporary, randomly-coloured `@Match #N` role. Both all-six pings use it instead of six individual mentions. It must be created and assigned before the first message is posted, since Discord resolves a role mention against the role's membership at send time. Every ping site falls back to individual mentions whenever the role is absent. The sweep reclaims strays, which is load-bearing rather than tidy-up: the guild runs near Discord's hard 250-role-per-guild cap, and reaching it would block all role creation including band roles.
 - Rich join cards may use purple on bonus days. Rich leave cards stay red and inactivity removal cards stay orange regardless of bonus-day styling.
 - Team voice channels are visible to everyone but connectable only by participants, admins, and the bot. Substitute permission changes must be scoped to those channels.
 - Voice channel names use the persistent series `match_number`. Real series obtain it atomically from the database sequence; test/dev series explicitly use `null` so they do not consume real match numbers.

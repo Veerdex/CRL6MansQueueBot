@@ -16,6 +16,7 @@ import { interactionUserId, interactionDisplayName, type DiscordInteraction } fr
 import { createVoiceChannels, postTrackedQueueMessage, getOrCreatePlayer, getLockedSeriesForPlayer, refreshQueueMessageAfterSettlement, buildRosterLines } from "./queue";
 import { getStreakIds, mention } from "./streaks";
 import { deleteMatchChannels, clearPendingSeriesState } from "./matchChannels";
+import { computePreviewMatchNumber } from "./matchNumber";
 import { recordMatchTimeStats } from "./matchTimeStats";
 import { calculateTeamStrength } from "@/lib/mmr/teamStrength";
 
@@ -190,8 +191,15 @@ export async function renderFormationMessage(
   // Mentions live in `content`, not the embed — embed-only mentions never fire a notification.
   // Discord doesn't re-notify on edit, so carrying them through every PATCH pings once, at the
   // original post, exactly like the old separate "Match Found!" announcement did.
+  //
+  // One `@Match #n` role ping rather than six individual mentions (see matchRole.ts). The role
+  // is created before this message is ever posted, because Discord resolves a role mention
+  // against the role's membership at send time — all six have to be wearing it already or the
+  // ping notifies nobody. Falls back to the per-player mentions whenever there is no role: a
+  // creation failure, a test series, or a database without migration 0053 applied yet.
   const decorate = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
-  const content = members.map((m) => decorate(m)).join(" ");
+  const matchRoleId = (series as { match_role_id?: string | null } | null)?.match_role_id ?? null;
+  const content = matchRoleId ? `<@&${matchRoleId}>` : members.map((m) => decorate(m)).join(" ");
 
   const rosterLines = await buildRosterLines(members, streaks);
   const fields: { name: string; value: string; inline?: boolean }[] = [];
@@ -1474,39 +1482,6 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   }
 }
 
-// Live "preview" number for voice-channel naming while a match is still being played — the real
-// match_number isn't assigned until the series actually reports (crl6mansqueuebot_assign_match_
-// number, called from report.ts), so no genuine number exists yet at team-formation time. This
-// estimates "what number would this match get if every currently in-flight match reported in the
-// order it was created": the count of already-reported real matches, plus how many other
-// in-flight real matches were created at or before this one. That second term is what makes
-// multiple concurrent matches each get a distinct, increasing preview instead of every one of
-// them showing the same "current max + 1" — but since matches don't necessarily *report* in pop
-// order, a given match's preview can still end up different from its actual final match_number.
-// Display-only and never persisted anywhere, so there's nothing to keep in sync when that happens.
-async function computePreviewMatchNumber(supabase: AdminClient, seriesCreatedAt: string): Promise<number> {
-  const [maxReportedResult, aheadCountResult] = await Promise.all([
-    supabase
-      .from("crl6mansqueuebot_series")
-      .select("match_number")
-      .eq("status", "reported")
-      .eq("is_test_data", false)
-      .not("match_number", "is", null)
-      .order("match_number", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("crl6mansqueuebot_series")
-      .select("*", { count: "exact", head: true })
-      .in("status", ["forming", "active"])
-      .eq("is_test_data", false)
-      .lte("created_at", seriesCreatedAt),
-  ]);
-  const maxReported = (maxReportedResult.data as { match_number: number } | null)?.match_number ?? 0;
-  const aheadCount = aheadCountResult.count ?? 0;
-  return maxReported + aheadCount;
-}
-
 // ---------------------------------------------------------------------------
 // Finalize: write series_players, drop the lobby, flip the series to 'active', create the
 // two team voice channels, unlock the text channel's message lock, post a summary.
@@ -1544,7 +1519,7 @@ async function finalizeTeams(
   // and stays null until the series is actually reported (see report.ts).
   const { data: seriesData } = await supabase
     .from("crl6mansqueuebot_series")
-    .select("created_at, bonus_day_multiplier, is_test_data, series_length, vote_result, formation_message_id")
+    .select("created_at, bonus_day_multiplier, is_test_data, series_length, vote_result, formation_message_id, match_role_id")
     .eq("id", seriesId)
     .single();
   const fetchedSeriesData = seriesData as {
@@ -1554,6 +1529,7 @@ async function finalizeTeams(
     series_length?: SeriesLength | null;
     vote_result?: VoteChoice | null;
     formation_message_id?: string | null;
+    match_role_id?: string | null;
   } | null;
   const supercharged = (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1;
   const formationColor = supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR;
@@ -1626,7 +1602,12 @@ async function finalizeTeams(
   // Post the "Teams formed!" message. Mentions in `content` (not just embed fields) are what
   // actually trigger a Discord notification — see CLAUDE.md, "Queue channels" for the same
   // content-vs-embed distinction on the first-join role ping.
-  const allMentions = members.map(memberMention).join(" ");
+  // Same role ping as the formation message, same fallback — see renderFormationMessage. Unlike
+  // that message this one is kept permanently, so teardown rewrites this line back to plain
+  // mentions before deleting the role (matchRole.ts's releaseMatchRole); otherwise every past
+  // match in the channel would end up reading "@deleted-role — teams are formed!".
+  const matchRoleId = fetchedSeriesData?.match_role_id ?? null;
+  const allMentions = matchRoleId ? `<@&${matchRoleId}>` : members.map(memberMention).join(" ");
 
   // Subtitle carries forward the two things the now-deleted formation message showed: the
   // series length the lobby voted for, and which formation mode produced these teams.
@@ -1665,4 +1646,16 @@ async function finalizeTeams(
       message_type: "teams_formed",
       keep_permanently: true,
     } as any);
+
+  // Only needed when the content line actually carries a role mention. Best-effort: failing to
+  // record it costs cosmetics in channel history, never settlement.
+  if (matchRoleId) {
+    const { error: teamsFormedIdError } = await supabase
+      .from("crl6mansqueuebot_series")
+      .update({ teams_formed_message_id: message.id } as never)
+      .eq("id", seriesId);
+    if (teamsFormedIdError) {
+      console.error(`Could not record the teams-formed message id for series ${seriesId}`, teamsFormedIdError);
+    }
+  }
 }

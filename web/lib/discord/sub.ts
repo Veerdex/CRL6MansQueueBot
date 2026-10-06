@@ -4,6 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags, MessageComponentType
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse } from "./rest";
 import { getOrCreatePlayer, isPlayerLockedInActiveSeries, getLockedSeriesForPlayer } from "./queue";
+import { swapMatchRoleHolder } from "./matchRole";
 import { hasAdminAccess } from "./admin";
 import { getStreakIds, mention } from "./streaks";
 import { VIEW_CHANNEL, CONNECT, MEMBER_TYPE } from "./permissions";
@@ -300,6 +301,12 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
   // The nominee is now locked into this series — pull them out of any queue they were
   // sitting in, mirroring the pop-time cross-removal in queue.ts's handlePop.
   await supabase.from("crl6mansqueuebot_queue_members").delete().eq("player_id", nominee.id);
+
+  // Carry the temporary `@Match #n` role across with the seat, so a later ping on this series
+  // reaches the people actually in it. Best-effort — costs a ping, never the swap itself.
+  if (leavingPlayer) {
+    await swapMatchRoleHolder(supabase, seriesId, leavingPlayer.discord_id, nominee.discord_id);
+  }
 
   if (series.queue_channel_id) {
     await discordFetch(`/channels/${series.queue_channel_id}/permissions/${nominee.discord_id}`, {

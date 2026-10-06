@@ -8,6 +8,7 @@ import { getAdminRoleIds, hasAdminAccess, logAdminAction } from "./admin";
 import { VIEW_CHANNEL, SEND_MESSAGES, CONNECT, ROLE_TYPE, MEMBER_TYPE, type PermissionOverwrite } from "./permissions";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { startTeamFormation, startSeriesLengthVote } from "./teamFormation";
+import { createMatchRole } from "./matchRole";
 import { computeBonusDayMultiplier, isSuperchargedDayLive } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber, getConfigValue } from "./config";
@@ -996,6 +997,14 @@ async function handlePop(
 }
 
 export async function createMatchChannels(supabase: AdminClient, seriesId: string, guildId: string, members: PlayerRow[], queueChannelId: string) {
+  // The temporary `@Match #n` role, created before either branch below posts the formation
+  // message: Discord resolves a role mention against the role's membership at send time, so the
+  // six have to be wearing it already or the ping reaches nobody. Deliberately outside the try
+  // — createMatchRole swallows its own failures and returns null, so a role problem can never
+  // surface to players as "Failed to start team formation"; the message just falls back to six
+  // individual mentions.
+  await createMatchRole(supabase, seriesId, guildId, members);
+
   try {
     // Best-of-3/5/7 pre-vote, feature-flagged and off by default — see CLAUDE.md, "Team
     // formation (on pop)". When disabled, startTeamFormation runs exactly as it always has;

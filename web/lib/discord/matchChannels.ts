@@ -1,5 +1,6 @@
 import "server-only";
 import { discordFetch, getGuildId } from "./rest";
+import { releaseMatchRole } from "./matchRole";
 import { getConfigValue } from "./config";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { SeriesRow } from "@/lib/supabase/types";
@@ -81,6 +82,14 @@ async function moveTeamVoiceOccupantsToLobby(supabase: AdminClient, series: Seri
 // own 30s-delayed cleanup, the sweep route's timeout-void path, and /cancel's void path.
 // In the redesigned architecture, text channels and per-match categories are not created.
 export async function deleteMatchChannels(supabase: AdminClient, series: SeriesRow) {
+  // Also the series' temporary `@Match #n` role, which is what frees a slot against Discord's
+  // hard 250-roles-per-guild cap — this guild runs close enough to it that leaking roles would
+  // eventually block band-role creation server-wide. Ahead of the voice-channel loop rather than
+  // inside it because a series can hold a role without ever having had channels (a cancelled or
+  // vote-silenced match dies while still 'forming'), and that loop skips null channel ids. Never
+  // throws; see matchRole.ts.
+  await releaseMatchRole(supabase, series);
+
   await moveTeamVoiceOccupantsToLobby(supabase, series).catch((err) =>
     console.error(`Lobby redirect failed for series ${series.id}`, err),
   );

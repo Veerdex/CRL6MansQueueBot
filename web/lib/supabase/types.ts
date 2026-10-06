@@ -68,6 +68,14 @@ export type SeriesRow = {
   // so a slower render can tell it has been superseded and drop its PATCH instead of reverting
   // the message to an older phase.
   formation_render_seq: number;
+  // Temporary per-match Discord role — see migration 0053_match_role.sql. Null outside a live
+  // match: created when the queue pops, deleted (and cleared) at teardown. Null also means "no
+  // role" for a test series and for any database that hasn't had 0053 applied yet, in which case
+  // every ping site falls back to six individual mentions.
+  match_role_id: string | null;
+  // The permanent "Teams formed!" message, remembered so teardown can rewrite its role ping back
+  // to plain mentions before the role is deleted — see 0053 again.
+  teams_formed_message_id: string | null;
   // One-time claim sentinel for /correct's player-vote flip — see migration
   // 0045_correct_votes.sql. Null until a series is flipped via 5-of-6 player vote; once set,
   // /correct refuses to flip that series again. Independent of `status`, which stays "reported".
