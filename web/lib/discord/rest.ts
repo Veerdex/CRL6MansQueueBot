@@ -37,8 +37,32 @@ export const RICH_INACTIVITY_COLOR = 0xffa500;
 // hierarchy — the guild owner can never be renamed by a bot at all) will fail identically
 // forever, and retrying it just burns invalid requests: Discord temp-bans an IP after 10,000
 // 401/403/429s in 10 minutes, which on Vercel's shared egress is not an IP we control.
-const RATE_LIMIT_RETRIES = 3;
+//
+// The retry count was 3, which was not enough for a saturated channel. On 2026-10-06 at 01:48 UTC
+// a queue popped while match #263's teardown was still running and six joins landed inside seven
+// seconds — and every join is two writes to the one queue channel, since the queue message is
+// posted-then-claimed and the old one deleted (queue.ts's tryPostAndClaimQueueMessage). The
+// combined formation message's POST lost that bucket four times in a row over ~4.5s, threw, and
+// left six players stranded in a `forming` series they had to /cancel out of. Two ordinary join
+// cards from the same burst took 3s and 6s to land, so the bucket was reopening in roughly
+// one-second steps the whole time — a budget that outlasted the burst would have won a slot.
+//
+// Two separate limits now, because they guard different failures:
+// - RATE_LIMIT_RETRIES / RATE_LIMIT_TOTAL_WAIT_MS: how long to keep trying in total. The budget
+//   is what actually bounds the call; the count only stops a pathological spin on waits near
+//   zero. A single long wait spends the whole budget at once, so a global rate limit still gets
+//   cut off after one sleep — only the many-short-waits case gets more attempts, and that is the
+//   case that broke.
+// - RATE_LIMIT_MAX_WAIT_SECONDS: the longest single sleep, so one absurd retry_after can't hold
+//   the function open.
+//
+// Jitter matters as much as the count here. Discord hands every waiter on a bucket the same
+// retry_after, so without it they all wake at the same instant and all but one 429 again —
+// which is how a caller can lose four times running while its competitors each win once.
+const RATE_LIMIT_RETRIES = 6;
 const RATE_LIMIT_MAX_WAIT_SECONDS = 30;
+const RATE_LIMIT_TOTAL_WAIT_MS = 30_000;
+const RATE_LIMIT_JITTER_MS = 250;
 
 // discordFetch rejects with this instead of a bare Error so a caller can tell *why* a call
 // failed without scraping the message string. It still extends Error and still carries the exact
@@ -69,12 +93,24 @@ export function isUnknownMemberError(err: unknown): boolean {
   return err.status === 404 || (err.code !== null && UNKNOWN_MEMBER_CODES.has(err.code));
 }
 
+// Discord's own JSON error code, or null when the body wasn't JSON (Cloudflare-level errors
+// return HTML, not an API envelope).
+function parseDiscordErrorCode(body: string): number | null {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === "number" ? parsed.code : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function discordFetch(path: string, init: RequestInit = {}) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) {
     throw new Error("Missing DISCORD_BOT_TOKEN");
   }
 
+  let waitedMs = 0;
   for (let attempt = 0; ; attempt += 1) {
     const res = await fetch(`${DISCORD_API_BASE}${path}`, {
       ...init,
@@ -85,39 +121,43 @@ export async function discordFetch(path: string, init: RequestInit = {}) {
       },
     });
 
-    if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
-      // Discord reports the wait in seconds, in the body for bucketed limits and in the header
-      // for Cloudflare-level ones. Capped so a long global limit surfaces as an error instead of
-      // silently holding the function open.
-      const body = (await res.json().catch(() => null)) as { retry_after?: number } | null;
-      const headerWait = Number(res.headers.get("retry-after") ?? Number.NaN);
-      const wait = body?.retry_after ?? (Number.isFinite(headerWait) ? headerWait : 1);
-      await new Promise((resolve) => setTimeout(resolve, Math.min(wait, RATE_LIMIT_MAX_WAIT_SECONDS) * 1000));
-      continue;
+    if (res.ok) {
+      return res.status === 204 ? null : res.json();
     }
 
-    if (!res.ok) {
-      const errorBody = await res.text();
-      const parsedCode = (() => {
+    // Read once, up front: the 429 branch needs it to find retry_after and the throw below needs
+    // it for the message and the error code, and a Response body can only be consumed one time.
+    const errorBody = await res.text();
+
+    if (res.status === 429) {
+      // Discord reports the wait in seconds, in the body for bucketed limits and in the header
+      // for Cloudflare-level ones.
+      const parsed = (() => {
         try {
-          const parsed = JSON.parse(errorBody) as { code?: unknown };
-          return typeof parsed.code === "number" ? parsed.code : null;
+          return JSON.parse(errorBody) as { retry_after?: number };
         } catch {
           return null;
         }
       })();
-      throw new DiscordApiError(
-        res.status,
-        parsedCode,
-        `Discord API ${init.method ?? "GET"} ${path} failed: ${res.status} ${errorBody}`,
-      );
+      const headerWait = Number(res.headers.get("retry-after") ?? Number.NaN);
+      const wait = parsed?.retry_after ?? (Number.isFinite(headerWait) ? headerWait : 1);
+      const sleepMs = Math.min(wait, RATE_LIMIT_MAX_WAIT_SECONDS) * 1000 + Math.random() * RATE_LIMIT_JITTER_MS;
+
+      // Measured against what has already been spent rather than what the next sleep would add,
+      // so one long retry_after still gets its single attempt instead of being refused outright.
+      // The call is therefore bounded by the budget plus at most one final sleep.
+      if (attempt < RATE_LIMIT_RETRIES && waitedMs < RATE_LIMIT_TOTAL_WAIT_MS) {
+        waitedMs += sleepMs;
+        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+        continue;
+      }
     }
 
-    if (res.status === 204) {
-      return null;
-    }
-
-    return res.json();
+    throw new DiscordApiError(
+      res.status,
+      parseDiscordErrorCode(errorBody),
+      `Discord API ${init.method ?? "GET"} ${path} failed: ${res.status} ${errorBody}`,
+    );
   }
 }
 
