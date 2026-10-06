@@ -13,7 +13,7 @@ import SeriesLengthPanel from "@/components/SeriesLengthPanel";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Match Times — CRL West 6 Mans",
+  title: "Data — CRL West 6 Mans",
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -84,7 +84,7 @@ export default async function MatchTimesPage() {
         ← Back to Leaderboard
       </Link>
 
-      <h1 className="animate-in mb-6 text-2xl font-bold text-foreground">Match Times</h1>
+      <h1 className="animate-in mb-6 text-2xl font-bold text-foreground">Data</h1>
 
       <div className="panel animate-in-delay-1 mb-6 p-4 sm:p-6">
         <h2 className="mb-1 text-lg font-bold text-foreground">Time of Day</h2>
