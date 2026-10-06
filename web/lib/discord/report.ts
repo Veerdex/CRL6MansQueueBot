@@ -15,6 +15,7 @@ import { getRankLabel } from "@/lib/leaderboard/rankIcon";
 import { encodeMatchId } from "./matchId";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { SERIES_LENGTH_LABELS, REPORT_COOLDOWN_MINUTES_BY_LENGTH } from "./teamFormation";
+import { expectedWinProbabilityA } from "@/lib/mmr/teamStrength";
 import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
 // Instant deletion of voice channels after report
@@ -175,6 +176,18 @@ async function processReport(interaction: DiscordInteraction, result: string | n
         .eq("player_id", sp.player_id),
     ),
   );
+
+  // Pre-match win probability for each side, shown on the summary's Winners/Losers headers.
+  // Computed from the same pre-report MMR just snapshotted into mmr_before above, so these
+  // percentages match the History page's odds bar for this match exactly rather than drifting
+  // with whatever the players' MMR is by the time someone looks. Its own config read instead of
+  // riding the Elo block's Promise.all below, because that block is skipped for test matches
+  // while these headers are not.
+  const oddsSScale = await getConfigNumber("s_scale", 400);
+  const mmrBeforeForTeam = (team: Team) =>
+    allSeriesPlayers.filter((sp) => sp.team === team).map((sp) => playersById.get(sp.player_id)!.mmr);
+  const expectedA = expectedWinProbabilityA(mmrBeforeForTeam("A"), mmrBeforeForTeam("B"), oddsSScale);
+  const winOdds = expectedA === null ? null : winnerLoserOddsPct(expectedA, winner);
 
   // Report summary is split by winning/losing team (not one flat list) — each line shows the
   // player's MMR delta and their resulting MMR/band, per CLAUDE.md's "Reporting & disputes".
@@ -382,7 +395,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   const reportChannelId = reportChannelConfig?.value;
   if (reportChannelId) {
     const matchId = encodeMatchId(matchNumber);
-    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length);
+    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length, winOdds);
     const embeds: Array<Record<string, unknown>> = [embed];
     if (streakAnnounceLines.length > 0) embeds.push(streakAnnouncementEmbed(streakAnnounceLines));
     await discordFetch(`/channels/${reportChannelId}/messages`, {
@@ -405,6 +418,15 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 
 // Exported for correct.ts, which reuses this exact shape to post the new report message once a
 // mis-reported match is flipped via /correct's 5-of-6 player vote.
+// Rounds P(Team A wins) into the whole-percent figures the report headers carry. One side is
+// rounded and the other derived from it, so the pair always totals exactly 100 — rounding both
+// independently could print 51% alongside 50%. Pure and exported for its tests.
+export function winnerLoserOddsPct(expectedA: number, winner: Team): { winner: number; loser: number } {
+  const pctA = Math.round(expectedA * 100);
+  const winnerPct = winner === "A" ? pctA : 100 - pctA;
+  return { winner: winnerPct, loser: 100 - winnerPct };
+}
+
 export function reportResultEmbed(
   winner: Team,
   matchId: string,
@@ -412,15 +434,21 @@ export function reportResultEmbed(
   loserLines: string[],
   bonusDayActive: boolean,
   seriesLength: SeriesRow["series_length"],
+  // Each team's pre-match win probability, as whole percents. Optional, and left off entirely
+  // rather than shown as 0% when the odds can't be computed — an incomplete roster, or a
+  // correction on a match predating migration 0032 with no mmr_before snapshot to read.
+  winOdds: { winner: number; loser: number } | null = null,
 ) {
   const seriesLengthMarker = seriesLength ? ` · ${SERIES_LENGTH_LABELS[seriesLength]}` : "";
+  const winnerHeader = winOdds ? `**Winners (${winOdds.winner}%)**` : "**Winners**";
+  const loserHeader = winOdds ? `**Losers (${winOdds.loser}%)**` : "**Losers**";
   return {
     color: bonusDayActive ? SUPERCHARGED_COLOR : BRAND_COLOR,
     title: `Match Reported — Team ${winner} Wins!`,
     description:
       `**Match #${matchId}**${bonusDayActive ? " 🔥 Supercharged!" : ""}${seriesLengthMarker}\n\n` +
-      `**Winners**\n${winnerLines.join("\n")}\n\n` +
-      `**Losers**\n${loserLines.join("\n")}\n\n` +
+      `${winnerHeader}\n${winnerLines.join("\n")}\n\n` +
+      `${loserHeader}\n${loserLines.join("\n")}\n\n` +
       `-# Wrong result? Run /correct — 5 of the 6 players can flip it.`,
   };
 }

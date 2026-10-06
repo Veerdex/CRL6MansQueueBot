@@ -6,7 +6,7 @@ import { editOriginalResponse } from "./rest";
 import { getOrCreatePlayer, getLockedSeriesForPlayer } from "./queue";
 import { getConfigNumber } from "./config";
 import { hasAdminAccess } from "./admin";
-import { calculateTeamStrength } from "@/lib/mmr/teamStrength";
+import { expectedWinProbabilityA } from "@/lib/mmr/teamStrength";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, Team } from "@/lib/supabase/types";
 
@@ -97,10 +97,12 @@ async function processChances(interaction: DiscordInteraction, seriesIdOverride:
   }
 
   const teamMmr = (team: Team) => seriesPlayers.filter((sp) => sp.team === team).map((sp) => mmrByPlayerId.get(sp.player_id) ?? 0);
-  const strengthA = calculateTeamStrength(teamMmr("A"));
-  const strengthB = calculateTeamStrength(teamMmr("B"));
   const sScale = await getConfigNumber("s_scale", 400);
-  const expectedA = 1 / (1 + 10 ** ((strengthB - strengthA) / sScale));
+  const expectedA = expectedWinProbabilityA(teamMmr("A"), teamMmr("B"), sScale);
+  if (expectedA === null) {
+    await editOriginalResponse(interaction.token, { content: "Something's wrong with this match's roster — ask an admin to check it." });
+    return;
+  }
 
   if (callerRow) {
     const expectedForCaller = callerRow.team === "A" ? expectedA : 1 - expectedA;

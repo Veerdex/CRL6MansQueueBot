@@ -9,7 +9,8 @@ import { recomputeBands } from "./bands";
 import { computeEloDeltas, type EloResult } from "@/lib/mmr/elo";
 import { getPriorRankWinStreak, getStreakIds, mention } from "./streaks";
 import { encodeMatchId } from "./matchId";
-import { reportResultEmbed } from "./report";
+import { reportResultEmbed, winnerLoserOddsPct } from "./report";
+import { expectedWinProbabilityA } from "@/lib/mmr/teamStrength";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, SeriesPlayerRow, Team } from "@/lib/supabase/types";
 
@@ -274,11 +275,22 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
 
   // Mirrors /admin correct-report's own prediction-record update.
   const newActualWinner = newWinner === "A" ? "blue" : "orange";
+  // The same pre-match odds the original report embed showed, read from the mmr_before
+  // snapshot rather than recomputed from current MMR — those have already moved by the original
+  // report's deltas, so recomputing would quote a different number for the same match. The
+  // percentages belong to the teams, not to the result, so flipping the winner only relabels
+  // which side each one sits on. A match reported before migration 0032 has no snapshot and
+  // simply gets no odds.
+  const mmrBeforeForTeam = (team: Team) =>
+    seriesPlayers.filter((sp) => sp.team === team).map((sp) => sp.mmr_before).filter((m): m is number => m !== null);
+  const correctedExpectedA = expectedWinProbabilityA(mmrBeforeForTeam("A"), mmrBeforeForTeam("B"), sScale);
+  const winOdds = correctedExpectedA === null ? null : winnerLoserOddsPct(correctedExpectedA, newWinner);
+
   await (supabase as any).from("crl6mansqueuebot_rank_game_predictions").update({ actual_winner: newActualWinner }).eq("series_id", series.id);
 
   const reportChannelId = await getReportChannelId(supabase);
   if (reportChannelId) {
-    const embed = reportResultEmbed(newWinner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length);
+    const embed = reportResultEmbed(newWinner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length, winOdds);
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
       body: JSON.stringify({ embeds: [embed] }),

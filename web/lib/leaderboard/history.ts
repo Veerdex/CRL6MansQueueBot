@@ -1,7 +1,7 @@
 import "server-only";
 import { createServerClient } from "../supabase/server";
 import { getConfigNumber } from "@/lib/discord/config";
-import { calculateTeamStrength } from "@/lib/mmr/teamStrength";
+import { expectedWinProbabilityA } from "@/lib/mmr/teamStrength";
 import type { Band, QueueType, Team } from "../supabase/types";
 
 export interface MatchHistoryPlayer {
@@ -171,9 +171,11 @@ export async function getMatchHistory(): Promise<MatchHistoryData> {
     // series, but calculateTeamStrength expects exactly 3 ratings per team).
     if (teamA.length !== 3 || teamB.length !== 3) continue;
 
-    const strengthA = calculateTeamStrength(teamA.map((p) => p.mmr));
-    const strengthB = calculateTeamStrength(teamB.map((p) => p.mmr));
-    const expectedA = 1 / (1 + 10 ** ((strengthB - strengthA) / sScale));
+    // The length half of expectedWinProbabilityA’s null case is already handled by the guard
+    // above; the remainder is a non-finite rating, which can’t come from the real/not-null mmr
+    // column. Falls back to an even bar rather than dropping the match, so a bad rating can never
+    // silently delete a row from History.
+    const expectedA = expectedWinProbabilityA(teamA.map((p) => p.mmr), teamB.map((p) => p.mmr), sScale) ?? 0.5;
 
     matches.push({
       seriesId: s.id,

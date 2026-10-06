@@ -23,6 +23,28 @@ const WEAKEST_WEIGHT = 0.036555;
 const STRENGTH_MMR_SCALE = 3.5;
 const STRENGTH_MMR_SHIFT = 1550;
 
+// P(Team A wins), as an Elo expected score over the two teams' calculateTeamStrength ratings.
+// Single-sourced here because several surfaces quote this number and they have to agree: the
+// /chances command, the website's match-history odds bar, and the win/loss headers on the report
+// summary (both the original report and /correct's re-post).
+//
+// Uses the plain, admin-configured s_scale — NOT the mmr_confidence_multiplier-divided scale
+// elo.ts applies inside its own delta math (see EloConfig.confidenceMultiplier). Those are
+// deliberately different numbers: the sharpened one tunes how hard a result swings MMR, while
+// this one is the probability actually shown to players. They coincide only while
+// mmr_confidence_multiplier is 1.
+//
+// Returns null rather than a number whenever either side isn't exactly 3 usable ratings:
+// calculateTeamStrength destructures three values and would otherwise quietly produce NaN, which
+// would reach an embed as "(NaN%)". Callers treat null as "no odds to show".
+export function expectedWinProbabilityA(teamAMmrs: number[], teamBMmrs: number[], sScale: number): number | null {
+  if (teamAMmrs.length !== 3 || teamBMmrs.length !== 3) return null;
+  if (!teamAMmrs.every(Number.isFinite) || !teamBMmrs.every(Number.isFinite)) return null;
+  const strengthA = calculateTeamStrength(teamAMmrs);
+  const strengthB = calculateTeamStrength(teamBMmrs);
+  return 1 / (1 + 10 ** ((strengthB - strengthA) / sScale));
+}
+
 export function calculateTeamStrength(playerRatings: number[]): number {
   const [strongest, second, weakest] = playerRatings
     .map((mmr) => Math.max(0, mmr * STRENGTH_MMR_SCALE + STRENGTH_MMR_SHIFT))
