@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bestBalancedSplit,
+  claimDraftTurn,
   deriveTurnCaptain,
   selectCaptainCandidates,
   resolveSeriesLengthTieBreak,
@@ -227,5 +228,60 @@ describe("resolveSeriesLengthWinner", () => {
 
   it("an exact 2-2-2 split at 6 votes still resolves to bo3", () => {
     expect(resolveSeriesLengthWinner(counts(2, 2, 2))).toBe("bo3");
+  });
+});
+
+// The draft's turn-level compare-and-swap. Exercised through a fake PostgREST builder that
+// records the filters it was handed and answers with whatever rows the scenario says the
+// conditional UPDATE would have matched — the only two outcomes that matter are "I still own
+// this turn" and "someone (a captain, or the sweep) took it first".
+function fakeTurnClient(matchedRows: { id: string }[]) {
+  const calls: { update?: Record<string, unknown>; eq: [string, unknown][]; is: [string, unknown][] } = { eq: [], is: [] };
+  const builder: Record<string, unknown> = {
+    update(values: Record<string, unknown>) {
+      calls.update = values;
+      return builder;
+    },
+    eq(col: string, val: unknown) {
+      calls.eq.push([col, val]);
+      return builder;
+    },
+    is(col: string, val: unknown) {
+      calls.is.push([col, val]);
+      return builder;
+    },
+    select: async () => ({ data: matchedRows }),
+  };
+  return { client: { from: () => builder }, calls };
+}
+
+describe("claimDraftTurn", () => {
+  const STAMP = "2026-10-05T12:00:00.000Z";
+
+  it("wins the turn when vote_started_at still holds the stamp it read, and re-stamps it", async () => {
+    const { client, calls } = fakeTurnClient([{ id: "series-1" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await claimDraftTurn(client as any, "series-1", STAMP)).toBe(true);
+    expect(calls.eq).toEqual([
+      ["id", "series-1"],
+      ["vote_started_at", STAMP],
+    ]);
+    // The re-stamp is what invalidates every other holder of this turn's token.
+    const written = calls.update?.vote_started_at as string;
+    expect(Date.parse(written)).toBeGreaterThan(Date.parse(STAMP));
+  });
+
+  it("loses the turn when the conditional update matches nothing", async () => {
+    const { client } = fakeTurnClient([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await claimDraftTurn(client as any, "series-1", STAMP)).toBe(false);
+  });
+
+  it("filters with .is rather than .eq for a null stamp, which PostgREST can't match on .eq", async () => {
+    const { client, calls } = fakeTurnClient([{ id: "series-1" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await claimDraftTurn(client as any, "series-1", null)).toBe(true);
+    expect(calls.eq).toEqual([["id", "series-1"]]);
+    expect(calls.is).toEqual([["vote_started_at", null]]);
   });
 });

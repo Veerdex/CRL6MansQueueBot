@@ -250,6 +250,11 @@ export async function renderFormationMessage(
         fields.push({ name: "Team Formation", value: "**Captains**", inline: false });
       }
       if (draftStatus) fields.push({ name: "Status", value: draftStatus, inline: false });
+      // Same footer shape as the two vote phases above. Only while a pick is actually
+      // outstanding: once the third non-captain is assigned the draft is over and finalizeTeams
+      // is about to delete this message anyway.
+      const assignedSoFar = lobby.filter((x) => !x.row.is_captain && x.row.team).length;
+      if (deriveTurnCaptain(assignedSoFar)) footer = `You have ${minuteLabel} to pick.`;
     } else {
       // Phase 3b — balanced. Only on screen for the moment between the vote resolving and
       // finalizeTeams deleting this message outright.
@@ -412,9 +417,16 @@ export async function castVote(
   // Atomic resolution claim: a plain `UPDATE ... WHERE vote_result IS NULL` serializes
   // concurrent winning votes via Postgres's row-level locking — the second writer's WHERE
   // clause no longer matches once the first commits, so only one caller proceeds past here.
+  // vote_started_at is re-stamped in the same write. For a captains result this is Captain A's
+  // first turn starting, and it has to happen here rather than only in sendDraftPickPrompt: the
+  // formation vote has no timeout once anyone has voted (the sweep's silence void fires only at
+  // zero votes), so a vote that resolves late leaves a stamp already past the sweep's cutoff. A
+  // sweep tick landing between this claim and the prompt would then pass every guard and
+  // auto-pick for a captain who was never even DM'd. Harmless for a balanced result, which has
+  // no further phase to time.
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_series")
-    .update({ vote_result: winner })
+    .update({ vote_result: winner, vote_started_at: new Date().toISOString() })
     .eq("id", seriesId)
     .is("vote_result", null)
     .select("id");
@@ -812,6 +824,31 @@ export function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null 
   return null; // 3 assigned -> the 4th auto-assigns, draft is complete
 }
 
+// Turn-level compare-and-swap, claimed by every pick path before it touches a single lobby row.
+// The per-player `.is("team", null)` claim each pick already does stopped being sufficient the
+// moment the sweep could pick too: a captain DM-picking Y in the same second the sweep
+// auto-picks X for them writes a *different* row, so both claims succeed, both handlers then
+// re-derive the turn from a now-stale assigned count, and the draft drifts toward 4v2.
+//
+// `vote_started_at` doubles as the turn token. It is re-stamped every time a captain is put on
+// the clock — in the castVote write that claims `vote_result = "captains"` (Captain A's first
+// turn) and then in sendDraftPickPrompt for every turn after — so "the stamp I read is still
+// there" is exactly "the turn I read is still open". Whoever loses the swap writes nothing and
+// stops. Reusing the column the sweep already reads keeps the deadline and the token the same
+// fact, so the two cannot disagree.
+export async function claimDraftTurn(supabase: AdminClient, seriesId: string, expectedStamp: string | null): Promise<boolean> {
+  const base = supabase
+    .from("crl6mansqueuebot_series")
+    .update({ vote_started_at: new Date().toISOString() })
+    .eq("id", seriesId);
+  // PostgREST has no `.eq(col, null)` — a null stamp needs `.is`. Shouldn't arise (the column is
+  // stamped when the Balanced/Captains vote opens, which is upstream of every draft), but a
+  // silently-never-matching filter here would wedge the draft rather than fail loudly.
+  const query = expectedStamp === null ? base.is("vote_started_at", null) : base.eq("vote_started_at", expectedStamp);
+  const { data } = await query.select("id");
+  return (data ?? []).length > 0;
+}
+
 function byMmrDesc(a: PlayerRow, b: PlayerRow): number {
   return b.mmr - a.mmr || a.discord_id.localeCompare(b.discord_id);
 }
@@ -889,6 +926,11 @@ async function autoAdvanceDraftIfFake(supabase: AdminClient, guildId: string, se
 
   const target = nonCaptainRows.find((x) => !x.row.team);
   if (!target) return;
+
+  // Test captains race the sweep too — this runs straight after a prompt, but a sweep tick that
+  // already judged the turn overdue may be in flight. Same gate as every other pick path rather
+  // than an exception to it.
+  if (!(await claimDraftTurn(supabase, seriesId, series.vote_started_at))) return;
 
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_series_lobby")
@@ -974,6 +1016,114 @@ function expectedPickCount(turnCaptain: Team, remainingCount: number): number {
   return turnCaptain === "B" ? Math.max(1, remainingCount - 1) : 1;
 }
 
+// Sweep entry point for a stalled captains draft: the captain whose turn it is let
+// vote_timeout_seconds elapse without picking. Picks the highest-MMR player(s) still available
+// on their behalf and carries the draft on, so five players aren't held behind one AFK captain
+// until series_timeout_hours voids the whole match two hours later. This never voids — the match
+// still happens, which is the entire point of auto-picking rather than cancelling.
+//
+// Fills the captain's WHOLE turn in one pass (Captain B owes 2 picks — see expectedPickCount).
+// Auto-picking one and re-prompting would hand a captain who already slept through a window a
+// fresh one for the back half of the same turn, doubling the stall this exists to end.
+//
+// `expectedStamp` is the vote_started_at the sweep read when it judged this turn overdue;
+// claimDraftTurn stands the auto-pick down if the captain's real pick landed in between. The
+// sweep runs once a minute, so enforcement is up to ~60s late — the same lag the two vote
+// timeouts already carry.
+// Returns how many players it auto-picked — 0 whenever it stood down (turn already taken, draft
+// already over, lost the claim), which the sweep counts separately from real forced picks.
+export async function autoPickForTimedOutCaptain(supabase: AdminClient, seriesId: string, expectedStamp: string | null): Promise<number> {
+  const { data: series } = await supabase.from("crl6mansqueuebot_series").select("*").eq("id", seriesId).maybeSingle();
+  if (!series || series.vote_result !== "captains" || series.status !== "forming" || !series.queue_channel_id || !series.formation_message_id) return 0;
+
+  const lobby = await fetchLobbyRowsWithPlayers(supabase, seriesId);
+  const captainARow = lobby.find((x) => x.row.is_captain && x.row.team === "A");
+  const captainBRow = lobby.find((x) => x.row.is_captain && x.row.team === "B");
+  if (!captainARow || !captainBRow) return 0;
+
+  const nonCaptainRows = lobby.filter((x) => !x.row.is_captain);
+  const assignedCount = nonCaptainRows.filter((x) => x.row.team).length;
+  const turnCaptain = deriveTurnCaptain(assignedCount);
+  if (!turnCaptain) return 0;
+
+  const remaining = nonCaptainRows.filter((x) => !x.row.team).map((x) => x.player);
+  // byMmrDesc breaks ties on discord_id, so the filler pick is fully deterministic — two sweep
+  // ticks racing each other would choose the same players even before the turn claim below.
+  const picks = [...remaining].sort(byMmrDesc).slice(0, expectedPickCount(turnCaptain, remaining.length));
+  if (picks.length === 0) return 0;
+
+  if (!(await claimDraftTurn(supabase, seriesId, expectedStamp))) return 0;
+
+  const pickIds = picks.map((p) => p.id);
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_series_lobby")
+    .update({ team: turnCaptain })
+    .eq("series_id", seriesId)
+    .in("player_id", pickIds)
+    .is("team", null)
+    .select("player_id");
+  const claimedIds = (claimed ?? []).map((c) => c.player_id);
+  if (claimedIds.length !== pickIds.length) {
+    // All-or-nothing, mirroring processDraftPickMulti's partial-claim revert: a half-assigned
+    // turn is worse than no auto-pick at all, and the next sweep tick retries against fresh state.
+    if (claimedIds.length > 0) {
+      await supabase.from("crl6mansqueuebot_series_lobby").update({ team: null }).eq("series_id", seriesId).in("player_id", claimedIds);
+    }
+    return 0;
+  }
+
+  const turnCaptainPlayer = turnCaptain === "A" ? captainARow.player : captainBRow.player;
+  const pickedNames = picks.map((p) => p.display_name).join(", ");
+
+  // A standalone channel message rather than the formation message's Status field: the very next
+  // thing to happen is either the next prompt overwriting that field or finalizeTeams deleting
+  // the message outright, so a patched status would vanish before anyone read it. Best-effort —
+  // the draft has already advanced in the database and must not be undone by a Discord failure.
+  //
+  // Plain content POST, matching the /cancel threshold announcement above: the mention has to be
+  // top-level to notify, and postTrackedQueueMessage (what the sweep's void notices use) is for
+  // terminal queue-channel notices — it deletes every other non-permanent tracked message in the
+  // channel first, which is wrong for a transient note during a match that is still forming.
+  await discordFetch(`/channels/${series.queue_channel_id}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      content: `${mention(turnCaptainPlayer.discord_id)} ran out of time — auto-picked **${pickedNames}** for Team ${turnCaptain}.`,
+    }),
+  }).catch((err) => console.error(`Failed to announce draft auto-pick for series ${seriesId}`, err));
+
+  // Same is_test_data guard the rest of the draft uses — a synthetic captain has no account to DM.
+  if (!turnCaptainPlayer.is_test_data) {
+    await sendDirectMessage(
+      turnCaptainPlayer.discord_id,
+      `You ran out of time — **${pickedNames}** ${picks.length > 1 ? "were" : "was"} picked for you.`,
+    );
+  }
+
+  const guildId = await getGuildId();
+  const allMembers = lobby.map((x) => x.player);
+  const newAssignedCount = assignedCount + claimedIds.length;
+
+  if (newAssignedCount >= 3) {
+    const claimedSet = new Set(claimedIds);
+    const lastRemaining = nonCaptainRows.find((x) => !x.row.team && !claimedSet.has(x.row.player_id));
+    const teamAssignments = new Map<string, Team>();
+    for (const x of lobby) if (x.row.team) teamAssignments.set(x.row.player_id, x.row.team);
+    for (const id of claimedIds) teamAssignments.set(id, turnCaptain);
+    if (lastRemaining) {
+      await supabase.from("crl6mansqueuebot_series_lobby").update({ team: "A" }).eq("series_id", seriesId).eq("player_id", lastRemaining.row.player_id);
+      teamAssignments.set(lastRemaining.row.player_id, "A");
+    }
+    await finalizeTeams(supabase, guildId, seriesId, series.queue_channel_id, series.formation_message_id, allMembers, teamAssignments);
+    return claimedIds.length;
+  }
+
+  const nextTurn = deriveTurnCaptain(newAssignedCount)!;
+  const stillRemaining = remaining.filter((p) => !claimedIds.includes(p.id));
+  await sendDraftPickPrompt(series.queue_channel_id, series.formation_message_id, seriesId, captainARow.player, captainBRow.player, stillRemaining, nextTurn);
+  await autoAdvanceDraftIfFake(supabase, guildId, seriesId);
+  return claimedIds.length;
+}
+
 // Picks are made via DM to whichever captain currently has the turn (not channel buttons —
 // see CLAUDE.md, "Other user commands"/pop-to-report flow: "The bot will send a DM to the
 // first captain... Then a message for the second captain..."). Discord gives bots no way to
@@ -994,6 +1144,16 @@ async function sendDraftPickPrompt(
 ) {
   const turnPlayer = turnCaptain === "A" ? captainA : captainB;
   const supabase = createAdminClient();
+
+  // Each turn gets its own full vote_timeout_seconds window, re-stamped at the moment the
+  // captain is actually prompted rather than inherited from when the draft opened — the same
+  // reasoning that makes the Balanced/Captains vote re-stamp instead of reusing the pop time.
+  // This write is also what invalidates any pick or sweep auto-pick still holding the previous
+  // turn's token (claimDraftTurn), so the two jobs are deliberately the same write.
+  await supabase.from("crl6mansqueuebot_series").update({ vote_started_at: new Date().toISOString() }).eq("id", seriesId);
+  const pickTimeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
+  const pickMinutes = Math.round(pickTimeoutSeconds / 60);
+  const pickMinuteLabel = `${pickMinutes} minute${pickMinutes === 1 ? "" : "s"}`;
   const streaks = await getStreakIds(supabase, [captainA.id, captainB.id, ...remaining.map((p) => p.id)]);
   const turnPlayerDecoration = { onFire: streaks.onFireIds.has(turnPlayer.id), cold: streaks.coldIds.has(turnPlayer.id) };
   const supercharged = await isSuperchargedSeries(supabase, seriesId);
@@ -1005,7 +1165,10 @@ async function sendDraftPickPrompt(
   }
 
   const pickCount = expectedPickCount(turnCaptain, remaining.length);
-  const dmContent = pickCount > 1 ? `**Captains Draft — pick ${pickCount} players**` : `**Captains Draft — your pick**`;
+  const dmHeader = pickCount > 1 ? `**Captains Draft — pick ${pickCount} players**` : `**Captains Draft — your pick**`;
+  // The countdown rides in the DM as well as the channel footer — the DM is the only surface
+  // that carries the actual pick controls, so it's the one the captain is reading.
+  const dmContent = `${dmHeader}\n-# You have ${pickMinuteLabel} to pick, or the highest-MMR player left is picked for you.`;
 
   // Create embed with player information, and in parallel a short "MMR | W-L" description
   // per player reused by the multi-select's option descriptions below.
@@ -1127,6 +1290,20 @@ async function processDraftPick(interaction: DiscordInteraction, seriesId: strin
     return;
   }
 
+  // Claim the turn before writing any lobby row — see claimDraftTurn. Sits after the validation
+  // above rather than before it, because claiming re-stamps vote_started_at and so restarts the
+  // clock: a stale click that fails validation must not buy its captain a fresh window without
+  // having actually picked.
+  //
+  // Reuses the pre-existing "already happened" wording rather than naming the timeout. By far the
+  // likeliest loser here is the captain's own double-click, for whom a timeout message would
+  // simply be false; a captain genuinely beaten by the sweep learns so from the auto-pick's own
+  // DM and the channel announcement.
+  if (!(await claimDraftTurn(supabase, seriesId, series.vote_started_at))) {
+    await replyError(interaction, "That pick already happened.");
+    return;
+  }
+
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_series_lobby")
     .update({ team: turnCaptain })
@@ -1222,6 +1399,13 @@ async function processDraftPickMulti(interaction: DiscordInteraction, seriesId: 
   const requiredCount = expectedPickCount(turnCaptain, available.length);
   if (uniquePickedIds.length !== requiredCount || !uniquePickedIds.every((id) => availableIds.has(id))) {
     await replyError(interaction, "That selection isn't valid anymore — the draft may have moved on.");
+    return;
+  }
+
+  // Same turn claim as the single-pick path, after validation and with the same "already
+  // happened" wording, for the same reasons — see claimDraftTurn and the note there.
+  if (!(await claimDraftTurn(supabase, seriesId, series.vote_started_at))) {
+    await replyError(interaction, "Those picks already happened.");
     return;
   }
 

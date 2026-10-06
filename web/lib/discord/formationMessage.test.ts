@@ -173,6 +173,19 @@ describe("renderFormationMessage", () => {
     expect(embed(result).fields[2].value).toBe("<@d-cinder>");
     expect(embed(result).fields[3].value).toContain("check your DMs");
     expect(result.components).toEqual([]);
+    // The pick clock, same shape as the two vote phases above — a captain reading only the
+    // channel message still sees that the turn expires.
+    expect(embed(result).footer?.text).toBe("You have 2 minutes to pick.");
+  });
+
+  it("phase 3: drops the pick clock once the last pick is in and the draft is over", async () => {
+    // Every non-captain assigned -> deriveTurnCaptain returns null, nobody is on the clock.
+    const lobby: Lobby[] = MEMBERS.map((m, i) => ({
+      player_id: m.id,
+      team: i === 0 ? "A" : i === 2 ? "B" : i === 1 ? "A" : "B",
+      is_captain: i === 0 || i === 2,
+    }));
+    const result = await render({ series: { ...BASE, vote_result: "captains" }, lobby });
     expect(embed(result).footer).toBeUndefined();
   });
 

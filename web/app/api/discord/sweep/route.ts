@@ -7,7 +7,7 @@ import { postTrackedQueueMessage, refreshQueueMessage, refreshQueueMessageAfterS
 import { performSeasonReset } from "@/lib/discord/seasons";
 import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
-import { resolveSeriesLengthByMajority } from "@/lib/discord/teamFormation";
+import { resolveSeriesLengthByMajority, autoPickForTimedOutCaptain } from "@/lib/discord/teamFormation";
 import { advanceMatchTimeStatsDayCounters } from "@/lib/discord/bonusDay";
 import type { SeriesRow } from "@/lib/supabase/types";
 
@@ -97,6 +97,36 @@ export async function POST(request: Request) {
     if (!count) {
       await voidStaleSeries(supabase, series, "Nobody voted for a team formation mode in time — the series has been cancelled, no MMR change.");
       voidedForSilence += 1;
+    }
+  }
+
+  // Captains draft pick timeout — the captain whose turn it is hasn't picked within
+  // vote_timeout_seconds. Unlike the two vote phases above this never voids:
+  // autoPickForTimedOutCaptain fills their whole turn with the highest-MMR player(s) left and the
+  // draft carries on, so one AFK captain can't hold five players hostage until the general
+  // series_timeout_hours void takes the match down with them. vote_started_at is re-stamped on
+  // every pick prompt (sendDraftPickPrompt), so for a series in this phase it reads as "this turn
+  // started at", and it doubles as the compare-and-swap token so a real pick landing in the same
+  // moment wins cleanly over the sweep. Enforcement is therefore up to one sweep tick (~60s) late,
+  // exactly like the vote timeouts.
+  const { data: stalledDrafts, error: stalledDraftError } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("id, vote_started_at")
+    .eq("status", "forming")
+    .eq("vote_result", "captains")
+    .eq("series_length_vote_active", false)
+    .lt("vote_started_at", voteCutoff);
+
+  if (stalledDraftError) {
+    console.error("Sweep: failed to fetch stalled captain drafts", stalledDraftError);
+  }
+
+  let draftPicksForced = 0;
+  for (const series of stalledDrafts ?? []) {
+    try {
+      draftPicksForced += await autoPickForTimedOutCaptain(supabase, series.id, series.vote_started_at);
+    } catch (err) {
+      console.error(`Sweep: failed to auto-pick for stalled draft ${series.id}`, err);
     }
   }
 
@@ -411,6 +441,7 @@ export async function POST(request: Request) {
     voided,
     voidedForSilence,
     seriesLengthResolved,
+    draftPicksForced,
     orphansCleaned,
     queueMembersRemoved,
     subRequestsExpired,
