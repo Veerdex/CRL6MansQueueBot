@@ -9,9 +9,16 @@ vi.mock("./streaks", async (importOriginal) => {
   return { ...actual, getStreakIds: async () => ({ onFireIds: new Set<string>(), coldIds: new Set<string>() }) };
 });
 
+// discordFetch is a spy rather than a stub so the patchFormationMessage tests below can assert
+// on whether an edit was actually sent — the whole point of the render-ticket guard is that it
+// sometimes shouldn't be.
+const { discordFetch } = vi.hoisted(() => ({
+  discordFetch: vi.fn<(path: string, init?: RequestInit) => Promise<{ id: string }>>(async () => ({ id: "unused" })),
+}));
+
 vi.mock("./rest", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, getRankEmoji: async (band: string | null) => `:${band ?? "unranked"}:`, discordFetch: async () => ({ id: "unused" }) };
+  return { ...actual, getRankEmoji: async (band: string | null) => `:${band ?? "unranked"}:`, discordFetch };
 });
 
 // Live values, so the rendered MMR in these expectations matches what the server actually posts.
@@ -21,7 +28,7 @@ vi.mock("./config", async (importOriginal) => {
   return { ...actual, getConfigNumber: async (key: string, fallback: number) => values[key] ?? fallback };
 });
 
-const { renderFormationMessage } = await import("./teamFormation");
+const { renderFormationMessage, patchFormationMessage } = await import("./teamFormation");
 
 function player(id: string, mmr: number, band: Band | null = "Sapphire"): PlayerRow {
   return {
@@ -61,6 +68,10 @@ type Scenario = {
   lobby?: Lobby[];
   lengthVotes?: SeriesLength[];
   formationVotes?: VoteChoice[];
+  // What crl6mansqueuebot_next_formation_render_seq hands back for this redraw's claim; an
+  // Error stands in for the RPC failing. series.formation_render_seq is the value a later
+  // reader sees, i.e. the newest ticket anyone has claimed by then.
+  ticket?: number | Error;
 };
 
 // Minimal chainable stand-in for the PostgREST builder, answering only the four query shapes
@@ -95,6 +106,13 @@ function fakeClient(s: Scenario) {
         then: (resolve: (v: { data: unknown[] }) => unknown) => Promise.resolve({ data: rows }).then(resolve),
       };
       return builder;
+    },
+    async rpc(fn: string, args: Record<string, unknown>) {
+      if (fn !== "crl6mansqueuebot_next_formation_render_seq") throw new Error(`unexpected rpc ${fn}`);
+      if (args.p_series_id !== "series-1") throw new Error(`unexpected series ${String(args.p_series_id)}`);
+      const ticket = s.ticket;
+      if (ticket instanceof Error) return { data: null, error: ticket };
+      return { data: ticket ?? 1, error: null };
     },
   };
 }
@@ -183,5 +201,53 @@ describe("renderFormationMessage", () => {
     const bonus = await render({ series: { ...BASE, bonus_day_multiplier: 1.5 } });
     expect(bonus.embeds[0]).not.toEqual(plain.embeds[0]);
     expect(embed(bonus).color).not.toBe(embed(plain).color);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Redraw ordering guard — migration 0052_formation_render_seq.sql. Reproduces the shape of the
+// live failure: a handler that read the series row while the series-length vote was still the
+// current phase must not land its stale "BO5 3 / 3" body on top of the Balanced/Captains vote a
+// faster handler already drew.
+// ---------------------------------------------------------------------------
+describe("patchFormationMessage", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const patch = (s: Scenario, components?: unknown[]) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    patchFormationMessage(fakeClient(s) as any, "series-1", "chan-1", "msg-1", undefined, components);
+
+  const sentBody = () => JSON.parse(String(discordFetch.mock.calls[0][1]?.body));
+
+  it("sends the edit when no newer redraw has claimed a ticket", async () => {
+    await patch({ series: { ...BASE, formation_render_seq: 4 }, ticket: 4 });
+    expect(discordFetch).toHaveBeenCalledTimes(1);
+    expect(discordFetch.mock.calls[0][0]).toBe("/channels/chan-1/messages/msg-1");
+    expect(discordFetch.mock.calls[0][1]?.method).toBe("PATCH");
+  });
+
+  it("drops the edit when a newer redraw claimed a ticket while this one was rendering", async () => {
+    await patch({ series: { ...BASE, series_length_vote_active: true, formation_render_seq: 5 }, ticket: 2, lengthVotes: ["bo5", "bo5", "bo5"] });
+    expect(discordFetch).not.toHaveBeenCalled();
+  });
+
+  // The guard must never be what stops a formation message from updating — including on an
+  // environment where 0052 hasn't been applied and the RPC doesn't exist yet.
+  it("falls open and still sends when the ticket claim fails", async () => {
+    await patch({ series: { ...BASE, formation_render_seq: 9 }, ticket: new Error("function does not exist") });
+    expect(discordFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // The DM-closed draft fallback routes through here so it picks up the same guard; its pick
+  // controls have to survive the trip and replace whatever the render produced.
+  it("lets an explicit components override replace the rendered ones", async () => {
+    const override = [{ type: 1, components: [{ type: 2, custom_id: "pick" }] }];
+    await patch({ series: { ...BASE, vote_result: "captains", formation_render_seq: 1 }, ticket: 1 }, override);
+    expect(sentBody().components).toEqual(override);
+  });
+
+  it("keeps the rendered components when no override is given", async () => {
+    await patch({ series: { ...BASE, formation_render_seq: 1 }, ticket: 1 });
+    expect(sentBody().components).toHaveLength(1);
   });
 });

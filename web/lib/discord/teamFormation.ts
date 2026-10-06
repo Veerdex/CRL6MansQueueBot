@@ -245,10 +245,67 @@ export async function renderFormationMessage(
   };
 }
 
+// Claims this redraw's place in line — see migration 0052_formation_render_seq.sql for the full
+// write-up. Discord message edits are last-write-wins, and renderFormationMessage reads the phase
+// (the series row) and the tallies (the vote tables) in separate queries, so two votes landing
+// within the same couple of seconds race: the slower handler renders the *older* phase, then
+// lands its PATCH after the faster one and reverts the message to a screen whose buttons are
+// already dead. That is what froze the 2026-10-05 06:18 UTC pop at "BO5 3 / 3" on top of an
+// already-resolved Balanced/Captains vote, until the sweep voided it for vote silence.
+//
+// The increment lives in the database (UPDATE ... RETURNING behind an RPC) so concurrent claims
+// serialize on the row lock rather than racing a read-then-write here.
+//
+// Fails open: a claim that errors returns null and the redraw proceeds unguarded, which is just
+// the pre-0052 last-write-wins behavior. That is deliberate — the guard must never be what stops
+// a formation message from updating, including on an environment where 0052 isn't applied yet.
+async function claimRenderTicket(supabase: AdminClient, seriesId: string): Promise<number | null> {
+  const { data, error } = await supabase.rpc("crl6mansqueuebot_next_formation_render_seq", { p_series_id: seriesId });
+  if (error) {
+    console.error(`Failed to claim a formation render ticket for series ${seriesId}`, error);
+    return null;
+  }
+  return typeof data === "number" ? data : null;
+}
+
+// True once a redraw that started after this one has already claimed its ticket, which makes the
+// body built from the older read stale by construction. Narrows the race rather than closing it:
+// a newer render that starts and finishes entirely inside this call's request to Discord can
+// still land first. Holding a lock across an outbound HTTP call isn't available over PostgREST
+// (supabase-js can't keep a transaction open across calls), and this collapses a multi-second
+// window — two reads, the body build, and possibly a 429 retry sleep inside discordFetch — down
+// to a single round trip, which is what the observed failure needed.
+async function renderSuperseded(supabase: AdminClient, seriesId: string, ticket: number | null): Promise<boolean> {
+  if (ticket === null) return false;
+  const { data } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("formation_render_seq")
+    .eq("id", seriesId)
+    .maybeSingle();
+  const current = data?.formation_render_seq;
+  return typeof current === "number" && current > ticket;
+}
+
 // Every phase change is the same call: redraw the one message from current database state.
-async function patchFormationMessage(supabase: AdminClient, seriesId: string, channelId: string, messageId: string, draftStatus?: string) {
+// `components` overrides whatever the render produced — only the DM-closed draft fallback needs
+// that, to ride the pick controls along on this message, and it goes through here rather than
+// issuing its own PATCH so every edit to the formation message is covered by the same guard.
+// Exported for formationMessage.test.ts; nothing outside this module calls it.
+export async function patchFormationMessage(
+  supabase: AdminClient,
+  seriesId: string,
+  channelId: string,
+  messageId: string,
+  draftStatus?: string,
+  components?: unknown[],
+) {
+  const ticket = await claimRenderTicket(supabase, seriesId);
   const body = await renderFormationMessage(supabase, seriesId, draftStatus);
-  await discordFetch(`/channels/${channelId}/messages/${messageId}`, { method: "PATCH", body: JSON.stringify(body) });
+  if (await renderSuperseded(supabase, seriesId, ticket)) return;
+  await discordFetch(`/channels/${channelId}/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify(components ? { ...body, components } : body),
+  });
 }
 
 // Entry point called by queue.ts once the series is created (feature disabled, or the series-
@@ -987,11 +1044,7 @@ async function sendDraftPickPrompt(
   } else {
     const statusText = `${mention(turnPlayer.discord_id, turnPlayerDecoration)} - Your DMs are closed. Pick from the ${pickCount > 1 ? "menu" : "buttons"} below:`;
     // DM-closed fallback: same combined message, but the pick controls ride along on it.
-    const body = await renderFormationMessage(supabase, seriesId, statusText);
-    await discordFetch(`/channels/${textChannelId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ ...body, components: componentRows }),
-    });
+    await patchFormationMessage(supabase, seriesId, textChannelId, messageId, statusText, componentRows);
   }
 }
 

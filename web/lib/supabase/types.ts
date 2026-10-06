@@ -63,6 +63,11 @@ export type SeriesRow = {
   series_length_k_multiplier: number;
   vote_started_at: string | null;
   series_length_vote_active: boolean;
+  // Monotonic redraw ticket for the combined formation message — see migration
+  // 0052_formation_render_seq.sql. Bumped by every patchFormationMessage call before it renders,
+  // so a slower render can tell it has been superseded and drop its PATCH instead of reverting
+  // the message to an older phase.
+  formation_render_seq: number;
   // One-time claim sentinel for /correct's player-vote flip — see migration
   // 0045_correct_votes.sql. Null until a series is flipped via 5-of-6 player vote; once set,
   // /correct refuses to flip that series again. Independent of `status`, which stays "reported".
@@ -412,6 +417,10 @@ export type Database = {
         Returns: { status: "not_open" | "not_joined" | "left"; player_count: number }[];
       };
       crl6mansqueuebot_assign_match_number: {
+        Args: { p_series_id: string };
+        Returns: number;
+      };
+      crl6mansqueuebot_next_formation_render_seq: {
         Args: { p_series_id: string };
         Returns: number;
       };
