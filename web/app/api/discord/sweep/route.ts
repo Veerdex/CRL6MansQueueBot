@@ -147,7 +147,7 @@ export async function POST(request: Request) {
 
   let voided = 0;
   for (const series of stale ?? []) {
-    await voidStaleSeries(supabase, series, "Your series timed out with no report and has been cancelled — no MMR change. An admin can help re-queue if needed.");
+    await voidStaleSeries(supabase, series, "Your series timed out with no report and has been cancelled — no MMR change.");
     voided += 1;
   }
 
