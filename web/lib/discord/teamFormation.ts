@@ -203,6 +203,9 @@ export async function renderFormationMessage(
 
   const rosterLines = await buildRosterLines(members, streaks);
   const fields: { name: string; value: string; inline?: boolean }[] = [];
+  // Appended to the description rather than pushed as a field — see the resolved-length block
+  // below for why. Empty whenever there is no resolved length to show.
+  let seriesLengthBlock = "";
   let components: unknown[] = [];
   let footer: string | undefined;
 
@@ -230,14 +233,15 @@ export async function renderFormationMessage(
     // Every later phase keeps the resolved length pinned above it, replacing the tally it grew
     // out of. Absent entirely when series_length_vote_enabled is off and no vote ever ran.
     if (seriesLength) {
-      fields.push({
-        name: "Series Length",
-        // `###` rather than bold. Discord scopes a header to the whole line, so the multiplier
-        // drops to its own line beneath instead of trailing after a `·` — otherwise it would
-        // render at header size too.
-        value: `### ${SERIES_LENGTH_LABELS[seriesLength]}\n${SERIES_LENGTH_K_MULTIPLIERS[seriesLength] * 100}% MMR`,
-        inline: false,
-      });
+      // In the description, NOT a "Series Length" field. Discord renders `#`/`##`/`###` headers
+      // in an embed's description but not inside a field value, which only takes inline markup —
+      // as a field this printed a literal "### Best of 5" on screen (reported live). The
+      // description already proves headers work there: its "### Match Found!" headline renders,
+      // and the rich join card's old H3 was dropped for the top margin a *rendered* header added.
+      // Lands in the same visual spot either way, since a description sits directly above the
+      // fields. Header scopes to the whole line, so the multiplier goes on its own line beneath
+      // rather than trailing after a `·`, which would be swept up to header size too.
+      seriesLengthBlock = `\n### ${SERIES_LENGTH_LABELS[seriesLength]}\n${SERIES_LENGTH_K_MULTIPLIERS[seriesLength] * 100}% MMR`;
     }
 
     if (!series?.vote_result) {
@@ -278,7 +282,7 @@ export async function renderFormationMessage(
     embeds: [
       {
         color: supercharged ? SUPERCHARGED_COLOR : BRAND_COLOR,
-        description: `### Match Found!\n${rosterLines.join("\n")}`,
+        description: `### Match Found!\n${rosterLines.join("\n")}${seriesLengthBlock}`,
         fields,
         ...(footer ? { footer: { text: footer } } : {}),
       },

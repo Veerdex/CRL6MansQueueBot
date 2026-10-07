@@ -171,26 +171,43 @@ describe("renderFormationMessage", () => {
 
   it("phase 2: replaces the tally with the resolved length and shows the formation vote", async () => {
     const result = await render({ series: { ...BASE, series_length: "bo5" }, formationVotes: ["captains", "balanced"] });
-    expect(fieldNames(result)).toEqual(["Series Length", "Balanced Teams", "Captains"]);
-    expect(embed(result).fields[0].value).toBe("### Best of 5\n100% MMR");
+    // The resolved length lives in the description, where Discord actually renders a `###`
+    // header — as a field value it printed the "###" literally.
+    expect(fieldNames(result)).toEqual(["Balanced Teams", "Captains"]);
+    expect(embed(result).description).toContain("### Best of 5\n100% MMR");
+    expect(embed(result).fields[0].value).toBe("1 / 3");
     expect(embed(result).fields[1].value).toBe("1 / 3");
-    expect(embed(result).fields[2].value).toBe("1 / 3");
     expect(embed(result).footer?.text).toBe("You have 2 minutes to vote on team formation.");
     expect(result.components).toHaveLength(1);
   });
 
-  it("omits the Series Length field entirely when the length vote is disabled", async () => {
+  it("omits the resolved length entirely when the length vote is disabled", async () => {
     const result = await render({ series: BASE });
     expect(fieldNames(result)).toEqual(["Balanced Teams", "Captains"]);
+    expect(embed(result).description).not.toContain("Best of");
+  });
+
+  // Guards the reason this moved: a header only renders in an embed's description, so the
+  // resolved length must never go back to being a field value.
+  it("never renders a '###' header inside a field value", async () => {
+    for (const series of [
+      { ...BASE, series_length: "bo5" },
+      { ...BASE, series_length: "bo3", vote_result: "balanced" },
+      { ...BASE, series_length: "bo7", series_length_vote_active: true },
+    ]) {
+      const result = await render({ series });
+      for (const f of embed(result).fields) expect(f.value).not.toContain("###");
+    }
   });
 
   it("phase 3: shows the two captains in place of the vote, with no buttons left", async () => {
     const lobby: Lobby[] = MEMBERS.map((m, i) => ({ player_id: m.id, team: i === 0 ? "A" : i === 2 ? "B" : null, is_captain: i === 0 || i === 2 }));
     const result = await render({ series: { ...BASE, series_length: "bo7", vote_result: "captains" }, lobby }, "<@d-ace> you're picking - check your DMs!");
-    expect(fieldNames(result)).toEqual(["Series Length", "Captain A", "Captain B", "Status"]);
-    expect(embed(result).fields[1].value).toBe("<@d-ace>");
-    expect(embed(result).fields[2].value).toBe("<@d-cinder>");
-    expect(embed(result).fields[3].value).toContain("check your DMs");
+    expect(fieldNames(result)).toEqual(["Captain A", "Captain B", "Status"]);
+    expect(embed(result).description).toContain("### Best of 7\n140% MMR");
+    expect(embed(result).fields[0].value).toBe("<@d-ace>");
+    expect(embed(result).fields[1].value).toBe("<@d-cinder>");
+    expect(embed(result).fields[2].value).toContain("check your DMs");
     expect(result.components).toEqual([]);
     // The pick clock, same shape as the two vote phases above — a captain reading only the
     // channel message still sees that the turn expires.
@@ -224,9 +241,9 @@ describe("renderFormationMessage", () => {
 
   it("phase 3b: labels a balanced resolution", async () => {
     const result = await render({ series: { ...BASE, series_length: "bo3", vote_result: "balanced" } });
-    expect(fieldNames(result)).toEqual(["Series Length", "Team Formation"]);
-    expect(embed(result).fields[0].value).toBe("### Best of 3\n60% MMR");
-    expect(embed(result).fields[1].value).toBe("**Balanced**");
+    expect(fieldNames(result)).toEqual(["Team Formation"]);
+    expect(embed(result).description).toContain("### Best of 3\n60% MMR");
+    expect(embed(result).fields[0].value).toBe("**Balanced**");
     expect(result.components).toEqual([]);
   });
 
