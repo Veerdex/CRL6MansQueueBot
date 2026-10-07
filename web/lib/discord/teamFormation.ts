@@ -1547,25 +1547,12 @@ async function finalizeTeams(
   // Match-time stats — see CLAUDE.md, "Match time stats". Best-effort, never blocks formation.
   await recordMatchTimeStats(supabase, Boolean(fetchedSeriesData?.is_test_data), (fetchedSeriesData?.bonus_day_multiplier ?? 1) > 1);
 
-  // DM each real player their private match credentials (see CLAUDE.md, "Team formation (on
-  // pop)") — best-effort, same is_test_data guard as the draft-pick confirmation DM, since
-  // synthetic test bots have no real Discord account to DM.
-  await Promise.all(
-    members
-      .filter((m) => !m.is_test_data)
-      .map((m) =>
-        sendDirectMessage(m.discord_id, "Your teams are formed — join the private match with the credentials below.", undefined, [
-          {
-            color: formationColor,
-            title: "Private Match Credentials",
-            fields: [
-              { name: "Name", value: "crlw6m", inline: true },
-              { name: "Password", value: privateMatchPassword, inline: true },
-            ],
-          },
-        ]),
-      ),
-  );
+  // The private-match credentials DM that used to go out here was removed on 2026-10-06 at the
+  // user's request. Nothing else ever surfaced the name/password — players sort the lobby out
+  // themselves now. The password is still generated and written to series.private_match_password
+  // above, so the column keeps its shape and its history; it just isn't delivered anywhere.
+  // Re-adding it means restoring a sendDirectMessage fan-out over the non-test members, not
+  // putting the password in the public "Teams formed!" message.
 
   const streaks = await getStreakIds(supabase, members.map((m) => m.id));
   const memberMention = (m: PlayerRow) => mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
