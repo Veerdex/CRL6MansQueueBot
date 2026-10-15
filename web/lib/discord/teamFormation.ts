@@ -201,7 +201,7 @@ export async function renderFormationMessage(
   const matchRoleId = (series as { match_role_id?: string | null } | null)?.match_role_id ?? null;
   const content = matchRoleId ? `<@&${matchRoleId}>` : members.map((m) => decorate(m)).join(" ");
 
-  const rosterLines = await buildRosterLines(members, streaks, { showBandName: false });
+  const rosterLines = await buildRosterLines(members, streaks);
   const fields: { name: string; value: string; inline?: boolean }[] = [];
   // Appended to the description rather than pushed as a field — see the resolved-length block
   // below for why. Empty whenever there is no resolved length to show.
