@@ -78,7 +78,7 @@ function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number 
 }
 
 // compareLeaderboardRank's archived twin, for past-season boards. `season_rank` is the order
-// seasonClose.ts baked in — MMR desc, then season games, then id, with no placed-first tier — so
+// seasonClose.ts baked in — MMR desc, then season games, then id, with no placed-first or Prism-first tier — so
 // replaying it verbatim seats unplaced finishers above banded ones, which the live board never
 // does. The column itself stays the record of record and is deliberately not rewritten: Hall of
 // Fame podiums and the nickname medal sweep both read `season_rank <= 3` straight off it, and
@@ -88,6 +88,9 @@ function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number 
 function compareArchivedRank(a: SeasonHistoryRow, b: SeasonHistoryRow): number {
   const bandedDiff = Number(b.band_at_close !== null) - Number(a.band_at_close !== null);
   if (bandedDiff !== 0) return bandedDiff;
+  // `made_top10` is who held Prism at close — the archived twin of the live board's Prism tier.
+  const prismDiff = Number(b.made_top10) - Number(a.made_top10);
+  if (prismDiff !== 0) return prismDiff;
   const mmrDiff = b.mmr_at_close - a.mmr_at_close;
   if (mmrDiff !== 0) return mmrDiff;
   return a.season_rank - b.season_rank;

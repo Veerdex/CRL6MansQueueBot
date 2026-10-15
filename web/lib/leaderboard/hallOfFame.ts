@@ -47,12 +47,12 @@ function toHofPlayer(
 }
 
 // seasonClose.ts's standing tiebreak — MMR desc, then this-season games played desc, then player
-// id asc — with the placed-first tier the leaderboard applies (compareLeaderboardRank) put ahead
-// of it. Without that tier an unplaced player with a couple of lucky wins can take a podium slot
-// off a banded one, which is the same defect the past-season boards had; the podium is a standing,
-// and an Unranked finisher has no standing to be first in. Note this only reorders who *reaches*
-// the podium — it is unrelated to the Prism/gold selection HoF deliberately keeps separate
-// (see `isPrism` vs `inTopThree` above), which stays untouched.
+// id asc — with the placed-first and Prism-first tiers the leaderboard applies
+// (compareLeaderboardRank) put ahead of it. Without the placed tier an unplaced player with a
+// couple of lucky wins can take a podium slot off a banded one; without the Prism tier a
+// higher-MMR player who doesn't hold Prism (e.g. short of `top10_min_games`) outranks the one who
+// does. The podium is a standing, and it follows the leaderboard's. Note this only reorders who
+// *reaches* the podium — the `inTopThree` icon override above still follows whoever lands there.
 function rankParticipants(
   entries: { player: PlayerRow; mmr: number; seasonGames: number }[],
 ): { player: PlayerRow; mmr: number }[] {
@@ -60,6 +60,7 @@ function rankParticipants(
     .sort(
       (a, b) =>
         Number(b.player.is_placed) - Number(a.player.is_placed) ||
+        Number(b.player.is_prism) - Number(a.player.is_prism) ||
         b.mmr - a.mmr ||
         b.seasonGames - a.seasonGames ||
         a.player.id.localeCompare(b.player.id),
@@ -68,13 +69,14 @@ function rankParticipants(
 }
 
 // The closed-season equivalent, over archived rows. `season_rank` was baked in at close with no
-// placed-first tier, so it is re-tiered here at read time rather than rewritten in the database —
+// placed-first or Prism-first tier, so it is re-tiered here at read time rather than rewritten in the database —
 // the column stays the archival record that nicknameSync.ts's medal sweep and allTimeRating.ts
 // both read. Mirrors compareArchivedRank in UnifiedLeaderboard.tsx (duplicated the same way
 // compareLeaderboardRank is, rather than shared across the server/client boundary).
 function compareArchivedStanding(a: SeasonHistoryRow, b: SeasonHistoryRow): number {
   return (
     Number(b.band_at_close !== null) - Number(a.band_at_close !== null) ||
+    Number(b.made_top10) - Number(a.made_top10) ||
     b.mmr_at_close - a.mmr_at_close ||
     a.season_rank - b.season_rank
   );
