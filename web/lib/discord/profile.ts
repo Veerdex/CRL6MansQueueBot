@@ -29,12 +29,14 @@ export function handleProfileCommand(interaction: DiscordInteraction) {
 }
 
 // Mirrors UnifiedLeaderboard.tsx's compareLeaderboardRank exactly (placed players first, then
-// MMR descending, then player id as a final tiebreak) — duplicated rather than imported since
+// live Prism holders, then MMR descending, then player id as a final tiebreak) — duplicated rather than imported since
 // that component is a "use client" file this server-only module can't pull in. Keep in sync if
 // the Main Leaderboard's own sort ever changes.
 function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number {
   const placedDiff = Number(b.player.is_placed) - Number(a.player.is_placed);
   if (placedDiff !== 0) return placedDiff;
+  const prismDiff = Number(b.player.is_prism) - Number(a.player.is_prism);
+  if (prismDiff !== 0) return prismDiff;
   const mmrDiff = b.player.mmr - a.player.mmr;
   if (mmrDiff !== 0) return mmrDiff;
   return a.player.id.localeCompare(b.player.id);

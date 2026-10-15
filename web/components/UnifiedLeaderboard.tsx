@@ -62,13 +62,16 @@ function applyMMRTransform(mmr: number, scale: number, shift: number): number {
   return mmr * scale + shift;
 }
 
-// Sorts purely on placement then MMR — band is not a ranking priority. All placed players
-// (any band) rank strictly by MMR against each other regardless of band; unplaced players
-// always group after every placed player (per CLAUDE.md: "the only separation is between
-// unbanded and banded players"), then MMR breaks ties within that group too.
+// Sorts on placement, then Prism, then MMR — ordinary bands are not a ranking priority. Unplaced
+// players always group after every placed player, and live Prism holders always group ahead of
+// every other placed player, regardless of MMR: Prism also requires `top10_min_games`, so a
+// higher-MMR Sapphire short on games doesn't outrank the player actually holding the tier.
+// Within each group, MMR decides.
 function compareLeaderboardRank(a: PlayerWithGames, b: PlayerWithGames): number {
   const placedDiff = Number(b.player.is_placed) - Number(a.player.is_placed);
   if (placedDiff !== 0) return placedDiff;
+  const prismDiff = Number(b.player.is_prism) - Number(a.player.is_prism);
+  if (prismDiff !== 0) return prismDiff;
   const mmrDiff = b.player.mmr - a.player.mmr;
   if (mmrDiff !== 0) return mmrDiff;
   return a.player.id.localeCompare(b.player.id);
