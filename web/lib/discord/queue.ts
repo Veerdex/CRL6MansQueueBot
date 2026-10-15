@@ -48,8 +48,13 @@ async function queueStatusEmbed(queueType: QueueType, members: PlayerRow[], stre
 // One-player-per-line roster format (rank emoji + name + band + MMR) — shared by hybrid mode's
 // roster message, rich mode's roster message, the combined formation message's Match Found
 // roster, and the per-team lists on the "Teams formed!" summary, so they don't drift out of sync
-// with four copies of the same rendering logic.
-export async function buildRosterLines(members: PlayerRow[], streaks: StreakIds): Promise<string[]> {
+// with four copies of the same rendering logic. `showBandName: false` drops the band's name and
+// keeps only its emoji — used by the combined Match Found / vote / draft message.
+export async function buildRosterLines(
+  members: PlayerRow[],
+  streaks: StreakIds,
+  { showBandName = true }: { showBandName?: boolean } = {},
+): Promise<string[]> {
   if (!members.length) return ["_Empty_"];
   const scale = await getConfigNumber("mmr_scale", 1);
   const shift = await getConfigNumber("mmr_shift", 0);
@@ -62,7 +67,9 @@ export async function buildRosterLines(members: PlayerRow[], streaks: StreakIds)
       const emoji = await getRankEmoji(band);
       const who = mention(m.discord_id, { onFire: streaks.onFireIds.has(m.id), cold: streaks.coldIds.has(m.id) });
       const displayMmr = Math.round(m.mmr * scale + shift);
-      return `${emoji} ${who} — ${getRankLabel(band)} · ${displayMmr} MMR`;
+      return showBandName
+        ? `${emoji} ${who} — ${getRankLabel(band)} · ${displayMmr} MMR`
+        : `${emoji} ${who} — ${displayMmr} MMR`;
     }),
   );
 }
