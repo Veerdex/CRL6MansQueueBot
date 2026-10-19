@@ -835,12 +835,11 @@ async function resolveBalanced(supabase: AdminClient, guildId: string, seriesId:
 }
 
 // ---------------------------------------------------------------------------
-// Captains mode: captains are drawn from *ranked* (is_placed) players first, falling back to
-// unranked players only to the extent there aren't enough ranked players in the lobby to fill
-// both captain slots — see CLAUDE.md, "Team formation (on pop)" for the four scenarios this
-// covers. Draft order (Captain A picks 1, Captain B picks 2, last remaining player auto-assigns
-// to Captain A) is derived purely by counting how many non-captain lobby rows already have a
-// team — no separate turn column.
+// Captains mode: two of the lobby's top three players by MMR become captains, chosen at random —
+// placement status plays no part, so Unranked players are eligible exactly like ranked ones. See
+// CLAUDE.md, "Team formation". Draft order (Captain A picks 1, Captain B picks 2, last remaining
+// player auto-assigns to Captain A) is derived purely by counting how many non-captain lobby rows
+// already have a team — no separate turn column.
 // ---------------------------------------------------------------------------
 
 export function deriveTurnCaptain(nonCaptainAssignedCount: number): Team | null {
@@ -885,35 +884,16 @@ function pickTwoOfThreeRandom(topThree: PlayerRow[]): [PlayerRow, PlayerRow] {
   return [a, b];
 }
 
-// Randomly picks 1 candidate out of the top n (by MMR) of the given pool.
-function pickOneRandomFromTop(sorted: PlayerRow[], n: number): PlayerRow {
-  const top = sorted.slice(0, n);
-  return top[Math.floor(Math.random() * top.length)];
-}
-
-// Selects the 2 (unordered) captain candidates for a 6-player lobby. Ranked players are always
-// preferred over unranked ones — unranked players are only ever drawn on to fill a captain slot
-// ranked players couldn't, never to replace one. See CLAUDE.md, "Team formation (on pop)":
-//   - 3+ ranked players: top 3 ranked by MMR, 2 of them chosen at random (unchanged from before
-//     this only ever considered the whole lobby's top 3 rather than ranked players specifically).
-//   - Exactly 2 ranked players: both become captains outright, no randomness.
-//   - Exactly 1 ranked player: that player plus 1 random pick from the top 2 unranked by MMR.
-//   - 0 ranked players: top 3 unranked by MMR, 2 of them chosen at random (same shape as the 3+
-//     ranked case, just sourced from the unranked pool instead).
+// Selects the 2 (unordered) captain candidates for a 6-player lobby: the top 3 by MMR, one of
+// them excluded at random. Ranked and Unranked players are treated identically.
 export function selectCaptainCandidates(members: PlayerRow[]): [PlayerRow, PlayerRow] {
-  const ranked = members.filter((m) => m.is_placed).sort(byMmrDesc);
-  const unranked = members.filter((m) => !m.is_placed).sort(byMmrDesc);
-
-  if (ranked.length >= 3) return pickTwoOfThreeRandom(ranked.slice(0, 3));
-  if (ranked.length === 2) return [ranked[0], ranked[1]];
-  if (ranked.length === 1) return [ranked[0], pickOneRandomFromTop(unranked, 2)];
-  return pickTwoOfThreeRandom(unranked.slice(0, 3));
+  return pickTwoOfThreeRandom([...members].sort(byMmrDesc).slice(0, 3));
 }
 
 async function beginCaptainsDraft(supabase: AdminClient, guildId: string, seriesId: string, queueChannelId: string, messageId: string, members: PlayerRow[]) {
   const [pickedA, pickedB] = selectCaptainCandidates(members);
-  // Which of the two chosen captains picks first (Captain A) is a coin flip — not tied to MMR,
-  // ranked status, or which one is "picked[0]" — see CLAUDE.md, "Team formation (on pop)".
+  // Which of the two chosen captains picks first (Captain A) is a coin flip — not tied to MMR
+  // or which one is "picked[0]" — see CLAUDE.md, "Team formation (on pop)".
   const captainA = Math.random() < 0.5 ? pickedA : pickedB;
   const captainB = captainA === pickedA ? pickedB : pickedA;
 

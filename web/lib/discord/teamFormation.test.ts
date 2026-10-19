@@ -77,74 +77,44 @@ describe("bestBalancedSplit", () => {
   });
 });
 
-// See CLAUDE.md, "Team formation (on pop)" — ranked (is_placed) players are preferred over
-// unranked ones when choosing captains, with unranked players only ever filling in for a slot
-// ranked players couldn't fill.
+// See CLAUDE.md, "Team formation" — captains are two of the lobby's top three by MMR, chosen at
+// random, with placement status ignored entirely.
 describe("selectCaptainCandidates", () => {
-  it("with 2 ranked players, both become captains outright (no randomness)", () => {
-    const ranked1 = player("r1", 900, true);
-    const ranked2 = player("r2", 100, true);
-    const members = [ranked1, ranked2, player("u1", 950), player("u2", 800), player("u3", 10), player("u4", 5)];
-    for (let i = 0; i < 25; i++) {
-      const picked = selectCaptainCandidates(members);
-      expect(new Set(picked.map((p) => p.id))).toEqual(new Set(["r1", "r2"]));
-    }
-  });
-
-  it("with 3 ranked players, picks 2 of the top 3 ranked by MMR at random, never an unranked player", () => {
-    const ranked = [player("r1", 900, true), player("r2", 800, true), player("r3", 700, true)];
-    const members = [...ranked, player("u1", 1000), player("u2", 999), player("u3", 998)];
+  it("picks 2 of the top 3 by MMR at random, never anyone below the top 3", () => {
+    const members = [player("a", 900, true), player("b", 800), player("c", 700, true), player("d", 600, true), player("e", 10), player("f", 5)];
     const seen = new Set<string>();
     for (let i = 0; i < 200; i++) {
       const picked = selectCaptainCandidates(members);
       expect(picked).toHaveLength(2);
+      expect(picked[0].id).not.toBe(picked[1].id);
       for (const p of picked) {
-        expect(p.is_placed).toBe(true);
+        expect(["a", "b", "c"]).toContain(p.id);
         seen.add(p.id);
       }
     }
-    // Over enough trials, every one of the 3 ranked players should show up as a captain at least
-    // once (each is excluded with independent 1/3 probability per trial).
-    expect(seen).toEqual(new Set(["r1", "r2", "r3"]));
+    // Each of the top 3 is excluded with independent 1/3 probability per trial.
+    expect(seen).toEqual(new Set(["a", "b", "c"]));
   });
 
-  it("with 3+ ranked players, ignores unranked players entirely even if they have higher MMR", () => {
-    const ranked = [player("r1", 10, true), player("r2", 9, true), player("r3", 8, true), player("r4", 7, true)];
-    const members = [...ranked, player("u1", 9999), player("u2", 9998)];
-    const picked = selectCaptainCandidates(members);
-    for (const p of picked) expect(p.is_placed).toBe(true);
-    // Top 3 ranked by MMR are r1/r2/r3 — r4 should never be picked.
+  it("Unranked players are eligible even when ranked players are in the lobby", () => {
+    const members = [player("u1", 9999), player("u2", 9998), player("u3", 9997), player("r1", 10, true), player("r2", 9, true), player("r3", 8, true)];
     for (let i = 0; i < 50; i++) {
-      const result = selectCaptainCandidates(members);
-      expect(result.some((p) => p.id === "r4")).toBe(false);
+      for (const p of selectCaptainCandidates(members)) expect(p.is_placed).toBe(false);
     }
   });
 
-  it("with exactly 1 ranked player, that player plus a random pick from the top 2 unranked by MMR", () => {
-    const ranked1 = player("r1", 500, true);
-    const members = [ranked1, player("u1", 900), player("u2", 850), player("u3", 10), player("u4", 5), player("u5", 1)];
-    const seen = new Set<string>();
-    for (let i = 0; i < 100; i++) {
-      const picked = selectCaptainCandidates(members);
-      expect(picked.some((p) => p.id === "r1")).toBe(true);
-      const other = picked.find((p) => p.id !== "r1")!;
-      expect(["u1", "u2"]).toContain(other.id);
-      seen.add(other.id);
-    }
-    expect(seen).toEqual(new Set(["u1", "u2"]));
-  });
-
-  it("with 0 ranked players, picks 2 of the top 3 unranked by MMR at random", () => {
+  it("works for an all-Unranked lobby", () => {
     const members = [player("u1", 900), player("u2", 800), player("u3", 700), player("u4", 10), player("u5", 5), player("u6", 1)];
-    const seen = new Set<string>();
-    for (let i = 0; i < 200; i++) {
-      const picked = selectCaptainCandidates(members);
-      for (const p of picked) {
-        expect(["u1", "u2", "u3"]).toContain(p.id);
-        seen.add(p.id);
-      }
+    for (let i = 0; i < 50; i++) {
+      for (const p of selectCaptainCandidates(members)) expect(["u1", "u2", "u3"]).toContain(p.id);
     }
-    expect(seen).toEqual(new Set(["u1", "u2", "u3"]));
+  });
+
+  it("does not reorder the caller's members array", () => {
+    const members = [player("a", 1), player("b", 3), player("c", 2), player("d", 6), player("e", 5), player("f", 4)];
+    const before = members.map((m) => m.id);
+    selectCaptainCandidates(members);
+    expect(members.map((m) => m.id)).toEqual(before);
   });
 });
 
