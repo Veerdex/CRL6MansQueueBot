@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getConfigNumber } from "@/lib/discord/config";
+import { getConfigNumber, getFixedRankConfig } from "@/lib/discord/config";
 import { getPlacedPlayerBandMMRs } from "@/lib/leaderboard/queries";
 import { REPORT_COOLDOWN_MINUTES_BY_LENGTH } from "@/lib/discord/teamFormation";
 import type { Band } from "@/lib/supabase/types";
@@ -50,6 +50,7 @@ export default async function InfoPage() {
     placedBandMMRs,
     seriesLengthVoteEnabled,
     reportCooldownEnabled,
+    fixedRanks,
   ] = await Promise.all([
     getConfigNumber("series_timeout_hours", 2),
     getConfigNumber("bonus_day_enabled", 1),
@@ -67,6 +68,7 @@ export default async function InfoPage() {
     getPlacedPlayerBandMMRs(),
     getConfigNumber("series_length_vote_enabled", 0),
     getConfigNumber("report_cooldown_enabled", 1),
+    getFixedRankConfig(),
   ]);
 
   // Single-value simplification (this session) of the old current-members min–max range: each
@@ -101,6 +103,14 @@ export default async function InfoPage() {
     Emerald: `${emeraldCutoff}th–${sapphireCutoff}th percentile`,
     Sapphire: `top ${100 - sapphireCutoff}%`,
   };
+  // Fixed ranks (/admin fixed-ranks toggle): bands are plain display-MMR thresholds instead.
+  const bandFixedLabel: Record<Band, string> | null = fixedRanks && {
+    Iron: `under ${fixedRanks.garnet} MMR`,
+    Garnet: `${fixedRanks.garnet}+ MMR`,
+    Emerald: `${fixedRanks.emerald}+ MMR`,
+    Sapphire: `${fixedRanks.sapphire}+ MMR`,
+  };
+  const bandLabel = bandFixedLabel ?? bandPercentileLabel;
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-10">
@@ -213,19 +223,28 @@ export default async function InfoPage() {
           <ul className="list-disc space-y-1.5 pl-5">
             <li>
               Four skill bands, low to high: <strong>Iron → Garnet → Emerald → Sapphire</strong>, split by
-              MMR percentile: Iron ({bandPercentileLabel.Iron}), Garnet ({bandPercentileLabel.Garnet}),
-              Emerald ({bandPercentileLabel.Emerald}), Sapphire ({bandPercentileLabel.Sapphire}).
+              {fixedRanks ? " fixed MMR thresholds" : " MMR percentile"}: Iron ({bandLabel.Iron}), Garnet (
+              {bandLabel.Garnet}), Emerald ({bandLabel.Emerald}), Sapphire ({bandLabel.Sapphire}).
             </li>
+            {fixedRanks ? (
+              <li>
+                <strong>Prism</strong> is the top rank: anyone at <strong>{fixedRanks.prism}+ MMR</strong> holds
+                it — no game minimum and no limit on how many players can have it at once.
+              </li>
+            ) : (
+              <li>
+                <strong>Prism</strong> is a live tier for Sapphire players who are also currently{" "}
+                <strong>
+                  {prismTopN === 1 ? "the #1 Sapphire player" : `in the top ${prismTopN} Sapphire players`}
+                </strong>{" "}
+                by MMR (with at least {top10MinGames} Rank Queue games played this season) — you gain and
+                lose it the instant your standing crosses that line, not just at season close.
+              </li>
+            )}
             <li>
-              <strong>Prism</strong> is a live tier for Sapphire players who are also currently{" "}
-              <strong>
-                {prismTopN === 1 ? "the #1 Sapphire player" : `in the top ${prismTopN} Sapphire players`}
-              </strong>{" "}
-              by MMR (with at least {top10MinGames} Rank Queue games played this season) — you gain and
-              lose it the instant your standing crosses that line, not just at season close.
-            </li>
-            <li>
-              Your band is based on how your MMR compares to everyone else&apos;s, recalculated{" "}
+              {fixedRanks
+                ? "Your band is based on your own MMR alone, updated "
+                : "Your band is based on how your MMR compares to everyone else's, recalculated "}
               <em>daily</em> and also right after your own matches.
             </li>
             <li>
@@ -249,7 +268,11 @@ export default async function InfoPage() {
                   <div className="min-w-0">
                     <div className="font-semibold text-foreground">{band}</div>
                     <div className="text-xs text-muted">
-                      {floorMmr === undefined ? "No players currently placed in this band" : `Currently ${floorMmr} MMR`}
+                      {bandFixedLabel
+                        ? `${bandFixedLabel[band].charAt(0).toUpperCase()}${bandFixedLabel[band].slice(1)}`
+                        : floorMmr === undefined
+                          ? "No players currently placed in this band"
+                          : `Currently ${floorMmr} MMR`}
                     </div>
                   </div>
                 </li>
@@ -261,17 +284,25 @@ export default async function InfoPage() {
               <div className="min-w-0">
                 <div className="font-semibold text-foreground">Prism</div>
                 <div className="text-xs text-muted">
-                  {prismMinMmr === undefined ? "No players currently hold Prism" : `Currently ${prismMinMmr} MMR`} •{" "}
-                  {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
-                  this season
+                  {fixedRanks ? (
+                    `${fixedRanks.prism}+ MMR`
+                  ) : (
+                    <>
+                      {prismMinMmr === undefined ? "No players currently hold Prism" : `Currently ${prismMinMmr} MMR`} •{" "}
+                      {prismTopN === 1 ? "Live #1 cut" : `Live top ${prismTopN} cut`}, min {top10MinGames} games
+                      this season
+                    </>
+                  )}
                 </div>
               </div>
             </li>
           </ul>
-          <p className="text-xs text-muted">
-            Values reflect current standings and shift as players climb, drop, and place — treat them as
-            approximate, not fixed thresholds.
-          </p>
+          {!fixedRanks && (
+            <p className="text-xs text-muted">
+              Values reflect current standings and shift as players climb, drop, and place — treat them as
+              approximate, not fixed thresholds.
+            </p>
+          )}
         </Section>
       </div>
     </div>

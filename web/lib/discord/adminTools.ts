@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDirectMessage, editOriginalResponse, deleteOriginalResponse, sendFollowupMessage, discordFetch, getGuildId } from "./rest";
-import { getConfigNumber, getConfigValue, KNOWN_CONFIG_DEFAULTS, setConfigValue } from "./config";
+import { getConfigNumber, getConfigValue, KNOWN_CONFIG_DEFAULTS, setConfigValue, type FixedRankThresholds } from "./config";
 import { BONUS_DAY_NAMES } from "./bonusDay";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { recomputeBands, type BandCalcMode } from "./bands";
@@ -234,6 +234,21 @@ async function dispatchAdminSubcommand(
     case "band-calc-mode": {
       const mode = getParamValue(params, "mode");
       await processBandCalcModeSet(interaction, actorId, typeof mode === "string" ? mode : undefined);
+      return;
+    }
+    case "fixed-ranks": {
+      if (path[1] === "toggle") {
+        const enabled = getParamValue(params, "enabled");
+        await processFixedRanksToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+        return;
+      }
+      const rank = FIXED_RANK_SUBCOMMANDS[path[1] ?? ""];
+      if (rank) {
+        const mmr = getParamValue(params, "mmr");
+        await processFixedRankSetThreshold(interaction, actorId, rank, typeof mmr === "number" ? mmr : undefined);
+        return;
+      }
+      await editOriginalResponse(interaction.token, { content: "Unrecognized fixed-ranks subcommand." });
       return;
     }
     case "setguildid": {
@@ -1481,6 +1496,90 @@ async function processBandCalcModeSet(interaction: DiscordInteraction, actorId: 
     { field: "band_calc_mode", before: oldValue ?? "position (default)", after: mode },
   ]);
   await editOriginalResponse(interaction.token, { content: BAND_CALC_MODE_DESCRIPTIONS[mode] });
+}
+
+// ---------------------------------------------------------------------------
+// /admin fixed-ranks toggle|set-prism|set-sapphire|set-emerald|set-garnet — switches bands between
+// the default percentile cutoffs and fixed display-MMR thresholds (see config.ts's
+// getFixedRankConfig and bands.ts's targetBandForFixedMmr). Under fixed ranks Prism is just the
+// top threshold: no prism_top_n cap and no top10_min_games minimum. Dedicated subcommands rather
+// than /admin config set so the thresholds can be kept in strictly ascending order. Like
+// band-calc-mode, changes take effect on the next recompute.
+// ---------------------------------------------------------------------------
+
+type FixedRank = keyof FixedRankThresholds;
+
+const FIXED_RANK_SUBCOMMANDS: Record<string, FixedRank> = {
+  "set-garnet": "garnet",
+  "set-emerald": "emerald",
+  "set-sapphire": "sapphire",
+  "set-prism": "prism",
+};
+
+const FIXED_RANK_ORDER: FixedRank[] = ["garnet", "emerald", "sapphire", "prism"];
+
+async function readFixedRankThresholds(): Promise<FixedRankThresholds> {
+  const [garnet, emerald, sapphire, prism] = await Promise.all(
+    FIXED_RANK_ORDER.map((r) => getConfigNumber(`fixed_rank_${r}_mmr`, KNOWN_CONFIG_DEFAULTS[`fixed_rank_${r}_mmr`])),
+  );
+  return { garnet, emerald, sapphire, prism };
+}
+
+function formatFixedRankThresholds(t: FixedRankThresholds): string {
+  return `Garnet ${t.garnet}+ · Emerald ${t.emerald}+ · Sapphire ${t.sapphire}+ · Prism ${t.prism}+`;
+}
+
+function rankName(rank: FixedRank): string {
+  return rank.charAt(0).toUpperCase() + rank.slice(1);
+}
+
+async function processFixedRanksToggle(interaction: DiscordInteraction, actorId: string, enabled: boolean | undefined) {
+  if (enabled === undefined) {
+    await editOriginalResponse(interaction.token, { content: "enabled must be true or false." });
+    return;
+  }
+  const oldValue = await getConfigValue("fixed_ranks_enabled");
+  await setConfigValue("fixed_ranks_enabled", enabled ? "1" : "0");
+  await logAdminAction(actorId, "fixed_ranks_toggle", undefined, undefined, [
+    { field: "fixed_ranks_enabled", before: oldValue ?? "0 (default)", after: enabled ? "1" : "0" },
+  ]);
+  await editOriginalResponse(interaction.token, {
+    content: enabled
+      ? `Fixed ranks enabled — bands now use fixed MMR thresholds (${formatFixedRankThresholds(await readFixedRankThresholds())}). Prism has no game minimum or player cap. Run \`/admin recompute-bands\` to apply now.`
+      : "Fixed ranks disabled — bands are back on percentile cutoffs and the Prism top-N cut. Run `/admin recompute-bands` to apply now.",
+  });
+}
+
+async function processFixedRankSetThreshold(interaction: DiscordInteraction, actorId: string, rank: FixedRank, mmr: number | undefined) {
+  if (mmr === undefined || !Number.isInteger(mmr)) {
+    await editOriginalResponse(interaction.token, { content: "mmr must be a whole number." });
+    return;
+  }
+  const current = await readFixedRankThresholds();
+  const next = { ...current, [rank]: mmr };
+  // Strictly ascending, or a band would become unreachable (or Prism would fall below Sapphire).
+  const ordered = FIXED_RANK_ORDER.every((r, i) => i === 0 || next[FIXED_RANK_ORDER[i - 1]] < next[r]);
+  if (!ordered) {
+    await editOriginalResponse(interaction.token, {
+      content: `Thresholds must stay in ascending order (Garnet < Emerald < Sapphire < Prism). Current: ${formatFixedRankThresholds(current)}.`,
+    });
+    return;
+  }
+
+  const key = `fixed_rank_${rank}_mmr`;
+  const oldValue = await getConfigValue(key);
+  await setConfigValue(key, String(mmr));
+  await logAdminAction(actorId, "fixed_rank_set", rank, undefined, [
+    { field: key, before: oldValue ?? `${KNOWN_CONFIG_DEFAULTS[key]} (default)`, after: String(mmr) },
+  ]);
+  const enabled = (await getConfigNumber("fixed_ranks_enabled", 0)) === 1;
+  await editOriginalResponse(interaction.token, {
+    content: `${rankName(rank)} threshold set to ${mmr} MMR (${formatFixedRankThresholds(next)}).${
+      enabled
+        ? " Run `/admin recompute-bands` to apply now."
+        : " Fixed ranks are currently off — this takes effect once `/admin fixed-ranks toggle enabled:true` is set."
+    }`,
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { InteractionResponseType, InteractionResponseFlags } from "discord-interactions";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendDirectMessage, editOriginalResponse, getGuildId, getMemberRoles, addMemberRole, removeMemberRole, listAllGuildMembers, isUnknownMemberError, getRankEmoji, BRAND_COLOR } from "./rest";
-import { getConfigNumber, getConfigValue } from "./config";
+import { getConfigNumber, getConfigValue, getFixedRankConfig, type FixedRankThresholds } from "./config";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { interactionUserId, type DiscordInteraction } from "./types";
 import type { Band, BandRoleKey } from "@/lib/supabase/types";
@@ -246,6 +246,23 @@ export function targetBandForPercentile(pctile: number, config: BandCutoffConfig
   return "Iron";
 }
 
+// Fixed-MMR alternative to targetBandForPercentile, used when /admin fixed-ranks toggle is on.
+// Takes *display* MMR (mmr * mmr_scale + mmr_shift, rounded — the number players actually see),
+// since the thresholds are configured in display terms. Prism isn't a BAND_ORDER tier, so it's
+// handled separately by isFixedRankPrism; a Prism-threshold player's band is still Sapphire.
+export function targetBandForFixedMmr(displayMmr: number, thresholds: FixedRankThresholds): Band {
+  if (displayMmr >= thresholds.sapphire) return "Sapphire";
+  if (displayMmr >= thresholds.emerald) return "Emerald";
+  if (displayMmr >= thresholds.garnet) return "Garnet";
+  return "Iron";
+}
+
+// Under fixed ranks Prism is just another threshold: no top-N cap and no top10_min_games season
+// minimum — every placed player at or above it holds Prism.
+export function isFixedRankPrism(displayMmr: number, thresholds: FixedRankThresholds): boolean {
+  return displayMmr >= thresholds.prism;
+}
+
 export type BandCalcMode = "position" | "mmr";
 
 // /admin band-calc-mode mode:<position|mmr> — see CLAUDE.md, "Bands / ranks". Two ways to turn
@@ -326,16 +343,14 @@ export function computeBandThresholdMmr(
 }
 
 // Demotions are symmetric with promotions: a player moves to whatever band their current
-// percentile says, in either direction. The old grace-period/hysteresis demotion buffers
-// (grace_games, grace_inactivity_days, hysteresis_mmr) were removed — see CLAUDE.md, "Bands / ranks".
+// standing says (targetBandForPercentile or targetBandForFixedMmr), in either direction. The old
+// grace-period/hysteresis demotion buffers (grace_games, grace_inactivity_days, hysteresis_mmr)
+// were removed — see CLAUDE.md, "Bands / ranks".
 export function computeBandChange(
   player: { band: Band | null },
-  pctile: number,
+  targetBand: Band,
   isNewlyPlaced: boolean,
-  config: BandCutoffConfig,
 ): { action: ChangeAction; targetBand: Band } | null {
-  const targetBand = targetBandForPercentile(pctile, config);
-
   if (isNewlyPlaced) {
     return { action: "placed", targetBand };
   }
@@ -378,6 +393,9 @@ export async function recomputeBands(options?: { syncAllRoles?: boolean }): Prom
     prismTopN,
     top10MinGames,
     bandCalcModeRaw,
+    fixedRanks,
+    mmrScale,
+    mmrShift,
   ] = await Promise.all([
     getConfigNumber("placement_games_required", 10),
     getConfigNumber("band_cutoff_garnet_pctile", 40),
@@ -386,7 +404,11 @@ export async function recomputeBands(options?: { syncAllRoles?: boolean }): Prom
     getConfigNumber("prism_top_n", 1),
     getConfigNumber("top10_min_games", 8),
     getConfigValue("band_calc_mode"),
+    getFixedRankConfig(),
+    getConfigNumber("mmr_scale", 1),
+    getConfigNumber("mmr_shift", 0),
   ]);
+  const displayMmr = (mmr: number) => Math.round(mmr * mmrScale + mmrShift);
   const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
   const cutoffConfig: BandCutoffConfig = { garnetCutoff, emeraldCutoff, sapphireCutoff };
 
@@ -434,12 +456,15 @@ export async function recomputeBands(options?: { syncAllRoles?: boolean }): Prom
     return summary;
   }
 
-  const percentileById = computeBandPercentiles(pool, bandCalcMode);
+  // Percentiles only matter in the default percentile mode; fixed ranks read each player's own MMR.
+  const percentileById = fixedRanks ? null : computeBandPercentiles(pool, bandCalcMode);
   const newlyPlacedIds = new Set(newlyPlaced.map((p) => p.id));
 
   for (const player of pool) {
-    const pctile = percentileById.get(player.id)!;
-    const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig);
+    const standingBand = fixedRanks
+      ? targetBandForFixedMmr(displayMmr(player.mmr), fixedRanks)
+      : targetBandForPercentile(percentileById!.get(player.id)!, cutoffConfig);
+    const change = computeBandChange(player, standingBand, newlyPlacedIds.has(player.id));
 
     if (!change) {
       summary.unchanged += 1;
@@ -486,7 +511,8 @@ export async function recomputeBands(options?: { syncAllRoles?: boolean }): Prom
   }
 
   // ---------------------------------------------------------------------------
-  // Prism — a live top-N overlay, not a 5th BAND_ORDER tier. Folding it into BAND_ORDER would
+  // Prism — a live top-N overlay, not a 5th BAND_ORDER tier (in percentile mode; under fixed
+  // ranks it's a plain MMR threshold, see the fixedRanks branch below). Folding it into BAND_ORDER would
   // route it through computeBandChange's percentile cutoffs (which have no threshold for a tier
   // above Sapphire) — Prism instead gets its own strict top-N check, re-run every time this function runs (daily cron, every
   // Rank Queue report, admin unreport/correct-report/recompute-bands). A player holds Prism when
@@ -498,89 +524,96 @@ export async function recomputeBands(options?: { syncAllRoles?: boolean }): Prom
   // out for free with no separate revert step. See CLAUDE.md, "Bands / ranks".
   // ---------------------------------------------------------------------------
 
-  const { data: activeSeasonRow } = await supabase
-    .from("crl6mansqueuebot_seasons")
-    .select("id")
-    .eq("is_active", true)
-    .maybeSingle();
+  // Fixed ranks: Prism is an ordinary threshold (isFixedRankPrism) — no top-N cut, no season
+  // game minimum, so none of the season-games bookkeeping below is needed.
+  let newPrismIds: Set<string>;
+  if (fixedRanks) {
+    newPrismIds = new Set(pool.filter((p) => p.is_placed && isFixedRankPrism(displayMmr(p.mmr), fixedRanks)).map((p) => p.id));
+  } else {
+    const { data: activeSeasonRow } = await supabase
+      .from("crl6mansqueuebot_seasons")
+      .select("id")
+      .eq("is_active", true)
+      .maybeSingle();
 
-  // Paged, because this is a count and a short read is indistinguishable from a low game count:
-  // PostgREST silently truncates an unbounded select at a project row cap (1000 rows), which this
-  // roster read reaches at ~167 reported matches in a single season. Undercounting here does not
-  // just look wrong, it silently disqualifies players from Prism. .range() is LIMIT/OFFSET over
-  // the planner's order, so each page needs a total order — series_players' PK is
-  // (series_id, player_id). Same fetchAllPages/chunk pattern as avatars.ts (see its note at :7 on
-  // why this small helper is duplicated per file rather than shared).
-  const seasonGamesById = new Map<string, number>();
-  if (activeSeasonRow) {
-    const seasonSeries = await fetchAllPages((from, to) =>
-      supabase
-        .from("crl6mansqueuebot_series")
-        .select("id")
-        .eq("season_id", activeSeasonRow.id)
-        .eq("status", "reported")
-        .eq("queue_type", "rank")
-        .eq("is_test_data", false)
-        .order("id")
-        .range(from, to)
-        .then((r) => {
-          if (r.error) throw r.error;
-          return r.data ?? [];
-        }),
-    );
-    const seriesIds = seasonSeries.map((s) => s.id);
-    if (seriesIds.length > 0) {
-      const seasonRosterChunks = await Promise.all(
-        chunk(seriesIds, ID_CHUNK).map((idChunk) =>
-          fetchAllPages((from, to) =>
-            supabase
-              .from("crl6mansqueuebot_series_players")
-              .select("series_id, player_id")
-              .in("series_id", idChunk)
-              .order("series_id")
-              .order("player_id")
-              .range(from, to)
-              .then((r) => {
-                if (r.error) throw r.error;
-                return r.data ?? [];
-              }),
-          ),
-        ),
+    // Paged, because this is a count and a short read is indistinguishable from a low game count:
+    // PostgREST silently truncates an unbounded select at a project row cap (1000 rows), which this
+    // roster read reaches at ~167 reported matches in a single season. Undercounting here does not
+    // just look wrong, it silently disqualifies players from Prism. .range() is LIMIT/OFFSET over
+    // the planner's order, so each page needs a total order — series_players' PK is
+    // (series_id, player_id). Same fetchAllPages/chunk pattern as avatars.ts (see its note at :7 on
+    // why this small helper is duplicated per file rather than shared).
+    const seasonGamesById = new Map<string, number>();
+    if (activeSeasonRow) {
+      const seasonSeries = await fetchAllPages((from, to) =>
+        supabase
+          .from("crl6mansqueuebot_series")
+          .select("id")
+          .eq("season_id", activeSeasonRow.id)
+          .eq("status", "reported")
+          .eq("queue_type", "rank")
+          .eq("is_test_data", false)
+          .order("id")
+          .range(from, to)
+          .then((r) => {
+            if (r.error) throw r.error;
+            return r.data ?? [];
+          }),
       );
-      for (const sp of seasonRosterChunks.flat()) {
-        seasonGamesById.set(sp.player_id, (seasonGamesById.get(sp.player_id) ?? 0) + 1);
+      const seriesIds = seasonSeries.map((s) => s.id);
+      if (seriesIds.length > 0) {
+        const seasonRosterChunks = await Promise.all(
+          chunk(seriesIds, ID_CHUNK).map((idChunk) =>
+            fetchAllPages((from, to) =>
+              supabase
+                .from("crl6mansqueuebot_series_players")
+                .select("series_id, player_id")
+                .in("series_id", idChunk)
+                .order("series_id")
+                .order("player_id")
+                .range(from, to)
+                .then((r) => {
+                  if (r.error) throw r.error;
+                  return r.data ?? [];
+                }),
+            ),
+          ),
+        );
+        for (const sp of seasonRosterChunks.flat()) {
+          seasonGamesById.set(sp.player_id, (seasonGamesById.get(sp.player_id) ?? 0) + 1);
+        }
       }
     }
-  }
 
-  // Three requirements, all applied as *qualification* before the cut is taken — a player either
-  // qualifies for Prism or they don't, and the top `prism_top_n` qualifiers hold it: (1) placed,
-  // (2) already Sapphire band — the real band assignment above already ran this cycle, so
-  // `player.band` reflects it; this keeps a small community's Emerald/Garnet players out of Prism
-  // contention even if their raw MMR would otherwise land them in the top-N bracket, and (3) at
-  // least top10_min_games Rank Queue games *this season*.
-  //
-  // Note the ordering: qualification is a filter applied *before* .slice(prismTopN), not after it.
-  // An earlier revision took the top N Sapphire players by MMR and only then dropped the ones
-  // short on games, which left those slots empty — the community could see 2 Prism holders when
-  // prism_top_n was 5. Filtering first means the N slots fill from the qualified pool whenever
-  // enough players qualify, and a qualified lower-MMR player is never held out by an unqualified
-  // higher-MMR one. Fewer than N holders now only happens when fewer than N players qualify at all.
-  //
-  // Same tiebreak philosophy as the band percentile sort above: higher MMR first, ties broken by
-  // more (season) games played, then player id as a final deterministic tiebreak.
-  const prismQualified = pool
-    .filter(
-      (p) => p.is_placed && p.band === "Sapphire" && (seasonGamesById.get(p.id) ?? 0) >= top10MinGames,
-    )
-    .slice()
-    .sort(
-      (a, b) =>
-        b.mmr - a.mmr ||
-        (seasonGamesById.get(b.id) ?? 0) - (seasonGamesById.get(a.id) ?? 0) ||
-        a.id.localeCompare(b.id),
-    );
-  const newPrismIds = new Set(prismQualified.slice(0, prismTopN).map((p) => p.id));
+    // Three requirements, all applied as *qualification* before the cut is taken — a player either
+    // qualifies for Prism or they don't, and the top `prism_top_n` qualifiers hold it: (1) placed,
+    // (2) already Sapphire band — the real band assignment above already ran this cycle, so
+    // `player.band` reflects it; this keeps a small community's Emerald/Garnet players out of Prism
+    // contention even if their raw MMR would otherwise land them in the top-N bracket, and (3) at
+    // least top10_min_games Rank Queue games *this season*.
+    //
+    // Note the ordering: qualification is a filter applied *before* .slice(prismTopN), not after it.
+    // An earlier revision took the top N Sapphire players by MMR and only then dropped the ones
+    // short on games, which left those slots empty — the community could see 2 Prism holders when
+    // prism_top_n was 5. Filtering first means the N slots fill from the qualified pool whenever
+    // enough players qualify, and a qualified lower-MMR player is never held out by an unqualified
+    // higher-MMR one. Fewer than N holders now only happens when fewer than N players qualify at all.
+    //
+    // Same tiebreak philosophy as the band percentile sort above: higher MMR first, ties broken by
+    // more (season) games played, then player id as a final deterministic tiebreak.
+    const prismQualified = pool
+      .filter(
+        (p) => p.is_placed && p.band === "Sapphire" && (seasonGamesById.get(p.id) ?? 0) >= top10MinGames,
+      )
+      .slice()
+      .sort(
+        (a, b) =>
+          b.mmr - a.mmr ||
+          (seasonGamesById.get(b.id) ?? 0) - (seasonGamesById.get(a.id) ?? 0) ||
+          a.id.localeCompare(b.id),
+      );
+    newPrismIds = new Set(prismQualified.slice(0, prismTopN).map((p) => p.id));
+  }
 
   for (const player of pool) {
     const willBePrism = newPrismIds.has(player.id);
@@ -853,13 +886,14 @@ export function handleRanksCommand(interaction: DiscordInteraction) {
 async function processRanksCommand(interaction: DiscordInteraction) {
   const supabase = createAdminClient();
 
-  const [garnetCutoff, emeraldCutoff, sapphireCutoff, mmrScale, mmrShift, bandCalcModeRaw] = await Promise.all([
+  const [garnetCutoff, emeraldCutoff, sapphireCutoff, mmrScale, mmrShift, bandCalcModeRaw, fixedRanks] = await Promise.all([
     getConfigNumber("band_cutoff_garnet_pctile", 40),
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
     getConfigValue("band_calc_mode"),
+    getFixedRankConfig(),
   ]);
   const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
 
@@ -876,6 +910,37 @@ async function processRanksCommand(interaction: DiscordInteraction) {
   }
 
   const display = (mmr: number) => Math.round(mmr * mmrScale + mmrShift);
+
+  // Fixed ranks: the cutoffs are the configured thresholds themselves (already display MMR), not
+  // anything derived from the pool.
+  if (fixedRanks) {
+    const prismCount = pool.filter((p) => p.is_prism).length;
+    const fixedLabel: Record<Band, string> = {
+      Iron: `Under ${fixedRanks.garnet} MMR`,
+      Garnet: `${fixedRanks.garnet}+ MMR`,
+      Emerald: `${fixedRanks.emerald}+ MMR`,
+      Sapphire: `${fixedRanks.sapphire}+ MMR`,
+    };
+    const lines: string[] = [];
+    for (const band of BAND_ORDER) {
+      const count = pool.filter((p) => p.band === band).length - (band === "Sapphire" ? prismCount : 0);
+      const emoji = await getRankEmoji(band);
+      lines.push(`${count} ${emoji} **${getRankLabel(band)}** — ${fixedLabel[band]}`);
+    }
+    const prismEmoji = await getRankEmoji("Prism");
+    lines.push(`${prismCount} ${prismEmoji} **Prism** — ${fixedRanks.prism}+ MMR`);
+    await editOriginalResponse(interaction.token, {
+      embeds: [
+        {
+          color: BRAND_COLOR,
+          title: "Rank Cutoffs",
+          description: lines.join("\n"),
+          footer: { text: "Fixed MMR thresholds — reach the number, hold the rank." },
+        },
+      ],
+    });
+    return;
+  }
 
   const thresholdMmrByBand: Record<Band, number> = {
     Iron: computeBandThresholdMmr(pool, 0, bandCalcMode),

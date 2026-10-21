@@ -887,6 +887,78 @@ const commands = [
         ],
       },
       {
+        name: "fixed-ranks",
+        description: "Configure fixed MMR rank thresholds (alternative to percentile bands).",
+        type: SUB_COMMAND_GROUP,
+        options: [
+          {
+            name: "toggle",
+            description: "Switch between percentile bands (default) and fixed MMR thresholds.",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "enabled",
+                description: "true = fixed MMR thresholds; false = percentile bands.",
+                type: BOOLEAN_OPTION,
+                required: true,
+              },
+            ],
+          },
+          {
+            name: "set-prism",
+            description: "Set the minimum MMR for Prism under fixed ranks (default 1450).",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "mmr",
+                description: "Displayed MMR needed to reach Prism.",
+                type: INTEGER_OPTION,
+                required: true,
+              },
+            ],
+          },
+          {
+            name: "set-sapphire",
+            description: "Set the minimum MMR for Sapphire under fixed ranks (default 1250).",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "mmr",
+                description: "Displayed MMR needed to reach Sapphire.",
+                type: INTEGER_OPTION,
+                required: true,
+              },
+            ],
+          },
+          {
+            name: "set-emerald",
+            description: "Set the minimum MMR for Emerald under fixed ranks (default 1000).",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "mmr",
+                description: "Displayed MMR needed to reach Emerald.",
+                type: INTEGER_OPTION,
+                required: true,
+              },
+            ],
+          },
+          {
+            name: "set-garnet",
+            description: "Set the minimum MMR for Garnet under fixed ranks (default 800).",
+            type: SUB_COMMAND,
+            options: [
+              {
+                name: "mmr",
+                description: "Displayed MMR needed to reach Garnet.",
+                type: INTEGER_OPTION,
+                required: true,
+              },
+            ],
+          },
+        ],
+      },
+      {
         name: "checklist",
         description: "Show which settings are configured and which still need setup.",
         type: SUB_COMMAND,

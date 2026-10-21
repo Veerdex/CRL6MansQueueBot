@@ -140,7 +140,33 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // CONFIG_KEYS and settable via the generic /admin config set.
   mafia_grace_seconds: 5,
   mafia_timeout_seconds: 120,
+  // Fixed-MMR rank thresholds — see getFixedRankConfig below and CLAUDE.md, "MMR, placement,
+  // bands, and seasons". Same precedent as bonus_day_*: listed here for /admin config get's
+  // display, but left out of register-commands.mjs's CONFIG_KEYS since they're set through the
+  // dedicated /admin fixed-ranks subcommands (which enforce garnet < emerald < sapphire < prism).
+  // Defaults to percentile mode (0). Thresholds are in *display* MMR (what players see).
+  fixed_ranks_enabled: 0,
+  fixed_rank_garnet_mmr: 800,
+  fixed_rank_emerald_mmr: 1000,
+  fixed_rank_sapphire_mmr: 1250,
+  fixed_rank_prism_mmr: 1450,
 };
+
+export type FixedRankThresholds = { garnet: number; emerald: number; sapphire: number; prism: number };
+
+// Returns the fixed-MMR rank thresholds when /admin fixed-ranks toggle is on, or null for the
+// default percentile-based bands. One loader shared by recomputeBands, /ranks and the Info page
+// so all three always agree on which system is live.
+export async function getFixedRankConfig(): Promise<FixedRankThresholds | null> {
+  const [enabled, garnet, emerald, sapphire, prism] = await Promise.all([
+    getConfigNumber("fixed_ranks_enabled", KNOWN_CONFIG_DEFAULTS.fixed_ranks_enabled),
+    getConfigNumber("fixed_rank_garnet_mmr", KNOWN_CONFIG_DEFAULTS.fixed_rank_garnet_mmr),
+    getConfigNumber("fixed_rank_emerald_mmr", KNOWN_CONFIG_DEFAULTS.fixed_rank_emerald_mmr),
+    getConfigNumber("fixed_rank_sapphire_mmr", KNOWN_CONFIG_DEFAULTS.fixed_rank_sapphire_mmr),
+    getConfigNumber("fixed_rank_prism_mmr", KNOWN_CONFIG_DEFAULTS.fixed_rank_prism_mmr),
+  ]);
+  return enabled === 1 ? { garnet, emerald, sapphire, prism } : null;
+}
 
 export async function setConfigValue(key: string, value: string): Promise<void> {
   const supabase = createAdminClient();

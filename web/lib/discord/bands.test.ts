@@ -4,6 +4,8 @@ import {
   computeBandPercentiles,
   computeBandThresholdMmr,
   desiredRoleIdFor,
+  isFixedRankPrism,
+  targetBandForFixedMmr,
   targetBandForPercentile,
   type BandCutoffConfig,
 } from "./bands";
@@ -120,29 +122,43 @@ describe("computeBandThresholdMmr", () => {
 });
 
 describe("computeBandChange", () => {
-  it("places a newly-crossed player into their percentile band regardless of prior band", () => {
-    const change = computeBandChange({ band: null }, 75, true, config);
-    expect(change).toEqual({ action: "placed", targetBand: "Emerald" });
+  it("places a newly-crossed player into the target band regardless of prior band", () => {
+    expect(computeBandChange({ band: null }, "Emerald", true)).toEqual({ action: "placed", targetBand: "Emerald" });
   });
 
-  it("promotes immediately when percentile crosses into a higher band", () => {
-    const change = computeBandChange({ band: "Iron" }, 45, false, config);
-    expect(change).toEqual({ action: "promoted", targetBand: "Garnet" });
+  it("promotes immediately when the target band is higher", () => {
+    expect(computeBandChange({ band: "Iron" }, "Garnet", false)).toEqual({ action: "promoted", targetBand: "Garnet" });
   });
 
   it("does nothing when the target band matches the current band", () => {
-    const change = computeBandChange({ band: "Garnet" }, 50, false, config);
-    expect(change).toBeNull();
+    expect(computeBandChange({ band: "Garnet" }, "Garnet", false)).toBeNull();
   });
 
-  it("demotes immediately when percentile falls below the current band's cutoff", () => {
-    const change = computeBandChange({ band: "Sapphire" }, 89, false, config);
-    expect(change).toEqual({ action: "demoted", targetBand: "Emerald" });
+  it("demotes immediately when the target band is lower", () => {
+    expect(computeBandChange({ band: "Sapphire" }, "Emerald", false)).toEqual({ action: "demoted", targetBand: "Emerald" });
   });
 
-  it("demotes straight to the percentile's band, skipping intermediate bands", () => {
-    const change = computeBandChange({ band: "Sapphire" }, 10, false, config);
-    expect(change).toEqual({ action: "demoted", targetBand: "Iron" });
+  it("demotes straight to the target band, skipping intermediate bands", () => {
+    expect(computeBandChange({ band: "Sapphire" }, "Iron", false)).toEqual({ action: "demoted", targetBand: "Iron" });
+  });
+});
+
+describe("fixed ranks", () => {
+  const thresholds = { garnet: 800, emerald: 1000, sapphire: 1250, prism: 1450 };
+
+  it("assigns bands by display MMR, inclusive at each threshold", () => {
+    expect(targetBandForFixedMmr(799, thresholds)).toBe("Iron");
+    expect(targetBandForFixedMmr(800, thresholds)).toBe("Garnet");
+    expect(targetBandForFixedMmr(999, thresholds)).toBe("Garnet");
+    expect(targetBandForFixedMmr(1000, thresholds)).toBe("Emerald");
+    expect(targetBandForFixedMmr(1249, thresholds)).toBe("Emerald");
+    expect(targetBandForFixedMmr(1250, thresholds)).toBe("Sapphire");
+    expect(targetBandForFixedMmr(2000, thresholds)).toBe("Sapphire");
+  });
+
+  it("grants Prism at or above the Prism threshold only", () => {
+    expect(isFixedRankPrism(1449, thresholds)).toBe(false);
+    expect(isFixedRankPrism(1450, thresholds)).toBe(true);
   });
 });
 
