@@ -232,22 +232,13 @@ async function syncPlayerRoles(
 }
 
 export type BandCutoffConfig = {
-  graceGames: number;
-  // Fixed MMR-point buffer for the demotion hysteresis check — replaces the old percentile-based
-  // hysteresisPct. See computeBandThresholdMmr and the hysteresis check inside computeBandChange
-  // below for how this is applied.
-  hysteresisMmr: number;
   garnetCutoff: number;
   emeraldCutoff: number;
   sapphireCutoff: number;
-  // Days since a player's last Rank Queue game after which grace is treated as expired even if
-  // band_games_played hasn't reached graceGames yet — see computeBandChange's inactivity check
-  // below. <= 0 disables the check entirely (grace then only expires by games played, as before).
-  graceInactivityDays: number;
 };
 
 // Pure decision logic — no Discord, no DB — extracted from the recompute loop below so the
-// promotion/grace/hysteresis rules (see CLAUDE.md, "Bands / ranks") can be unit tested directly.
+// promotion/demotion rules (see CLAUDE.md, "Bands / ranks") can be unit tested directly.
 export function targetBandForPercentile(pctile: number, config: BandCutoffConfig): Band {
   if (pctile >= config.sapphireCutoff) return "Sapphire";
   if (pctile >= config.emeraldCutoff) return "Emerald";
@@ -298,9 +289,8 @@ export function computeBandPercentiles(
   return new Map(sorted.map((p, i) => [p.id, (i / n) * 100]));
 }
 
-// Converts a cutoff percentile into a concrete threshold MMR value, for the fixed-MMR-buffer
-// demotion hysteresis check in computeBandChange below (see CLAUDE.md, "Bands / ranks" — this
-// replaced the earlier percentile-based hysteresisPct buffer). Mirrors computeBandPercentiles's
+// Converts a cutoff percentile into a concrete threshold MMR value, for /ranks' live cutoff
+// display below. Mirrors computeBandPercentiles's
 // two band_calc_mode formulas, inverted to solve for "the MMR value at this cutoff" instead of
 // "the percentile of this MMR value":
 //   - "mmr": linear interpolation within the pool's MMR range — min + cutoffPercent/100 * (max - min).
@@ -335,31 +325,14 @@ export function computeBandThresholdMmr(
   return sorted[ascendingIndex].mmr;
 }
 
+// Demotions are symmetric with promotions: a player moves to whatever band their current
+// percentile says, in either direction. The old grace-period/hysteresis demotion buffers
+// (grace_games, grace_inactivity_days, hysteresis_mmr) were removed — see CLAUDE.md, "Bands / ranks".
 export function computeBandChange(
-  player: { band: Band | null; band_games_played: number; is_placed: boolean; last_rank_game_at?: string | null; mmr: number },
+  player: { band: Band | null },
   pctile: number,
   isNewlyPlaced: boolean,
   config: BandCutoffConfig,
-  // Threshold MMR per band (Garnet/Emerald/Sapphire), from computeBandThresholdMmr — the value the
-  // fixed hysteresisMmr buffer below is subtracted from.
-  thresholdMmrByBand: Partial<Record<Band, number>>,
-  // True if some other player in the pool has strictly higher MMR than this player while
-  // currently holding a strictly lower band (a stale-band ordering violation — see CLAUDE.md,
-  // "Bands / ranks", the "surpassed" bypass). Grace/hysteresis exist to absorb noise in a
-  // player's *own* MMR (e.g. one bad loss right after a promotion), not to indefinitely protect
-  // a static player while other players' independent improvement climbs past them — once someone
-  // with less band-rank than this player outranks them on raw MMR, that's a real, already-visible
-  // ordering bug (Iron showing a higher MMR floor than Garnet), so it bypasses grace/hysteresis
-  // the same way an admin `force:true` would, rather than waiting on this player's own next
-  // Rank Queue game or inactivity timer.
-  hasBeenSurpassed: boolean,
-  // `force`: bypasses grace + hysteresis entirely, demoting straight to whatever the true
-  // current percentile says. Used only by the admin one-time reseat (see /admin recompute-bands
-  // force:true) to correct players whose band got locked in against a tiny early-placement pool
-  // and would otherwise never accumulate enough band_games_played to pass grace on their own —
-  // not used by the normal daily/live recompute path.
-  // `now`: injectable for tests; defaults to the real current time.
-  options?: { force?: boolean; now?: Date },
 ): { action: ChangeAction; targetBand: Band } | null {
   const targetBand = targetBandForPercentile(pctile, config);
 
@@ -367,54 +340,18 @@ export function computeBandChange(
     return { action: "placed", targetBand };
   }
 
-  const currentBand = player.band as Band;
-  const currentIndex = BAND_ORDER.indexOf(currentBand);
+  const currentIndex = BAND_ORDER.indexOf(player.band as Band);
   const targetIndex = BAND_ORDER.indexOf(targetBand);
 
-  if (targetIndex > currentIndex) {
-    return { action: "promoted", targetBand };
-  }
-
-  if (targetIndex < currentIndex && (options?.force || hasBeenSurpassed)) {
-    return { action: "demoted", targetBand };
-  }
-
-  if (targetIndex < currentIndex) {
-    const gracePassedByGames = player.band_games_played >= config.graceGames;
-    // A player who reaches a band and then stops playing entirely never accumulates more
-    // band_games_played, so games-based grace alone would protect them forever regardless of
-    // how far the pool moves under them. Treat grace as expired once they've gone
-    // graceInactivityDays without a Rank Queue game, even if band_games_played is still under
-    // graceGames — this only unlocks the hysteresis check below, it doesn't force a demotion by
-    // itself, and it never fires for an actively-playing player (each game refreshes
-    // last_rank_game_at in report.ts).
-    const gracePassedByInactivity =
-      config.graceInactivityDays > 0 &&
-      player.last_rank_game_at != null &&
-      (options?.now ?? new Date()).getTime() - new Date(player.last_rank_game_at).getTime() >=
-        config.graceInactivityDays * 24 * 60 * 60 * 1000;
-
-    if (gracePassedByGames || gracePassedByInactivity) {
-      // Grace checked first (above), then hysteresis: only demote if the player's raw MMR has
-      // fallen more than hysteresisMmr points below the promotion-in threshold MMR for their
-      // *current* band, not just below the raw target-band cutoff. Fixed MMR points, not a
-      // percentile — deliberately doesn't scale with mmr_scale (display-only, see config.ts's
-      // getDisplayMMR) so this always means the same real MMR gap regardless of display settings.
-      const thresholdMmr = thresholdMmrByBand[currentBand];
-      if (thresholdMmr !== undefined && player.mmr < thresholdMmr - config.hysteresisMmr) {
-        return { action: "demoted", targetBand };
-      }
-    }
-  }
-
+  if (targetIndex > currentIndex) return { action: "promoted", targetBand };
+  if (targetIndex < currentIndex) return { action: "demoted", targetBand };
   return null;
 }
 
 // ---------------------------------------------------------------------------
 // Band recompute — see CLAUDE.md, "Bands / ranks". Percentile-ranks every currently-placed
 // player (plus anyone crossing the placement threshold this run) by MMR, assigns bands off
-// admin-configured cumulative cutoffs, applies the grace-period + hysteresis demotion
-// safeguards, and syncs Discord roles + DMs for anyone whose band actually changed. Once the
+// admin-configured cumulative cutoffs, and syncs Discord roles + DMs for anyone whose band actually changed. Once the
 // band loop finishes, a second pass evaluates the live Prism top-N overlay (see the block right
 // before this function's `return summary` for the full explanation).
 //
@@ -425,41 +362,33 @@ export function computeBandChange(
 // series), which meant a player's band was only ever re-examined on their own next report — in a
 // small/growing pool, an early placer's band gets computed against a tiny pool at the moment
 // they cross placement_games_required (the very first player to place is trivially 100th
-// percentile), and if they don't personally rack up grace_games more Rank Queue games soon after,
-// nothing ever re-evaluates them even as the true pool (and their true percentile) shifts under
+// percentile), and nothing ever re-evaluated them even as the true pool (and their true percentile) shifts under
 // them. Re-evaluating everyone on every recompute means a player can now be corrected by *anyone
-// else's* game changing the distribution, not just their own — grace/hysteresis still gate
-// whether a correction is actually a demotion, per-player, exactly as before.
+// else's* game changing the distribution, not just their own.
 // ---------------------------------------------------------------------------
 
-export async function recomputeBands(options?: { force?: boolean; syncAllRoles?: boolean }): Promise<RecomputeSummary> {
+export async function recomputeBands(options?: { syncAllRoles?: boolean }): Promise<RecomputeSummary> {
   const supabase = createAdminClient();
 
   const [
     placementGamesRequired,
-    graceGames,
-    hysteresisMmr,
     garnetCutoff,
     emeraldCutoff,
     sapphireCutoff,
-    graceInactivityDays,
     prismTopN,
     top10MinGames,
     bandCalcModeRaw,
   ] = await Promise.all([
     getConfigNumber("placement_games_required", 10),
-    getConfigNumber("grace_games", 3),
-    getConfigNumber("hysteresis_mmr", 7),
     getConfigNumber("band_cutoff_garnet_pctile", 40),
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
-    getConfigNumber("grace_inactivity_days", 7),
     getConfigNumber("prism_top_n", 1),
     getConfigNumber("top10_min_games", 8),
     getConfigValue("band_calc_mode"),
   ]);
   const bandCalcMode: BandCalcMode = bandCalcModeRaw === "mmr" ? "mmr" : "position";
-  const cutoffConfig: BandCutoffConfig = { graceGames, hysteresisMmr, garnetCutoff, emeraldCutoff, sapphireCutoff, graceInactivityDays };
+  const cutoffConfig: BandCutoffConfig = { garnetCutoff, emeraldCutoff, sapphireCutoff };
 
   const summary: RecomputeSummary = { placed: 0, promoted: 0, demoted: 0, unchanged: 0, prismGranted: 0, prismRevoked: 0, roleSyncPending: 0 };
 
@@ -506,47 +435,11 @@ export async function recomputeBands(options?: { force?: boolean; syncAllRoles?:
   }
 
   const percentileById = computeBandPercentiles(pool, bandCalcMode);
-  // Computed once per run, off the pre-loop pool snapshot — see computeBandThresholdMmr, and the
-  // fixed hysteresisMmr buffer check inside computeBandChange that consumes this.
-  const thresholdMmrByBand: Partial<Record<Band, number>> = {
-    Garnet: computeBandThresholdMmr(pool, garnetCutoff, bandCalcMode),
-    Emerald: computeBandThresholdMmr(pool, emeraldCutoff, bandCalcMode),
-    Sapphire: computeBandThresholdMmr(pool, sapphireCutoff, bandCalcMode),
-  };
   const newlyPlacedIds = new Set(newlyPlaced.map((p) => p.id));
-
-  // "Surpassed" detection — see computeBandChange's hasBeenSurpassed param. Computed once, off a
-  // pre-loop snapshot of each player's currently-committed band (before this pass writes any new
-  // ones), so the result doesn't depend on iteration order or a player's own band getting updated
-  // mid-loop. A player counts as surpassed if some other already-placed player in the pool has
-  // strictly higher MMR while currently holding a strictly lower band — that combination is only
-  // possible when a band assignment has gone stale (grace/hysteresis blocked a demotion for too
-  // long while the pool moved), and is exactly the "the other players just surpassed him" case a
-  // live production example (Iron's MMR floor sitting above Garnet's) surfaced.
-  const bandIndexById = new Map(pool.map((p) => [p.id, p.band ? BAND_ORDER.indexOf(p.band as Band) : -1]));
-  const surpassedIds = new Set<string>();
-  for (const p of pool) {
-    const pIndex = bandIndexById.get(p.id)!;
-    if (pIndex < 0) continue; // not yet placed — no current band to be surpassed out of
-    const surpassed = pool.some((q) => {
-      if (q.id === p.id || q.mmr <= p.mmr) return false;
-      const qIndex = bandIndexById.get(q.id)!;
-      return qIndex >= 0 && qIndex < pIndex;
-    });
-    if (surpassed) surpassedIds.add(p.id);
-  }
 
   for (const player of pool) {
     const pctile = percentileById.get(player.id)!;
-    const change = computeBandChange(
-      player,
-      pctile,
-      newlyPlacedIds.has(player.id),
-      cutoffConfig,
-      thresholdMmrByBand,
-      surpassedIds.has(player.id),
-      { force: options?.force },
-    );
+    const change = computeBandChange(player, pctile, newlyPlacedIds.has(player.id), cutoffConfig);
 
     if (!change) {
       summary.unchanged += 1;
@@ -594,15 +487,13 @@ export async function recomputeBands(options?: { force?: boolean; syncAllRoles?:
 
   // ---------------------------------------------------------------------------
   // Prism — a live top-N overlay, not a 5th BAND_ORDER tier. Folding it into BAND_ORDER would
-  // route it through computeBandChange's grace/hysteresis machinery (which has no promotion
-  // threshold for a tier above Sapphire, so demotion would never fire) — Prism instead gets its
-  // own strict, ungated top-N check, re-run every time this function runs (daily cron, every
+  // route it through computeBandChange's percentile cutoffs (which have no threshold for a tier
+  // above Sapphire) — Prism instead gets its own strict top-N check, re-run every time this function runs (daily cron, every
   // Rank Queue report, admin unreport/correct-report/recompute-bands). A player holds Prism when
   // they're placed, sitting in the Sapphire band, have played at least `top10_min_games` Rank
   // Queue games *this season*, and rank inside the top `prism_top_n` by MMR of everyone else who
   // meets those same three requirements (see the qualify-then-cut note on the selection block
-  // below). No grace/hysteresis —
-  // falling out of the top N immediately un-sets is_prism; the player's `band` column already
+  // below). Falling out of the top N immediately un-sets is_prism; the player's `band` column already
   // holds their real underlying band (almost always Sapphire), so "go back to Sapphire" falls
   // out for free with no separate revert step. See CLAUDE.md, "Bands / ranks".
   // ---------------------------------------------------------------------------
@@ -757,9 +648,8 @@ export async function recomputeBands(options?: { force?: boolean; syncAllRoles?:
 //     re-placement also re-elevates provisional K for a player's first placement_games_required
 //     games of the new season — a deliberate, confirmed tradeoff rather than adding a second,
 //     season-scoped placement counter.
-//   - band_games_played and last_rank_game_at also reset (to 0 / null) — both only ever gate the
-//     demotion grace/hysteresis checks for an already-placed player, so a stale value from last
-//     season (e.g. "hasn't played in 5 days") has no meaning once someone's back to Unranked.
+//   - band_games_played and last_rank_game_at also reset (to 0 / null). Neither gates any band
+//     logic any more (they fed the removed demotion grace check); they're kept as plain stats.
 // band/is_placed are cleared. peak_mmr and total_games_played are deliberately left untouched:
 // peak_mmr is a lifetime high-water mark that's never lowered by anything else either (including
 // season decay itself), and total_games_played is a lifetime counter with no placement meaning.
@@ -943,7 +833,7 @@ async function processSetBandRole(
 // line per band showing how many players currently hold it, its emoji, its name, and its live
 // cutoff MMR — a Discord-native version of the Info page's Bands section. Unlike that page's
 // per-band "floor of current holders" display, this shows the actual computed cutoff MMR
-// (computeBandThresholdMmr, the same value the demotion hysteresis check consumes) since the user
+// (computeBandThresholdMmr) since the user
 // asked specifically for "cutoffs," matching this codebase's own terminology
 // (band_cutoff_garnet_pctile etc.). Iron has no configured cutoff percentile (it's the bottom of
 // the ladder), so its line uses computeBandThresholdMmr(pool, 0, mode) — this resolves to the

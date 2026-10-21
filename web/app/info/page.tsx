@@ -43,7 +43,6 @@ export default async function InfoPage() {
     emeraldCutoff,
     sapphireCutoff,
     placementGamesRequired,
-    graceGames,
     mmrScale,
     mmrShift,
     prismTopN,
@@ -61,7 +60,6 @@ export default async function InfoPage() {
     getConfigNumber("band_cutoff_emerald_pctile", 70),
     getConfigNumber("band_cutoff_sapphire_pctile", 90),
     getConfigNumber("placement_games_required", 10),
-    getConfigNumber("grace_games", 3),
     getConfigNumber("mmr_scale", 1),
     getConfigNumber("mmr_shift", 0),
     getConfigNumber("prism_top_n", 1),
@@ -236,10 +234,8 @@ export default async function InfoPage() {
               band — until then you show as <strong>unranked</strong>.
             </li>
             <li>
-              <strong>Promotions</strong> happen the moment you qualify. <strong>Demotions</strong> are
-              softer — you get a <strong>{graceGames}-game grace period</strong> right after moving up, and
-              after that you need to fall clearly below the cutoff, not just brush it, before dropping back
-              down.
+              <strong>Promotions</strong> and <strong>demotions</strong> both happen the moment your
+              standing crosses a band&apos;s cutoff.
             </li>
           </ul>
 

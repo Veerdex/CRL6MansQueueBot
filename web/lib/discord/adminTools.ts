@@ -136,8 +136,7 @@ async function dispatchAdminSubcommand(
       return;
     }
     case "recompute-bands": {
-      const force = getParamValue(params, "force");
-      await processRecomputeBands(interaction, actorId, force === true);
+      await processRecomputeBands(interaction, actorId);
       return;
     }
     case "refresh-avatars": {
@@ -736,28 +735,23 @@ async function processForceLeave(interaction: DiscordInteraction, actorId: strin
 }
 
 // ---------------------------------------------------------------------------
-// /admin recompute-bands [force:<bool>] — manual trigger for the same recomputeBands() the daily
-// pg_cron job calls (bands.ts). `force:true` bypasses grace/hysteresis for this run only,
-// reseating every placed player straight to their true current percentile — a one-time fix for
-// players whose band got locked in against a tiny early-placement pool (see bands.ts's doc
-// comment) and would otherwise never accumulate enough band_games_played on their own to pass
-// grace. Not meant for routine use — normal play should rely on the unforced daily/live path so
-// grace/hysteresis keep doing their job of damping game-to-game noise.
+// /admin recompute-bands — manual trigger for the same recomputeBands() the daily pg_cron job
+// calls (bands.ts), reseating every placed player to their true current percentile.
 // ---------------------------------------------------------------------------
 
-async function processRecomputeBands(interaction: DiscordInteraction, actorId: string, force: boolean) {
+async function processRecomputeBands(interaction: DiscordInteraction, actorId: string) {
   // syncAllRoles: the manual trigger is the remediation path for stale Discord roles, so it does
   // the full-roster reconcile the daily cron does (see syncPlayerRoles in bands.ts) rather than
   // only touching players whose band changed this run.
-  const summary = await recomputeBands({ force, syncAllRoles: true });
+  const summary = await recomputeBands({ syncAllRoles: true });
   await logAdminAction(
     actorId,
     "recompute_bands",
     undefined,
-    `force=${force} placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} prismGranted=${summary.prismGranted} prismRevoked=${summary.prismRevoked} roleSyncPending=${summary.roleSyncPending}`,
+    `placed=${summary.placed} promoted=${summary.promoted} demoted=${summary.demoted} unchanged=${summary.unchanged} prismGranted=${summary.prismGranted} prismRevoked=${summary.prismRevoked} roleSyncPending=${summary.roleSyncPending}`,
   );
   await editOriginalResponse(interaction.token, {
-    content: `Recomputed bands${force ? " (forced)" : ""} — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.${summary.roleSyncPending > 0 ? ` ⚠️ ${summary.roleSyncPending} Discord role sync${summary.roleSyncPending === 1 ? "" : "s"} still pending (will retry next recompute).` : ""}`,
+    content: `Recomputed bands — placed ${summary.placed}, promoted ${summary.promoted}, demoted ${summary.demoted}, unchanged ${summary.unchanged}, Prism granted ${summary.prismGranted}, Prism revoked ${summary.prismRevoked}.${summary.roleSyncPending > 0 ? ` ⚠️ ${summary.roleSyncPending} Discord role sync${summary.roleSyncPending === 1 ? "" : "s"} still pending (will retry next recompute).` : ""}`,
   });
 }
 
@@ -1465,13 +1459,7 @@ async function processQueueMessageModeSet(interaction: DiscordInteraction, actor
 // report, or an immediate /admin recompute-bands run).
 // ---------------------------------------------------------------------------
 
-// Switching modes changes the scoring rule, but ordinary demotions still route through grace/
-// hysteresis — a straight `/admin recompute-bands` right after a switch will only partially reflect
-// the new percentiles (some players blocked by grace, others held inside the hysteresis buffer),
-// which reads as broken even though it's working as designed. `force:true` bypasses both for one run,
-// so it's the right one-time follow-up here — same remedy CLAUDE.md already documents for players
-// stuck at an inflated band from before a cutoff fix.
-const BAND_CALC_MODE_FOLLOWUP = " Run `/admin recompute-bands force:true` once now to apply the new percentiles immediately — otherwise grace/hysteresis will only let the change through gradually, game by game.";
+const BAND_CALC_MODE_FOLLOWUP = " Run `/admin recompute-bands` to apply the new percentiles now.";
 
 const BAND_CALC_MODE_DESCRIPTIONS: Record<BandCalcMode, string> = {
   position: `Band calc mode set to position — percentile is purely rank-order in the placed pool, evenly spaced regardless of actual MMR gaps.${BAND_CALC_MODE_FOLLOWUP}`,

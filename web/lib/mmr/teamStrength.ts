@@ -6,7 +6,7 @@
 // MMR has no floor and can go negative (see CLAUDE.md "MMR / Elo"), but this formula's
 // exponentiation is undefined for negative bases. Ratings are transformed onto a positive scale
 // first (fixed scale/shift, distinct from the leaderboard's admin-configurable display-only
-// mmr_scale/mmr_shift — those never feed into internal comparisons, see the hysteresis_mmr note)
+// mmr_scale/mmr_shift — those never feed into internal comparisons)
 // and clamped at 0 as a backstop for any value still negative after the shift.
 //
 // Revised this session: the blended result is now returned directly in this shifted/scaled

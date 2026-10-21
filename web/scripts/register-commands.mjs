@@ -46,9 +46,6 @@ const BONUS_DAY_CHOICES = [
 const CONFIG_KEYS = [
   "k_factor",
   "s_scale",
-  "hysteresis_mmr",
-  "grace_games",
-  "grace_inactivity_days",
   "provisional_games",
   "provisional_k_multiplier",
   "placement_games_required",
@@ -613,14 +610,7 @@ const commands = [
         name: "recompute-bands",
         description: "Manually trigger the daily band recompute.",
         type: SUB_COMMAND,
-        options: [
-          {
-            name: "force",
-            description: "Bypass grace/hysteresis and reseat everyone to their true percentile (one-time fix).",
-            type: BOOLEAN_OPTION,
-            required: false,
-          },
-        ],
+        options: [],
       },
       {
         name: "refresh-avatars",
