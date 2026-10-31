@@ -16,6 +16,7 @@ import { encodeMatchId } from "./matchId";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import { SERIES_LENGTH_LABELS, REPORT_COOLDOWN_MINUTES_BY_LENGTH } from "./teamFormation";
 import { expectedWinProbabilityA } from "@/lib/mmr/teamStrength";
+import { computeScoreMarginMultiplier, seriesGameCount, validateSeriesScore } from "@/lib/mmr/seriesScore";
 import type { SeriesRow, Team, PlayerRow } from "@/lib/supabase/types";
 
 // Instant deletion of voice channels after report
@@ -23,24 +24,50 @@ const CLOSE_WARNING_MS = 0;
 
 // ---------------------------------------------------------------------------
 // /report — run inside a match text channel; series is inferred from the channel. `id:` is
-// an optional override, gated to admins, for reporting from elsewhere. Result is inferred
-// from the reporter's own team, no separate win/lose param. Settles immediately on first
+// an optional override, gated to admins, for reporting from elsewhere. The caller reports
+// from their own team's side — `result:` (win/loss), or `my-games:`/`opponent-games:` when
+// /admin report-mode is score — and the winning team is inferred. Settles immediately on first
 // report. See CLAUDE.md, "Reporting & disputes".
 // ---------------------------------------------------------------------------
 
+// Whichever shape of /report the caller's client sent — win/loss mode registers `result:`,
+// score mode registers `my-games:`/`opponent-games:` (see reportCommand.ts).
+type ReportInput = { result: string | null; myGames: number | null; opponentGames: number | null };
+
 export function handleReportCommand(interaction: DiscordInteraction) {
-  const resultOption = interaction.data?.options?.find((o) => o.name === "result")?.value;
-  const result = typeof resultOption === "string" ? resultOption : null;
-  after(() => processReport(interaction, result));
+  const option = (name: string) => interaction.data?.options?.find((o) => o.name === name)?.value;
+  const resultOption = option("result");
+  const myGamesOption = option("my-games");
+  const opponentGamesOption = option("opponent-games");
+  const input: ReportInput = {
+    result: typeof resultOption === "string" ? resultOption : null,
+    myGames: typeof myGamesOption === "number" ? myGamesOption : null,
+    opponentGames: typeof opponentGamesOption === "number" ? opponentGamesOption : null,
+  };
+  after(() => processReport(interaction, input));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
   };
 }
 
-async function processReport(interaction: DiscordInteraction, result: string | null) {
-  if (!result || (result !== "win" && result !== "loss")) {
+async function processReport(interaction: DiscordInteraction, input: ReportInput) {
+  const hasScore = input.myGames !== null && input.opponentGames !== null;
+  const hasResult = input.result === "win" || input.result === "loss";
+  if (!hasScore && !hasResult) {
     await editOriginalResponse(interaction.token, { content: "Invalid result. Use 'win' or 'loss'." });
+    return;
+  }
+  // The config, not the options that arrived, decides the mode. The two only disagree when
+  // /report's registered shape is stale (a client cache, or a bulk re-register that didn't match
+  // the mode) — and rejecting then would leave nobody able to report at all, so the mismatched
+  // shape is still accepted, just without a score: win/loss semantics and a 1x margin multiplier.
+  const scoreMode = (await getConfigNumber("report_score_mode_enabled", 0)) === 1;
+  if (scoreMode !== hasScore) {
+    console.warn(`/report shape doesn't match report_score_mode_enabled=${scoreMode ? 1 : 0} — re-run /admin report-mode to re-sync; settling without a score`);
+  }
+  if (!scoreMode && hasScore && input.myGames === input.opponentGames) {
+    await editOriginalResponse(interaction.token, { content: "A series can't end in a tie." });
     return;
   }
 
@@ -112,13 +139,39 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     await editOriginalResponse(interaction.token, { content: "You're not part of this match." });
     return;
   }
-  const winner: Team = result === "win" ? reporterRow.team : (reporterRow.team === "A" ? "B" : "A");
+  // Series-score mode (see seriesScore.ts): validated against the length snapshotted on the
+  // series (null = Best of 5) before the settle claim, so a bad score never settles anything.
+  let score: { winnerGames: number; loserGames: number; multiplier: number } | null = null;
+  let reporterWon: boolean;
+  if (scoreMode && hasScore) {
+    const validation = validateSeriesScore(input.myGames!, input.opponentGames!, series.series_length);
+    if (!validation.ok) {
+      await editOriginalResponse(interaction.token, { content: validation.error });
+      return;
+    }
+    reporterWon = validation.reporterWon;
+    score = {
+      winnerGames: validation.winnerGames,
+      loserGames: validation.loserGames,
+      multiplier: computeScoreMarginMultiplier(seriesGameCount(series.series_length), validation.winnerGames, validation.loserGames),
+    };
+  } else {
+    reporterWon = hasResult ? input.result === "win" : input.myGames! > input.opponentGames!;
+  }
+  const winner: Team = reporterWon ? reporterRow.team : (reporterRow.team === "A" ? "B" : "A");
 
   // Atomic settle claim: same UPDATE...WHERE-status pattern as the vote/draft resolution in
-  // teamFormation.ts — Postgres row locking means only one concurrent /report call wins.
+  // teamFormation.ts — Postgres row locking means only one concurrent /report call wins. The
+  // score columns (migration 0055) are only written when there is a score, so win/loss mode's
+  // claim is byte-for-byte what it was before 0055 existed.
   const { data: claimed } = await supabase
     .from("crl6mansqueuebot_series")
-    .update({ status: "reported", winner_team: winner, reported_at: new Date().toISOString() })
+    .update({
+      status: "reported",
+      winner_team: winner,
+      reported_at: new Date().toISOString(),
+      ...(score ? { winner_games: score.winnerGames, loser_games: score.loserGames, score_multiplier: score.multiplier } : {}),
+    })
     .eq("id", series.id)
     .eq("status", "active")
     .select("id");
@@ -279,7 +332,8 @@ async function processReport(interaction: DiscordInteraction, result: string | n
     // series_length_k_multiplier is locked in at vote-resolution time (see teamFormation.ts) —
     // defaults to 1 (no-op) when the series-length vote feature is off. Passed as
     // seriesLengthMultiplier, not folded into effectiveKFactor above — see EloConfig's comment.
-    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, streakMaxMultiplier });
+    // The score margin multiplier sits beside it, 1x whenever no score was reported.
+    const eloResults = computeEloDeltas(eloInputs, winner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, scoreMarginMultiplier: score?.multiplier ?? 1, streakMaxMultiplier });
     // The streak multiplier is baked into these deltas already (see EloConfig.streakMaxMultiplier),
     // so nothing is added on afterwards and /admin unreport still unwinds a settle for free by
     // subtracting the stored mmr_delta.
@@ -395,7 +449,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
   const reportChannelId = reportChannelConfig?.value;
   if (reportChannelId) {
     const matchId = encodeMatchId(matchNumber);
-    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length, winOdds);
+    const embed = reportResultEmbed(winner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length, winOdds, score);
     const embeds: Array<Record<string, unknown>> = [embed];
     if (streakAnnounceLines.length > 0) embeds.push(streakAnnouncementEmbed(streakAnnounceLines));
     await discordFetch(`/channels/${reportChannelId}/messages`, {
@@ -417,7 +471,7 @@ async function processReport(interaction: DiscordInteraction, result: string | n
 }
 
 // Exported for correct.ts, which reuses this exact shape to post the new report message once a
-// mis-reported match is flipped via /correct's 5-of-6 player vote.
+// mis-reported match is corrected via /correct's 4-of-6 player vote.
 // Rounds P(Team A wins) into the whole-percent figures the report headers carry. One side is
 // rounded and the other derived from it, so the pair always totals exactly 100 — rounding both
 // independently could print 51% alongside 50%. Pure and exported for its tests.
@@ -438,18 +492,22 @@ export function reportResultEmbed(
   // rather than shown as 0% when the odds can't be computed — an incomplete roster, or a
   // correction on a match predating migration 0032 with no mmr_before snapshot to read.
   winOdds: { winner: number; loser: number } | null = null,
+  // Series-score mode only (migration 0055) — null for a win/loss report, which keeps the
+  // original title.
+  score: { winnerGames: number; loserGames: number } | null = null,
 ) {
   const seriesLengthMarker = seriesLength ? ` · ${SERIES_LENGTH_LABELS[seriesLength]}` : "";
   const winnerHeader = winOdds ? `**Winners (${winOdds.winner}%)**` : "**Winners**";
   const loserHeader = winOdds ? `**Losers (${winOdds.loser}%)**` : "**Losers**";
+  const scoreMarker = score ? ` ${score.winnerGames}–${score.loserGames}` : "";
   return {
     color: bonusDayActive ? SUPERCHARGED_COLOR : BRAND_COLOR,
-    title: `Match Reported — Team ${winner} Wins!`,
+    title: `Match Reported — Team ${winner} Wins${scoreMarker}!`,
     description:
       `**Match #${matchId}**${bonusDayActive ? " 🔥 Supercharged!" : ""}${seriesLengthMarker}\n\n` +
       `${winnerHeader}\n${winnerLines.join("\n")}\n\n` +
       `${loserHeader}\n${loserLines.join("\n")}\n\n` +
-      `-# Wrong result? Run /correct — 5 of the 6 players can flip it.`,
+      `-# Wrong result? Run /correct — 4 of the 6 players can fix it.`,
   };
 }
 

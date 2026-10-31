@@ -73,11 +73,17 @@ export type SeriesRow = {
   // role" for a test series and for any database that hasn't had 0053 applied yet, in which case
   // every ping site falls back to six individual mentions.
   match_role_id: string | null;
+  // Series-score reporting — see migration 0055_series_score.sql. winner_games/loser_games are
+  // null for any series reported in win/loss mode; score_multiplier is the margin multiplier
+  // snapshotted at report time (1 whenever no score was reported).
+  winner_games: number | null;
+  loser_games: number | null;
+  score_multiplier: number;
   // The permanent "Teams formed!" message, remembered so teardown can rewrite its role ping back
   // to plain mentions before the role is deleted — see 0053 again.
   teams_formed_message_id: string | null;
   // One-time claim sentinel for /correct's player-vote flip — see migration
-  // 0045_correct_votes.sql. Null until a series is flipped via 5-of-6 player vote; once set,
+  // 0045_correct_votes.sql. Null until a series is corrected via 4-of-6 player vote; once set,
   // /correct refuses to flip that series again. Independent of `status`, which stays "reported".
   correction_claimed_at: string | null;
 };
@@ -157,6 +163,11 @@ export type CorrectVoteRow = {
   series_id: string;
   player_id: string;
   voted_at: string;
+  // The result this vote proposes — see migration 0056_correct_vote_score.sql. Games are
+  // winner-relative and null when the proposal carries no score.
+  proposed_winner: Team;
+  proposed_winner_games: number | null;
+  proposed_loser_games: number | null;
 };
 
 export type SubRequestRow = {

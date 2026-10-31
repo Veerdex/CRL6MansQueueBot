@@ -97,15 +97,28 @@ async function dispatchAdminSubcommand(
     case "correct-report": {
       const id = getParamValue(params, "id");
       const winner = getParamValue(params, "winner");
+      const teamAGames = getParamValue(params, "team-a-games");
+      const teamBGames = getParamValue(params, "team-b-games");
       if (typeof id !== "string" || !id) {
         await editOriginalResponse(interaction.token, { content: "Missing id." });
         return;
       }
-      if (winner !== "team_a" && winner !== "team_b") {
+      if (winner !== undefined && winner !== "team_a" && winner !== "team_b") {
         await editOriginalResponse(interaction.token, { content: "Winner must be 'team_a' or 'team_b'." });
         return;
       }
-      await processCorrectReport(interaction, actorId, id, winner as "team_a" | "team_b");
+      if ((teamAGames === undefined) !== (teamBGames === undefined)) {
+        await editOriginalResponse(interaction.token, { content: "Give both team-a-games and team-b-games, or neither." });
+        return;
+      }
+      if (winner === undefined && teamAGames === undefined) {
+        await editOriginalResponse(interaction.token, { content: "Give a winner, a score (team-a-games and team-b-games), or both." });
+        return;
+      }
+      await processCorrectReport(interaction, actorId, id, {
+        winner: winner as "team_a" | "team_b" | undefined,
+        score: typeof teamAGames === "number" && typeof teamBGames === "number" ? { teamA: teamAGames, teamB: teamBGames } : undefined,
+      });
       return;
     }
     case "cancel-series": {
@@ -229,6 +242,11 @@ async function dispatchAdminSubcommand(
     case "series-length-vote": {
       const enabled = getParamValue(params, "enabled");
       await processSeriesLengthVoteToggle(interaction, actorId, typeof enabled === "boolean" ? enabled : undefined);
+      return;
+    }
+    case "report-mode": {
+      const mode = getParamValue(params, "mode");
+      await processReportModeSet(interaction, actorId, typeof mode === "string" ? mode : undefined);
       return;
     }
     case "band-calc-mode": {
@@ -355,21 +373,25 @@ async function processUnreport(interaction: DiscordInteraction, actorId: string,
 }
 
 // ---------------------------------------------------------------------------
-// /admin correct-report id:<series_id> winner:<team_a|team_b> — corrects the reported
-// winner for a series. Reverses old MMR deltas and applies new ones based on the corrected
-// winner. Keeps the series in 'reported' status (unlike unreport which voids it).
+// /admin correct-report id:<series_id> [winner:<team_a|team_b>] [team-a-games: team-b-games:]
+// — corrects the reported result for a series. winner: alone flips it, carrying any stored
+// score's margin over (same as a win/loss-mode /correct); a score sets the winner and score
+// together, and can fix a score whose winner was right. Reverses old MMR deltas and applies new
+// ones based on the corrected result. Keeps the series in 'reported' status (unlike unreport
+// which voids it). Available whatever /admin report-mode is set to.
 // ---------------------------------------------------------------------------
 
 async function processCorrectReport(
   interaction: DiscordInteraction,
   actorId: string,
   seriesIdOrMatchNumber: string,
-  newWinner: "team_a" | "team_b",
+  correction: { winner?: "team_a" | "team_b"; score?: { teamA: number; teamB: number } },
 ) {
   const supabase = createAdminClient();
   const { computeEloDeltas } = await import("@/lib/mmr/elo");
   const { getConfigNumber } = await import("./config");
   const { getPriorRankWinStreak } = await import("./streaks");
+  const { flippedSeriesResult, formatSeriesResult, sameSeriesResult, seriesResultMultiplier, seriesScoreChanged, validateSeriesScore } = await import("@/lib/mmr/seriesScore");
 
   const seriesId = await resolveReportedSeriesId(supabase, seriesIdOrMatchNumber);
 
@@ -388,14 +410,42 @@ async function processCorrectReport(
     return;
   }
 
-  const winnerTeam = newWinner === "team_a" ? "A" : "B";
-  const oldWinner = series.winner_team;
-  if (oldWinner === winnerTeam) {
+  const current = { winner: series.winner_team as Team, winnerGames: series.winner_games, loserGames: series.loser_games };
+  const givenWinner: Team | undefined = correction.winner === undefined ? undefined : correction.winner === "team_a" ? "A" : "B";
+  let corrected = flippedSeriesResult(current);
+  if (correction.score) {
+    // select("*") has no score_multiplier key until migration 0055 exists, and the score write
+    // below would then fail only after every player's MMR had already been rewritten.
+    if (series.score_multiplier === undefined) {
+      await editOriginalResponse(interaction.token, { content: "Correcting a score needs migration 0055_series_score.sql applied first." });
+      return;
+    }
+    // Validated from Team A's side, so reporterWon reads as "Team A won".
+    const validation = validateSeriesScore(correction.score.teamA, correction.score.teamB, series.series_length);
+    if (!validation.ok) {
+      await editOriginalResponse(interaction.token, { content: validation.error });
+      return;
+    }
+    corrected = { winner: validation.reporterWon ? "A" : "B", winnerGames: validation.winnerGames, loserGames: validation.loserGames };
+    if (givenWinner !== undefined && givenWinner !== corrected.winner) {
+      await editOriginalResponse(interaction.token, { content: `winner: says Team ${givenWinner}, but that score is a Team ${corrected.winner} win.` });
+      return;
+    }
+  } else if (givenWinner === current.winner) {
     await editOriginalResponse(interaction.token, {
       content: "That's already the reported winner.",
     });
     return;
   }
+  if (sameSeriesResult(corrected, current)) {
+    await editOriginalResponse(interaction.token, { content: `That's already the reported result (${formatSeriesResult(current)}).` });
+    return;
+  }
+  const winnerTeam = corrected.winner;
+  // Same rule as correct.ts's applyCorrection: a flip keeps the report-time snapshot, and the
+  // score columns are only written when the score itself changes.
+  const scoreChanged = seriesScoreChanged(current, corrected);
+  const scoreMultiplier = scoreChanged ? seriesResultMultiplier(corrected, series.series_length) : Number(series.score_multiplier ?? 1);
 
   // Fetch series players and their current data
   const { data: seriesPlayers } = await supabase
@@ -461,7 +511,8 @@ async function processCorrectReport(
     };
   });
 
-  const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, streakMaxMultiplier });
+  // scoreMultiplier: the report-time snapshot for a flip, a fresh one for a corrected score (above).
+  const newResults = computeEloDeltas(eloInputs, winnerTeam, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, scoreMarginMultiplier: scoreMultiplier, streakMaxMultiplier });
   const newResultsById = new Map(newResults.map((r) => [r.playerId, r]));
 
   // Reverse old delta, apply new delta for each player. peak_mmr normally only ever rises
@@ -524,10 +575,13 @@ async function processCorrectReport(
   // leaving it to the next daily cron tick.
   await recomputeBands();
 
-  // Update the series winner
+  // Update the series result
   await supabase
     .from("crl6mansqueuebot_series")
-    .update({ winner_team: winnerTeam })
+    .update({
+      winner_team: winnerTeam,
+      ...(scoreChanged ? { winner_games: corrected.winnerGames, loser_games: corrected.loserGames, score_multiplier: scoreMultiplier } : {}),
+    })
     .eq("id", series.id);
 
   // Update prediction record if it exists
@@ -541,13 +595,13 @@ async function processCorrectReport(
     actorId,
     "correct_report",
     series.id,
-    `Changed winner from ${oldWinner} to ${winnerTeam}`,
+    `Changed result from ${formatSeriesResult(current)} to ${formatSeriesResult(corrected)}`,
   );
 
   const matchNumber = series.match_number;
   const matchLabel = matchNumber !== null && matchNumber !== undefined ? `Match #${matchNumber}` : `Series ${series.id.slice(0, 8)}`;
   await editOriginalResponse(interaction.token, {
-    content: `Corrected ${matchLabel} — winner changed from Team ${oldWinner} to Team ${winnerTeam}. MMR adjusted for ${seriesPlayers.length} players.`,
+    content: `Corrected ${matchLabel} — result changed from ${formatSeriesResult(current)} to ${formatSeriesResult(corrected)}. MMR adjusted for ${seriesPlayers.length} players.`,
   });
 }
 
@@ -1623,6 +1677,51 @@ async function processSeriesLengthVoteToggle(interaction: DiscordInteraction, ac
     content: enabled
       ? "Series-length (Best of 3/5/7) pre-vote enabled — it'll run before the Balanced/Captains vote on the next pop."
       : "Series-length pre-vote disabled — pops go straight to the Balanced/Captains vote, same as before.",
+  });
+}
+
+// /admin report-mode mode:<win-loss|score> — see CLAUDE.md, "Reporting, substitutes, and
+// teardown". Default win-loss (the original behavior). Discord command options are static, so
+// switching also re-registers /report and /r with the matching options (reportCommand.ts) —
+// done *before* the config write, so a failed re-register leaves mode and command shape still
+// agreeing. Re-running with the current mode is a harmless way to re-sync a stale /report.
+async function processReportModeSet(interaction: DiscordInteraction, actorId: string, mode: string | undefined) {
+  if (mode !== "win-loss" && mode !== "score") {
+    await editOriginalResponse(interaction.token, { content: "mode must be win-loss or score." });
+    return;
+  }
+  const scoreMode = mode === "score";
+  if (scoreMode) {
+    // Score mode writes migration 0055's columns in the settle claim; without them every report
+    // would fail its claim. Refuse to enable rather than break reporting.
+    const supabase = createAdminClient();
+    const { error } = await supabase.from("crl6mansqueuebot_series").select("score_multiplier").limit(1);
+    if (error) {
+      await editOriginalResponse(interaction.token, {
+        content: "Score reporting needs migration 0055_series_score.sql applied first — mode left unchanged.",
+      });
+      return;
+    }
+  }
+  const { syncReportCommandOptions } = await import("./reportCommand");
+  try {
+    await syncReportCommandOptions(scoreMode);
+  } catch (err) {
+    console.error("Failed to re-register /report options", err);
+    await editOriginalResponse(interaction.token, {
+      content: `Couldn't update /report's options on Discord, so the mode was left unchanged: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return;
+  }
+  const oldValue = await getConfigValue("report_score_mode_enabled");
+  await setConfigValue("report_score_mode_enabled", scoreMode ? "1" : "0");
+  await logAdminAction(actorId, "report_mode_set", undefined, undefined, [
+    { field: "report_score_mode_enabled", before: oldValue ?? "0 (default)", after: scoreMode ? "1" : "0" },
+  ]);
+  await editOriginalResponse(interaction.token, {
+    content: scoreMode
+      ? "Report mode set to score — `/report`, `/r` and `/correct` now take `my-games:` and `opponent-games:`, and the margin scales MMR (a sweep earns extra, a close series less). Discord clients may take a moment to show the new options."
+      : "Report mode set to win-loss — `/report` and `/r` take `result:` again and `/correct` takes no options, same as before.",
   });
 }
 

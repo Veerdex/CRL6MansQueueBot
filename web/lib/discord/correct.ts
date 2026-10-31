@@ -11,25 +11,40 @@ import { getPriorRankWinStreak, getStreakIds, mention } from "./streaks";
 import { encodeMatchId } from "./matchId";
 import { reportResultEmbed, winnerLoserOddsPct } from "./report";
 import { expectedWinProbabilityA } from "@/lib/mmr/teamStrength";
+import { flippedSeriesResult, formatSeriesResult, sameSeriesResult, seriesResultMultiplier, seriesScoreChanged, validateSeriesScore, type SeriesResult } from "@/lib/mmr/seriesScore";
 import { interactionUserId, interactionDisplayName, type DiscordInteraction } from "./types";
 import type { SeriesRow, SeriesPlayerRow, Team } from "@/lib/supabase/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-// Votes required to flip a mis-reported match — "5 of 6" per the user's spec. All 6
-// participants including the requester can vote, since nobody is being blamed.
-const CORRECT_VOTE_THRESHOLD = 5;
+// Votes for the *same* corrected result required to apply it — "4 of 6" per the user's spec
+// (was 5 of 6). All 6 participants including the requester can vote, since nobody is being
+// blamed. At 4 of 6, two different proposals can never both reach it.
+export const CORRECT_VOTE_THRESHOLD = 4;
 
 // ---------------------------------------------------------------------------
-// /correct — no options. Always targets the caller's own most-recently-reported, non-test
-// match (the one the report embed's "Wrong result? Run /correct" footer pointed them at — see
-// report.ts's reportResultEmbed). Once 5 of that match's 6 participants have each run /correct,
-// the winner flips, MMR/bands/streaks recompute exactly like /admin correct-report, and a fresh
-// report summary posts. One-time only per match — see migration 0045_correct_votes.sql.
+// /correct — always targets the caller's own most-recently-reported, non-test match (the one
+// the report embed's "Wrong result? Run /correct" footer pointed them at — see report.ts's
+// reportResultEmbed). In win/loss mode it takes no options and each vote proposes flipping the
+// winner (any stored score's margin carries over). In score mode (/admin report-mode) it takes
+// `my-games:`/`opponent-games:` like /report, so a wrong score can be fixed even when the
+// winner was right. Once 4 of the match's 6 participants vote for the same result, it's
+// applied: MMR/bands/streaks recompute exactly like /admin correct-report and a fresh report
+// summary posts. A re-vote replaces the caller's earlier one. One-time only per match — see
+// migrations 0045_correct_votes.sql and 0056_correct_vote_score.sql.
 // ---------------------------------------------------------------------------
+
+type CorrectInput = { myGames: number | null; opponentGames: number | null };
 
 export function handleCorrectCommand(interaction: DiscordInteraction) {
-  after(() => processCorrectCommand(interaction));
+  const option = (name: string) => interaction.data?.options?.find((o) => o.name === name)?.value;
+  const myGamesOption = option("my-games");
+  const opponentGamesOption = option("opponent-games");
+  const input: CorrectInput = {
+    myGames: typeof myGamesOption === "number" ? myGamesOption : null,
+    opponentGames: typeof opponentGamesOption === "number" ? opponentGamesOption : null,
+  };
+  after(() => processCorrectCommand(interaction, input));
   return {
     type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
     data: { flags: InteractionResponseFlags.EPHEMERAL },
@@ -41,7 +56,7 @@ async function getReportChannelId(supabase: AdminClient): Promise<string | null>
   return data?.value ?? null;
 }
 
-async function processCorrectCommand(interaction: DiscordInteraction) {
+async function processCorrectCommand(interaction: DiscordInteraction, input: CorrectInput) {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
   if (!discordId) {
@@ -88,21 +103,65 @@ async function processCorrectCommand(interaction: DiscordInteraction) {
   }
 
   const matchId = encodeMatchId(series.match_number ?? 0);
+  const callerTeam = seriesPlayers.find((sp) => sp.player_id === caller.id)!.team;
+  const current: SeriesResult = { winner: series.winner_team as Team, winnerGames: series.winner_games, loserGames: series.loser_games };
 
-  await supabase.from("crl6mansqueuebot_correct_votes").upsert({ series_id: series.id, player_id: caller.id });
-  const { data: correctVotes } = await supabase.from("crl6mansqueuebot_correct_votes").select("player_id").eq("series_id", series.id);
-  const voteCount = correctVotes?.length ?? 0;
+  // Same rule as report.ts: the config decides the mode, and a stale command shape is still
+  // accepted rather than leaving nobody able to vote — a scoreless /correct in score mode is a
+  // plain flip vote, and stray score options in win/loss mode are ignored.
+  const scoreMode = (await getConfigNumber("report_score_mode_enabled", 0)) === 1;
+  let proposal: SeriesResult;
+  if (scoreMode && input.myGames !== null && input.opponentGames !== null) {
+    const validation = validateSeriesScore(input.myGames, input.opponentGames, series.series_length);
+    if (!validation.ok) {
+      await editOriginalResponse(interaction.token, { content: validation.error });
+      return;
+    }
+    const otherTeam: Team = callerTeam === "A" ? "B" : "A";
+    proposal = { winner: validation.reporterWon ? callerTeam : otherTeam, winnerGames: validation.winnerGames, loserGames: validation.loserGames };
+    if (sameSeriesResult(proposal, current)) {
+      await editOriginalResponse(interaction.token, { content: `That's already the reported result for Match #${matchId} (${formatSeriesResult(current)}).` });
+      return;
+    }
+  } else {
+    proposal = flippedSeriesResult(current);
+  }
+
+  // Upsert on (series_id, player_id), so a re-vote replaces the caller's earlier proposal. The
+  // proposed_* columns are migration 0056's — without it every vote fails here, so say so
+  // rather than reporting a vote that was never recorded.
+  const { error: voteError } = await supabase.from("crl6mansqueuebot_correct_votes").upsert({
+    series_id: series.id,
+    player_id: caller.id,
+    proposed_winner: proposal.winner,
+    proposed_winner_games: proposal.winnerGames,
+    proposed_loser_games: proposal.loserGames,
+    voted_at: new Date().toISOString(),
+  });
+  if (voteError) {
+    console.error(`Failed to record correct vote for series ${series.id}`, voteError);
+    await editOriginalResponse(interaction.token, { content: "Couldn't record your vote — ask an admin to check that migration 0056_correct_vote_score.sql is applied." });
+    return;
+  }
+  const { data: correctVotes } = await supabase
+    .from("crl6mansqueuebot_correct_votes")
+    .select("proposed_winner, proposed_winner_games, proposed_loser_games")
+    .eq("series_id", series.id);
+  const voteCount = (correctVotes ?? []).filter((v) =>
+    sameSeriesResult({ winner: v.proposed_winner, winnerGames: v.proposed_winner_games, loserGames: v.proposed_loser_games }, proposal),
+  ).length;
+  const proposalLabel = formatSeriesResult(proposal);
 
   if (voteCount < CORRECT_VOTE_THRESHOLD) {
     await editOriginalResponse(interaction.token, {
-      content: `Vote recorded — ${voteCount}/${CORRECT_VOTE_THRESHOLD} needed to flip Match #${matchId}.`,
+      content: `Vote recorded — ${voteCount}/${CORRECT_VOTE_THRESHOLD} needed to correct Match #${matchId} to ${proposalLabel}.`,
     });
     const reportChannelId = await getReportChannelId(supabase);
     if (reportChannelId) {
       await discordFetch(`/channels/${reportChannelId}/messages`, {
         method: "POST",
         body: JSON.stringify({
-          embeds: [{ description: `<@${discordId}> wants to correct Match #${matchId} — ${voteCount}/${CORRECT_VOTE_THRESHOLD}`, color: BRAND_COLOR }],
+          embeds: [{ description: `<@${discordId}> wants to correct Match #${matchId} to **${proposalLabel}** — ${voteCount}/${CORRECT_VOTE_THRESHOLD}`, color: BRAND_COLOR }],
         }),
       }).catch((err) => console.error(`Failed to post correct-vote progress for series ${series.id}`, err));
     }
@@ -124,19 +183,30 @@ async function processCorrectCommand(interaction: DiscordInteraction) {
   }
 
   await supabase.from("crl6mansqueuebot_correct_votes").delete().eq("series_id", series.id);
-  await applyCorrection(supabase, series, seriesPlayers, matchId);
-  await editOriginalResponse(interaction.token, { content: `Match #${matchId} corrected — the result has been flipped.` });
+  await applyCorrection(supabase, series, seriesPlayers, matchId, proposal);
+  await editOriginalResponse(interaction.token, { content: `Match #${matchId} corrected — ${proposalLabel}.` });
 }
 
-// Flips the winner and, for Rank Queue series, reverses each player's old MMR delta and
-// reapplies a freshly-computed one — same "reverse old, apply new" shape as adminTools.ts's
-// processCorrectReport, the admin equivalent this mirrors. Unlike that admin path, this also
-// posts a fresh public report embed (reportResultEmbed, report.ts), since the whole point is
-// giving the community a corrected result to look at, not just fixing the DB silently.
-async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesPlayers: SeriesPlayerRow[], matchId: string) {
-  const oldWinner = series.winner_team as Team;
-  const newWinner: Team = oldWinner === "A" ? "B" : "A";
-  await supabase.from("crl6mansqueuebot_series").update({ winner_team: newWinner }).eq("id", series.id);
+// Applies the corrected result (which may keep the winner and change only the score) and
+// reverses each player's old MMR delta, reapplying a freshly-computed one — same "reverse old,
+// apply new" shape as adminTools.ts's processCorrectReport, the admin equivalent this mirrors.
+// Unlike that admin path, this also posts a fresh public report embed (reportResultEmbed,
+// report.ts), since the whole point is giving the community a corrected result to look at, not
+// just fixing the DB silently.
+async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesPlayers: SeriesPlayerRow[], matchId: string, result: SeriesResult) {
+  const newWinner = result.winner;
+  // A flip keeps the report-time score_multiplier snapshot (migration 0055); only a changed score
+  // gets a fresh one. The score columns are written only then too, so a win/loss-mode flip's
+  // update is exactly what it was before 0055 existed — same precedent as report.ts's claim.
+  const scoreChanged = seriesScoreChanged({ winner: series.winner_team as Team, winnerGames: series.winner_games, loserGames: series.loser_games }, result);
+  const scoreMultiplier = scoreChanged ? seriesResultMultiplier(result, series.series_length) : Number(series.score_multiplier ?? 1);
+  await supabase
+    .from("crl6mansqueuebot_series")
+    .update({
+      winner_team: newWinner,
+      ...(scoreChanged ? { winner_games: result.winnerGames, loser_games: result.loserGames, score_multiplier: scoreMultiplier } : {}),
+    })
+    .eq("id", series.id);
 
   const { data: playerRows } = await supabase.from("crl6mansqueuebot_players").select("*").in("id", seriesPlayers.map((sp) => sp.player_id));
   const playersById = new Map((playerRows ?? []).map((p) => [p.id, p]));
@@ -171,7 +241,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
   const effectiveKFactor = kFactor * series.bonus_day_multiplier;
 
   // getPriorRankWinStreak/getPriorRankLossStreak always exclude this series by id (see
-  // streaks.ts), so it doesn't matter that winner_team above was already flipped — this
+  // streaks.ts), so it doesn't matter that winner_team above was already corrected — this
   // series is filtered out of the history entirely either way. Read before the Elo call because
   // the streak multiplier is applied inside it now rather than folded onto its output.
   const priorStreakById = new Map<string, number>();
@@ -192,7 +262,8 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
       priorRankWinStreak: priorStreakById.get(p.id) ?? 0,
     };
   });
-  const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, streakMaxMultiplier });
+  // scoreMultiplier: the report-time snapshot for a flip, a fresh one for a corrected score (above).
+  const newResults = computeEloDeltas(eloInputs, newWinner, { kFactor: effectiveKFactor, sScale, provisionalGames, provisionalKMultiplier, skewFactor, minDeltaFloor, confidenceMultiplier, seriesLengthMultiplier: series.series_length_k_multiplier, scoreMarginMultiplier: scoreMultiplier, streakMaxMultiplier });
   const newResultsById = new Map<string, EloResult>(newResults.map((r) => [r.playerId, r]));
 
   const finalDeltaByPlayer = new Map<string, number>();
@@ -254,7 +325,7 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
     }
   }
 
-  // winner_team is already flipped in the DB (top of this function), so this now reflects
+  // winner_team is already corrected in the DB (top of this function), so this now reflects
   // each player's streak *as corrected* — see getStreakIds' doc comment: no exclusion param,
   // meant to be called only after the relevant series has fully settled.
   const streakIds = await getStreakIds(supabase, seriesPlayers.map((sp) => sp.player_id));
@@ -289,7 +360,8 @@ async function applyCorrection(supabase: AdminClient, series: SeriesRow, seriesP
 
   const reportChannelId = await getReportChannelId(supabase);
   if (reportChannelId) {
-    const embed = reportResultEmbed(newWinner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length, winOdds);
+    const score = result.winnerGames !== null && result.loserGames !== null ? { winnerGames: result.winnerGames, loserGames: result.loserGames } : null;
+    const embed = reportResultEmbed(newWinner, matchId, winnerLines, loserLines, series.bonus_day_multiplier > 1, series.series_length, winOdds, score);
     await discordFetch(`/channels/${reportChannelId}/messages`, {
       method: "POST",
       body: JSON.stringify({ embeds: [embed] }),

@@ -71,6 +71,32 @@ const CONFIG_KEYS = [
   "mafia_timeout_seconds",
 ];
 
+// /report and /r's two option shapes — duplicated from lib/discord/reportCommand.ts (this
+// script can't import TS, same precedent as CONFIG_KEYS above). The win/loss shape is listed in
+// the commands below; the shape actually registered is chosen just before the PUT, from
+// report_score_mode_enabled, so a bulk re-register can't silently revert /admin report-mode.
+const REPORT_WIN_LOSS_OPTIONS = [
+  {
+    name: "result",
+    description: "Did your team win or lose?",
+    type: STRING_OPTION,
+    required: true,
+    choices: [
+      { name: "win", value: "win" },
+      { name: "loss", value: "loss" },
+    ],
+  },
+];
+const REPORT_SCORE_OPTIONS = [
+  { name: "my-games", description: "How many games did your team win?", type: INTEGER_OPTION, required: true, min_value: 0, max_value: 4 },
+  { name: "opponent-games", description: "How many games did the other team win?", type: INTEGER_OPTION, required: true, min_value: 0, max_value: 4 },
+];
+// /correct follows the same mode: no options in win/loss mode, the actual score in score mode.
+const CORRECT_SCORE_OPTIONS = [
+  { name: "my-games", description: "How many games did your team actually win?", type: INTEGER_OPTION, required: true, min_value: 0, max_value: 4 },
+  { name: "opponent-games", description: "How many games did the other team actually win?", type: INTEGER_OPTION, required: true, min_value: 0, max_value: 4 },
+];
+
 const commands = [
   {
     name: "help",
@@ -366,35 +392,13 @@ const commands = [
     name: "report",
     description: "Report your match's result.",
     type: 1,
-    options: [
-      {
-        name: "result",
-        description: "Did your team win or lose?",
-        type: STRING_OPTION,
-        required: true,
-        choices: [
-          { name: "win", value: "win" },
-          { name: "loss", value: "loss" },
-        ],
-      },
-    ],
+    options: REPORT_WIN_LOSS_OPTIONS,
   },
   {
     name: "r",
     description: "Report your match's result (alias for /report).",
     type: 1,
-    options: [
-      {
-        name: "result",
-        description: "Did your team win or lose?",
-        type: STRING_OPTION,
-        required: true,
-        choices: [
-          { name: "win", value: "win" },
-          { name: "loss", value: "loss" },
-        ],
-      },
-    ],
+    options: REPORT_WIN_LOSS_OPTIONS,
   },
   {
     name: "sub",
@@ -455,7 +459,7 @@ const commands = [
   },
   {
     name: "correct",
-    description: "Vote to flip your last match's result if it was mis-reported (5 of 6 players needed).",
+    description: "Vote to fix your last match's result if it was mis-reported (4 of 6 players must agree).",
     type: 1,
     options: [],
   },
@@ -528,7 +532,7 @@ const commands = [
       },
       {
         name: "correct-report",
-        description: "Correct the reported winner for a series (reverses old MMR deltas and applies new ones).",
+        description: "Correct a series' reported winner and/or score (reverses old MMR deltas and applies new ones).",
         type: SUB_COMMAND,
         options: [
           {
@@ -539,14 +543,16 @@ const commands = [
           },
           {
             name: "winner",
-            description: "The correct winning team.",
+            description: "The correct winning team. Alone, flips the result and keeps any score's margin.",
             type: STRING_OPTION,
-            required: true,
+            required: false,
             choices: [
               { name: "Team A", value: "team_a" },
               { name: "Team B", value: "team_b" },
             ],
           },
+          { name: "team-a-games", description: "Games Team A actually won (give with team-b-games).", type: INTEGER_OPTION, required: false, min_value: 0, max_value: 4 },
+          { name: "team-b-games", description: "Games Team B actually won (give with team-a-games).", type: INTEGER_OPTION, required: false, min_value: 0, max_value: 4 },
         ],
       },
       {
@@ -870,6 +876,23 @@ const commands = [
         ],
       },
       {
+        name: "report-mode",
+        description: "Set how /report works: win-loss (default) or score (games won by each team).",
+        type: SUB_COMMAND,
+        options: [
+          {
+            name: "mode",
+            description: "win-loss = report win or loss; score = report each team's games won, margin scales MMR.",
+            type: STRING_OPTION,
+            required: true,
+            choices: [
+              { name: "win-loss", value: "win-loss" },
+              { name: "score", value: "score" },
+            ],
+          },
+        ],
+      },
+      {
         name: "band-calc-mode",
         description: "Set how band percentile is computed: leaderboard position, or raw MMR distribution.",
         type: SUB_COMMAND,
@@ -1073,6 +1096,45 @@ if (globalRes.ok) {
 } else {
   console.log(`Could not check global commands: ${globalRes.status} ${await globalRes.text()}`);
 }
+
+// Pick /report and /r's shape to match /admin report-mode. The config table is authoritative
+// when Supabase credentials are available (local runs via --env-file=.env.local). The GitHub
+// workflow has no Supabase secrets, so there it preserves whatever shape /report is currently
+// registered with — /admin report-mode keeps that in sync — falling back to win/loss only if
+// /report isn't registered at all.
+async function resolveReportScoreMode() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (supabaseUrl && serviceRoleKey) {
+    const configRes = await fetch(`${supabaseUrl}/rest/v1/crl6mansqueuebot_config?key=eq.report_score_mode_enabled&select=value`, {
+      headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+    });
+    if (configRes.ok) {
+      const rows = await configRes.json();
+      return { scoreMode: rows[0]?.value === "1", source: "config table" };
+    }
+    console.log(`Could not read report_score_mode_enabled: ${configRes.status} — falling back to /report's current shape`);
+  }
+  const currentRes = await fetch(`https://discord.com/api/v10/applications/${appId}/guilds/${guildId}/commands`, {
+    headers: { Authorization: `Bot ${token}` },
+  });
+  if (currentRes.ok) {
+    const current = (await currentRes.json()).find((c) => c.name === "report");
+    if (current) return { scoreMode: (current.options ?? []).some((o) => o.name === "my-games"), source: "currently registered /report" };
+  }
+  return { scoreMode: false, source: "default (no config or existing /report found)" };
+}
+
+const reportMode = await resolveReportScoreMode();
+for (const command of commands) {
+  if (command.name === "report" || command.name === "r") {
+    command.options = reportMode.scoreMode ? REPORT_SCORE_OPTIONS : REPORT_WIN_LOSS_OPTIONS;
+  }
+  if (command.name === "correct") {
+    command.options = reportMode.scoreMode ? CORRECT_SCORE_OPTIONS : [];
+  }
+}
+console.log(`/report, /r and /correct registered in ${reportMode.scoreMode ? "score" : "win-loss"} mode (from ${reportMode.source}).`);
 
 const res = await fetch(`https://discord.com/api/v10/applications/${appId}/guilds/${guildId}/commands`, {
   method: "PUT",

@@ -50,6 +50,12 @@ export type EloConfig = {
   // instead scales the whole delta, floor included, so BO7 stays proportionally bigger than BO3
   // regardless of how lopsided the win was. Optional, defaulting to a no-op 1x when omitted.
   seriesLengthMultiplier?: number;
+  // Series-score margin multiplier (seriesScore.ts's computeScoreMarginMultiplier) — above 1x
+  // for a sweep, below it for the closest series. Applied on the same line as seriesLengthMultiplier and for
+  // the same reason: over the whole delta, floor included, so a heavy favorite's 4-0 and 4-3
+  // don't land almost equal just because minDeltaFloor dominates both. Optional, defaulting to a
+  // no-op 1x when omitted — which is every series reported in win/loss mode.
+  scoreMarginMultiplier?: number;
   // Ceiling for the win-streak multiplier applied to a winner's earned Elo term — 1.5 means a
   // maxed streak in an even matchup earns 1.5x that term. Deliberately scales ONLY that term and
   // not minDeltaFloor's flat add-on: the floor is the guaranteed participation payout, and form
@@ -145,8 +151,9 @@ export function computeEloDeltas(players: EloPlayerInput[], winner: Team, config
       delta += Math.sign(delta) * minDeltaFloor;
     }
 
-    // See EloConfig.seriesLengthMultiplier: applied last, over the whole delta (floor included).
-    delta *= config.seriesLengthMultiplier ?? 1;
+    // See EloConfig.seriesLengthMultiplier / scoreMarginMultiplier: applied last, over the whole
+    // delta (floor included).
+    delta *= (config.seriesLengthMultiplier ?? 1) * (config.scoreMarginMultiplier ?? 1);
 
     return { playerId: p.playerId, delta, newMmr: p.mmr + delta, wasProvisional, expected: expectedByTeam[p.team], streakMultiplier };
   });

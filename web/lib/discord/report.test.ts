@@ -52,4 +52,9 @@ describe("reportResultEmbed", () => {
     expect(embed.description).toContain("Run /correct");
     for (const line of [...lines.winners, ...lines.losers]) expect(embed.description).toContain(line);
   });
+
+  it("puts a series score in the title when one was reported", () => {
+    const embed = reportResultEmbed("B", "ABC12", lines.winners, lines.losers, false, "bo7", null, { winnerGames: 4, loserGames: 3 });
+    expect(embed.title).toBe("Match Reported — Team B Wins 4–3!");
+  });
 });

@@ -135,6 +135,13 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // disabled — this is a new behavior change to the pop flow, not something that should suddenly
   // activate for a live community without an admin's deliberate choice.
   series_length_vote_enabled: 0,
+  // Series-score reporting — see CLAUDE.md, "Reporting, substitutes, and teardown". 0 = /report
+  // takes win/loss (the original behavior); 1 = /report takes my-games/opponent-games and the
+  // score's margin scales MMR (seriesScore.ts). Same precedent as series_length_vote_enabled:
+  // listed for /admin config get, left out of register-commands.mjs's CONFIG_KEYS, since it's set
+  // through the dedicated /admin report-mode command — which also re-registers /report and /r
+  // with the matching options, something a generic config set can't do.
+  report_score_mode_enabled: 0,
   // /mafia mini-game — see CLAUDE.md, "Mafia". No dedicated subcommand exists for these (unlike
   // bonus_day_*/streak_bonus_enabled above), so both are left in register-commands.mjs's
   // CONFIG_KEYS and settable via the generic /admin config set.

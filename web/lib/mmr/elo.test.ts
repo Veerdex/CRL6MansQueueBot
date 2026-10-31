@@ -287,6 +287,34 @@ describe("computeEloDeltas — series length multiplier", () => {
   });
 });
 
+describe("computeEloDeltas — score margin multiplier", () => {
+  it("scales the fully-formed delta, floor included, and stacks with the series length multiplier", () => {
+    const players = [
+      player("a1", 900, "A"),
+      player("a2", 900, "A"),
+      player("a3", 900, "A"),
+      player("b1", 0, "B"),
+      player("b2", 0, "B"),
+      player("b3", 0, "B"),
+    ];
+    const floorConfig: EloConfig = { ...config, minDeltaFloor: 2 };
+    const plain = computeEloDeltas(players, "A", floorConfig);
+    const bo7Close = computeEloDeltas(players, "A", { ...floorConfig, seriesLengthMultiplier: 1.4, scoreMarginMultiplier: 0.55 });
+    for (let i = 0; i < plain.length; i++) {
+      expect(bo7Close[i].delta).toBeCloseTo(plain[i].delta * 1.4 * 0.55, 10);
+    }
+  });
+
+  it("with scoreMarginMultiplier omitted, behaves identically to 1x", () => {
+    const players = [player("a1", 0, "A"), player("a2", 0, "A"), player("a3", 0, "A"), player("b1", 0, "B"), player("b2", 0, "B"), player("b3", 0, "B")];
+    const withOne = computeEloDeltas(players, "B", { ...config, scoreMarginMultiplier: 1 });
+    const omitted = computeEloDeltas(players, "B", config);
+    for (let i = 0; i < withOne.length; i++) {
+      expect(withOne[i].delta).toBeCloseTo(omitted[i].delta, 10);
+    }
+  });
+});
+
 describe("computeStreakMultiplier", () => {
   it("pays nothing on the first two wins of a run, at any expected value", () => {
     // priorStreak is the count *before* this game, so 0 is a player's first win and 1 their second.
