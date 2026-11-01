@@ -69,6 +69,7 @@ const CONFIG_KEYS = [
   "streak_bonus_max_multiplier",
   "mafia_grace_seconds",
   "mafia_timeout_seconds",
+  "mafia_role_window_minutes",
 ];
 
 // /report and /r's two option shapes — duplicated from lib/discord/reportCommand.ts (this
@@ -1037,7 +1038,7 @@ const commands = [
   },
   {
     name: "role",
-    description: "Privately resend your role from your most recent Mafia game.",
+    description: "Privately resend your role in the Mafia game you're currently in.",
     type: 1,
   },
 ];

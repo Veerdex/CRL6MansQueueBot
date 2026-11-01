@@ -793,11 +793,30 @@ export function handleRoleCommand(interaction: DiscordInteraction) {
   };
 }
 
-// Resends the caller's private role message for their most recently *started* game, in any
-// channel — scoped to the caller rather than the channel (unlike /reveal) since it only ever shows
-// them their own role. Read-only and repeatable, and still works after /reveal: there is nothing
-// left to hide from the player themselves. The original delivery used the join-time interaction
-// token, which expires after 15 minutes; this answers on the /role interaction's own token instead.
+export type MafiaRoleGameState = "none" | "pending" | "current";
+
+// Whether the caller's latest non-cancelled game is one they're *currently* in. A game never leaves
+// status 'started' — there is no finished state, and plenty of games were never revealed — so
+// "started" alone would resurface a role from weeks ago. A game counts as current only while it is
+// unrevealed (/reveal is the end of a game) and started within the window, the window being the
+// backstop for games nobody ever revealed. Only the *latest* game is considered: an older
+// unrevealed game never takes over once a newer one exists.
+export function mafiaRoleGameState(
+  game: Pick<MafiaGameRow, "status" | "started_at" | "revealed_at"> | null,
+  nowMs: number,
+  windowMinutes: number,
+): MafiaRoleGameState {
+  if (!game) return "none";
+  if (game.status === "waiting" || game.status === "starting") return "pending";
+  if (game.status !== "started" || game.revealed_at || !game.started_at) return "none";
+  return nowMs - Date.parse(game.started_at) <= windowMinutes * 60_000 ? "current" : "none";
+}
+
+// Resends the caller's private role message for the Mafia game they're currently in (see
+// mafiaRoleGameState), in any channel — scoped to the caller rather than the channel (unlike
+// /reveal) since it only ever shows them their own role. Read-only and repeatable. The original
+// delivery used the join-time interaction token, which expires after 15 minutes; this answers on
+// the /role interaction's own token instead.
 async function processRole(interaction: DiscordInteraction) {
   const supabase = createAdminClient();
   const discordId = interactionUserId(interaction);
@@ -817,15 +836,22 @@ async function processRole(interaction: DiscordInteraction) {
         .from("crl6mansqueuebot_mafia_games")
         .select("*")
         .in("id", gameIds)
-        .eq("status", "started")
-        .order("started_at", { ascending: false })
+        .neq("status", "cancelled")
+        .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle()
     : { data: null };
 
+  const windowMinutes = await getConfigNumber("mafia_role_window_minutes", 60);
+  const state = mafiaRoleGameState(game, Date.now(), windowMinutes);
   const seat = game && seats?.find((s) => s.game_id === game.id);
-  if (!game || !seat) {
-    await editOriginalResponse(interaction.token, { content: "You haven't been in a Mafia game that started — no role to show." });
+
+  if (state === "pending") {
+    await editOriginalResponse(interaction.token, { content: "Roles haven't been handed out yet — wait for your lobby to fill." });
+    return;
+  }
+  if (state === "none" || !game || !seat) {
+    await editOriginalResponse(interaction.token, { content: "You're not in a Mafia game right now — no role to show." });
     return;
   }
 

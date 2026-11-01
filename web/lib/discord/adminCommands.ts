@@ -120,7 +120,7 @@ async function processHelp(interaction: DiscordInteraction) {
     "`/correct` — vote to fix your last match's result if it was mis-reported (with score reporting on, give the real score). 4 of 6 players must agree on the same result.",
     "`/mafia [mode:] [count:] [password:]` — start a game of Mafia in this channel; Join/Leave buttons fill a 6-player lobby, then the Mafia are secretly picked. `mode:` Hidden Objective gives each Mafia a specific sabotage goal instead; Team Mafia has no Mafia at all — it splits the lobby into two MMR-balanced teams (Blue and Orange) and privately deals each side an objective worth 2 points, with the win worth 1. `count:` sets how many Mafia (default 1; 0 is a coin flip between one and none), and is ignored in Team Mafia. Set a password to require it on Join.",
     "`/reveal` — after a Mafia game, show who was the Mafia (and their objectives), or in Team Mafia both teams' objectives. Only that game's players can run it, and only once.",
-    "`/role` — privately resend your role (and objective) from your most recent Mafia game.",
+    "`/role` — privately resend your role (and objective) in the Mafia game you're currently in. Works until the game is revealed.",
     "`/help` — show this message.",
   ];
 

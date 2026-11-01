@@ -6,6 +6,7 @@ import {
   assignObjectives,
   assignTeamObjectives,
   mafiaFallbackRating,
+  mafiaRoleGameState,
   mafiaRoleMessage,
   teamRoleMessage,
   resolveMafiaCount,
@@ -165,6 +166,37 @@ describe("splitMafiaTeams", () => {
     const { blue, orange } = splitMafiaTeams(players, ratingFor(players));
     expect(blue).toHaveLength(3);
     expect(orange).toHaveLength(3);
+  });
+});
+
+describe("mafiaRoleGameState", () => {
+  const now = Date.parse("2026-11-01T08:00:00Z");
+  const started = (minutesAgo: number, revealed = false) => ({
+    status: "started" as const,
+    started_at: new Date(now - minutesAgo * 60_000).toISOString(),
+    revealed_at: revealed ? new Date(now).toISOString() : null,
+  });
+
+  it("is current for an unrevealed game inside the window", () => {
+    expect(mafiaRoleGameState(started(10), now, 60)).toBe("current");
+  });
+
+  it("is over once the game has been revealed", () => {
+    expect(mafiaRoleGameState(started(10, true), now, 60)).toBe("none");
+  });
+
+  it("is over for a never-revealed game past the window (the month-old role case)", () => {
+    expect(mafiaRoleGameState(started(60 * 24 * 32), now, 60)).toBe("none");
+    expect(mafiaRoleGameState(started(61), now, 60)).toBe("none");
+  });
+
+  it("is pending while the latest lobby hasn't dealt roles yet", () => {
+    expect(mafiaRoleGameState({ status: "waiting", started_at: null, revealed_at: null }, now, 60)).toBe("pending");
+    expect(mafiaRoleGameState({ status: "starting", started_at: null, revealed_at: null }, now, 60)).toBe("pending");
+  });
+
+  it("is none with no game", () => {
+    expect(mafiaRoleGameState(null, now, 60)).toBe("none");
   });
 });
 

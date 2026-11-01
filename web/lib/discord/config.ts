@@ -143,10 +143,11 @@ export const KNOWN_CONFIG_DEFAULTS: Record<string, number> = {
   // with the matching options, something a generic config set can't do.
   report_score_mode_enabled: 0,
   // /mafia mini-game — see CLAUDE.md, "Mafia". No dedicated subcommand exists for these (unlike
-  // bonus_day_*/streak_bonus_enabled above), so both are left in register-commands.mjs's
+  // bonus_day_*/streak_bonus_enabled above), so all are left in register-commands.mjs's
   // CONFIG_KEYS and settable via the generic /admin config set.
   mafia_grace_seconds: 5,
   mafia_timeout_seconds: 120,
+  mafia_role_window_minutes: 60,
   // Fixed-MMR rank thresholds — see getFixedRankConfig below and CLAUDE.md, "MMR, placement,
   // bands, and seasons". Same precedent as bonus_day_*: listed here for /admin config get's
   // display, but left out of register-commands.mjs's CONFIG_KEYS since they're set through the
