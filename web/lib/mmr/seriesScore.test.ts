@@ -3,18 +3,24 @@ import { computeScoreMarginMultiplier, flippedSeriesResult, formatSeriesResult, 
 
 describe("computeScoreMarginMultiplier", () => {
   it("pays a sweep more than 1x at every length", () => {
-    expect(computeScoreMarginMultiplier(3, 2, 0)).toBeCloseTo(1.2143, 4);
-    expect(computeScoreMarginMultiplier(5, 3, 0)).toBeCloseTo(1.3571, 4);
-    expect(computeScoreMarginMultiplier(7, 4, 0)).toBeCloseTo(1.5, 10);
+    expect(computeScoreMarginMultiplier(3, 2, 0)).toBeCloseTo(1.1786, 4);
+    expect(computeScoreMarginMultiplier(5, 3, 0)).toBeCloseTo(1.2976, 4);
+    expect(computeScoreMarginMultiplier(7, 4, 0)).toBeCloseTo(1 + 0.5 / 1.2, 10);
   });
 
   it("matches the agreed table for closer series", () => {
     expect(computeScoreMarginMultiplier(3, 2, 1)).toBeCloseTo(0.9571, 4);
-    expect(computeScoreMarginMultiplier(5, 3, 1)).toBeCloseTo(1.0714, 4);
+    expect(computeScoreMarginMultiplier(5, 3, 1)).toBeCloseTo(1.0595, 4);
     expect(computeScoreMarginMultiplier(5, 3, 2)).toBeCloseTo(0.7857, 4);
-    expect(computeScoreMarginMultiplier(7, 4, 1)).toBeCloseTo(1.2, 10);
+    expect(computeScoreMarginMultiplier(7, 4, 1)).toBeCloseTo(1.1667, 4);
     expect(computeScoreMarginMultiplier(7, 4, 2)).toBeCloseTo(0.9, 10);
     expect(computeScoreMarginMultiplier(7, 4, 3)).toBeCloseTo(0.6, 10);
+  });
+
+  it("damps only the part above 1x by 1.2 and leaves sub-1x scores untouched", () => {
+    // Raw BO7 4-0 is 1.5x -> 1 + 0.5/1.2; raw BO7 4-2 is 0.9x and stays 0.9x.
+    expect(computeScoreMarginMultiplier(7, 4, 0)).toBeCloseTo(1 + 0.5 / 1.2, 10);
+    expect(computeScoreMarginMultiplier(7, 4, 2)).toBeCloseTo(0.9, 10);
   });
 
   it("depends only on the margin, so a corrected (flipped) score keeps the same multiplier", () => {

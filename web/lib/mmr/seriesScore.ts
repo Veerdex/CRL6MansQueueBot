@@ -40,12 +40,18 @@ export function validateSeriesScore(myGames: number, opponentGames: number, seri
   return { ok: true, reporterWon: myGames > opponentGames, winnerGames, loserGames };
 }
 
-// g = 1 - s/10 + 6s|a-b| / (35 ceil(s/2)), linear in the margin. A sweep pays more than 1x and
-// the closest score less (BO3 2-0 1.214 / 2-1 0.957; BO5 3-0 1.357 / 3-1 1.071 / 3-2 0.786;
-// BO7 4-0 1.5 / 4-1 1.2 / 4-2 0.9 / 4-3 0.6).
+// Damps only the bonus part of a winning margin: whatever a score earns above 1x is divided by
+// this, so a raw 1.5x becomes 1 + 0.5/1.2 = 1.417x. Scores at or below 1x are untouched.
+export const SCORE_MARGIN_BONUS_DAMPING = 1.2;
+
+// Raw g = 1 - s/10 + 6s|a-b| / (35 ceil(s/2)), linear in the margin; above 1x it is then damped to
+// 1 + (g - 1) / SCORE_MARGIN_BONUS_DAMPING. A sweep pays more than 1x and the closest score less
+// (BO3 2-0 1.179 / 2-1 0.957; BO5 3-0 1.298 / 3-1 1.060 / 3-2 0.786;
+// BO7 4-0 1.417 / 4-1 1.167 / 4-2 0.9 / 4-3 0.6).
 export function computeScoreMarginMultiplier(seriesGames: number, winnerGames: number, loserGames: number): number {
   const w = gamesToWin(seriesGames);
-  return 1 - seriesGames / 10 + (6 * seriesGames * Math.abs(winnerGames - loserGames)) / (35 * w);
+  const g = 1 - seriesGames / 10 + (6 * seriesGames * Math.abs(winnerGames - loserGames)) / (35 * w);
+  return g > 1 ? 1 + (g - 1) / SCORE_MARGIN_BONUS_DAMPING : g;
 }
 
 // A reported (or proposed) series result. Games are winner-relative, like the series row's
