@@ -6,6 +6,8 @@ import {
   assignObjectives,
   assignTeamObjectives,
   mafiaFallbackRating,
+  mafiaRoleMessage,
+  teamRoleMessage,
   resolveMafiaCount,
   splitMafiaTeams,
 } from "./mafia";
@@ -163,5 +165,23 @@ describe("splitMafiaTeams", () => {
     const { blue, orange } = splitMafiaTeams(players, ratingFor(players));
     expect(blue).toHaveLength(3);
     expect(orange).toHaveLength(3);
+  });
+});
+
+describe("role messages (/role resends these)", () => {
+  it("tells an innocent they're innocent, whatever objective is passed", () => {
+    expect(mafiaRoleMessage(false, null)).toContain("You are Innocent");
+    expect(mafiaRoleMessage(false, "Own goal")).not.toContain("Own goal");
+  });
+
+  it("includes a mafia's hidden objective when there is one", () => {
+    expect(mafiaRoleMessage(true, "Own goal")).toContain("**Own goal**");
+    expect(mafiaRoleMessage(true, null)).toContain("Blend in");
+  });
+
+  it("names the team and keeps it from the other side", () => {
+    const msg = teamRoleMessage("blue", "Get 9 demos");
+    expect(msg).toContain("(Blue):** Get 9 demos");
+    expect(msg).toContain("keep it from Orange");
   });
 });

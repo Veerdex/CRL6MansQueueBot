@@ -1035,6 +1035,11 @@ const commands = [
     description: "Reveal the last game's Mafia, or both team objectives (players from that game only).",
     type: 1,
   },
+  {
+    name: "role",
+    description: "Privately resend your role from your most recent Mafia game.",
+    type: 1,
+  },
 ];
 
 const token = process.env.DISCORD_BOT_TOKEN;

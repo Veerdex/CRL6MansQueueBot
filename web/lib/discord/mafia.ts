@@ -501,6 +501,23 @@ async function fetchTeamRatings(supabase: AdminClient, discordIds: string[]): Pr
   return ratings;
 }
 
+// The private role texts. Shared by the original ephemeral delivery at finalize and by /role, which
+// resends the same message on demand, so the two can never drift apart.
+export function mafiaRoleMessage(isMafia: boolean, objective: string | null): string {
+  if (!isMafia) return "🕵️ **You are Innocent.** Work with the group to figure out who the Mafia is!";
+  if (objective) {
+    return `🔪 **You are the Mafia!** Your hidden objective: **${objective}**\nPull it off without the others working out it was you.`;
+  }
+  return "🔪 **You are the Mafia!** Blend in and don't get caught.";
+}
+
+export function teamRoleMessage(team: MafiaTeam, objective: string): string {
+  return (
+    `${TEAM_EMOJI[team]} **Your objective (${TEAM_LABEL[team]}):** ${objective}\n` +
+    `${TEAM_SCORING_LINE} — keep it from ${TEAM_LABEL[team === "blue" ? "orange" : "blue"]}.`
+  );
+}
+
 async function runTeamObjectiveAssignment(supabase: AdminClient, game: MafiaGameRow, players: MafiaPlayerRow[]) {
   const ratings = await fetchTeamRatings(supabase, players.map((p) => p.discord_id));
   const { blue, orange } = splitMafiaTeams(players, (id) => ratings.get(id) ?? 0);
@@ -532,9 +549,7 @@ async function runTeamObjectiveAssignment(supabase: AdminClient, game: MafiaGame
     players.map((p) => {
       const seat = assignment.get(p.discord_id);
       if (!seat) return Promise.resolve();
-      const content =
-        `${TEAM_EMOJI[seat.team]} **Your objective (${TEAM_LABEL[seat.team]}):** ${seat.objective}\n` +
-        `${TEAM_SCORING_LINE} — keep it from ${TEAM_LABEL[seat.team === "blue" ? "orange" : "blue"]}.`;
+      const content = teamRoleMessage(seat.team, seat.objective);
       return sendFollowupMessage(p.interaction_token, { content }).catch((err) =>
         console.error(`Mafia: failed to deliver team objective to ${p.discord_id}`, err),
       );
@@ -616,15 +631,7 @@ async function runMafiaFinalizeSequence(supabase: AdminClient, game: MafiaGameRo
 
   await Promise.all(
     players.map((p) => {
-      const objective = objectiveFor.get(p.discord_id);
-      let content: string;
-      if (!mafiaIds.has(p.discord_id)) {
-        content = "🕵️ **You are Innocent.** Work with the group to figure out who the Mafia is!";
-      } else if (objective) {
-        content = `🔪 **You are the Mafia!** Your hidden objective: **${objective}**\nPull it off without the others working out it was you.`;
-      } else {
-        content = "🔪 **You are the Mafia!** Blend in and don't get caught.";
-      }
+      const content = mafiaRoleMessage(mafiaIds.has(p.discord_id), objectiveFor.get(p.discord_id) ?? null);
       return sendFollowupMessage(p.interaction_token, { content }).catch((err) =>
         console.error(`Mafia: failed to deliver role reveal to ${p.discord_id}`, err),
       );
@@ -776,6 +783,61 @@ async function processReveal(interaction: DiscordInteraction) {
   }).catch((err) => console.error("Mafia: failed to post reveal", err));
 
   await deleteOriginalResponse(interaction.token);
+}
+
+export function handleRoleCommand(interaction: DiscordInteraction) {
+  after(() => processRole(interaction));
+  return {
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: InteractionResponseFlags.EPHEMERAL },
+  };
+}
+
+// Resends the caller's private role message for their most recently *started* game, in any
+// channel — scoped to the caller rather than the channel (unlike /reveal) since it only ever shows
+// them their own role. Read-only and repeatable, and still works after /reveal: there is nothing
+// left to hide from the player themselves. The original delivery used the join-time interaction
+// token, which expires after 15 minutes; this answers on the /role interaction's own token instead.
+async function processRole(interaction: DiscordInteraction) {
+  const supabase = createAdminClient();
+  const discordId = interactionUserId(interaction);
+  if (!discordId) {
+    await editOriginalResponse(interaction.token, { content: "Couldn't identify you — try again." });
+    return;
+  }
+
+  const { data: seats } = await supabase
+    .from("crl6mansqueuebot_mafia_players")
+    .select("*")
+    .eq("discord_id", discordId);
+  const gameIds = (seats ?? []).map((s) => s.game_id);
+
+  const { data: game } = gameIds.length
+    ? await supabase
+        .from("crl6mansqueuebot_mafia_games")
+        .select("*")
+        .in("id", gameIds)
+        .eq("status", "started")
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
+
+  const seat = game && seats?.find((s) => s.game_id === game.id);
+  if (!game || !seat) {
+    await editOriginalResponse(interaction.token, { content: "You haven't been in a Mafia game that started — no role to show." });
+    return;
+  }
+
+  let content: string;
+  if (game.mode === "team_objective") {
+    content = seat.team && seat.objective
+      ? teamRoleMessage(seat.team, seat.objective)
+      : "Your team assignment for that game wasn't recorded, so it can't be resent.";
+  } else {
+    content = mafiaRoleMessage(seat.is_mafia, seat.objective);
+  }
+  await editOriginalResponse(interaction.token, { content });
 }
 
 // Called from the per-minute sweep (sweep/route.ts), both for lobbies that never filled within
