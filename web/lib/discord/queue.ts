@@ -141,8 +141,8 @@ async function richEventEmbed(
   // join keeps the purple override, since it's the one case worth celebrating.
   //
   // Join uses the deeper SUPERCHARGED_ANNOUNCE_COLOR rather than the lighter SUPERCHARGED_COLOR
-  // every other gameplay embed swaps to, so the card matches the standalone "Today is a
-  // Supercharged Day!" announcement posted above it in the same channel (explicit request).
+  // every other gameplay embed swaps to (explicit request; originally chosen to match a standalone
+  // "Today is a Supercharged Day!" announcement, since replaced by ⚡ around the first-join ping).
   const color =
     action === "inactive"
       ? RICH_INACTIVITY_COLOR
@@ -202,11 +202,12 @@ async function queueMessageBody(
     const embed = richContext
       ? await richEventEmbed(supabase, richContext.action, richContext.player, queueType, richContext.queueSize)
       : await hybridRosterEmbed(queueType, members, streaks);
-    return { content: ping ?? "", embeds: [embed] };
+    return { content: ping ?? "", embeds: [embed], allowed_mentions: ROLE_ONLY_MENTIONS };
   }
   return {
     content: ping ?? "",
     embeds: [await queueStatusEmbed(queueType, members, streaks, headline)],
+    allowed_mentions: ROLE_ONLY_MENTIONS,
   };
 }
 
@@ -218,7 +219,7 @@ async function postHybridAnnouncement(channelId: string, headline: string, ping?
   const color = (await isSuperchargedDayLive()) ? SUPERCHARGED_COLOR : BRAND_COLOR;
   await discordFetch(`/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: ping ?? "", embeds: [{ color, description: `**${headline}**` }] }),
+    body: JSON.stringify({ content: ping ?? "", embeds: [{ color, description: `**${headline}**` }], allowed_mentions: ROLE_ONLY_MENTIONS }),
   }).catch((err) => console.error(`Failed to post hybrid queue announcement in ${channelId}`, err));
 }
 
@@ -229,23 +230,13 @@ async function postHybridAnnouncement(channelId: string, headline: string, ping?
 // one line above itself, so this no longer posts anything at pop — see CLAUDE.md, "Team
 // formation".
 
-// Posted once, alongside the first-join role ping (see the "first join" branch in the /q command
-// handler below) — a standalone bright-purple-bordered embed announcing that today is a
-// supercharged (Bonus Day) day, so it stands out from the ordinary green/purple queue-status
-// embeds around it.
-async function postSuperchargedAnnouncement(channelId: string) {
-  await discordFetch(`/channels/${channelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({
-      embeds: [
-        {
-          color: SUPERCHARGED_ANNOUNCE_COLOR,
-          description: "⚡ **Today is a Supercharged Day!** Rank Queue MMR gains are boosted — queue up while it lasts.",
-        },
-      ],
-    }),
-  }).catch((err) => console.error(`Failed to post supercharged announcement in ${channelId}`, err));
-}
+// The standalone "Today is a Supercharged Day!" embed that used to post after the first join is
+// gone — a supercharged day is now signalled by ⚡ wrapping the role mention in the first-join
+// ping itself (see the "first join" branch in the /q command handler below).
+
+// The first-join ping ("<@&role> - <@user> started a queue") should notify the role only, not
+// re-ping the player who just joined. Applied wherever `ping` is sent as content.
+const ROLE_ONLY_MENTIONS = { parse: ["roles"] };
 
 export async function fetchQueueMembers(supabase: AdminClient, queueType: QueueType): Promise<PlayerRow[]> {
   const { data: memberRows, error } = await supabase
@@ -841,7 +832,12 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
     let ping: string | undefined;
 
     // If this is the first join (queue size was 0, now 1), ping the configured role — sent
-    // separately as message content (not embedded) so the notification actually fires.
+    // separately as message content (not embedded) so the notification actually fires. Reads
+    // "<@&role> - <@user> started a queue"; on a supercharged day the role mention is wrapped in
+    // ⚡ (replacing the old standalone "Today is a Supercharged Day!" embed). `<@&id>` is
+    // self-delimited by its angle brackets, so the adjacent ⚡ can't bleed into the role lookup.
+    // The joiner's own mention is suppressed from notifying via allowed_mentions (see
+    // queueMessageBody / postHybridAnnouncement), so only the role is pinged.
     if (result.queue_size === 1) {
       const { data: mentionRoleRow } = await supabase
         .from("crl6mansqueuebot_queue_mention_roles")
@@ -850,14 +846,13 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
         .maybeSingle() as any;
 
       if (mentionRoleRow?.role_id) {
-        ping = `<@&${mentionRoleRow.role_id}>`;
+        const roleMention = `<@&${mentionRoleRow.role_id}>`;
+        const wrapped = (await isSuperchargedDayLive()) ? `⚡${roleMention}⚡` : roleMention;
+        ping = `${wrapped} - <@${discordId}> started a queue`;
       }
     }
 
     await refreshQueueMessage(supabase, queueType, headline, ping, { action: "join", player, queueSize: result.queue_size }, knownMsgRow);
-    if (result.queue_size === 1 && (await isSuperchargedDayLive())) {
-      await postSuperchargedAnnouncement(channelId);
-    }
     await deleteOriginalResponse(interaction.token);
   }
 }
