@@ -5,6 +5,7 @@ import { editOriginalResponse } from "./rest";
 import { hasAdminAccess, logAdminAction } from "./admin";
 import { getConfigValue, setConfigValue, deleteConfigValue } from "./config";
 import { interactionUserId, type DiscordInteraction, type CommandOption } from "./types";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 function deferredEphemeral(run: () => Promise<void>) {
   after(run);
@@ -18,6 +19,25 @@ function deferredEphemeral(run: () => Promise<void>) {
 // (layout.tsx) — a plain ISO timestamp string in the generic crl6mansqueuebot_config table,
 // same precedent as lobby_voice_channel_id/log_channel_id (no dedicated column/table needed).
 export const SCHEDULED_RESET_CONFIG_KEY = "scheduled_season_reset_at";
+
+// The reset also gets its own one-off pg_cron job (migration 0057), so it fires on time without
+// an every-minute sweep watching for it. The job runs the minute after the reset instant and calls
+// the sweep route with tier "season-reset"; it's removed again as soon as the reset is claimed
+// (sweep/route.ts) or when /schedule-reset clears it. Re-scheduling replaces it, since pg_cron
+// upserts a job by name. Failures are logged rather than thrown: the config key stays the source
+// of truth, and the hourly sweep fires an overdue reset even if this job never existed.
+export async function scheduleSeasonResetCron(resetAt: Date): Promise<boolean> {
+  const { error } = await createAdminClient().rpc("crl6mansqueuebot_schedule_season_reset_cron", {
+    p_reset_at: resetAt.toISOString(),
+  });
+  if (error) console.error("Scheduled reset: failed to create the one-off cron job", error);
+  return !error;
+}
+
+export async function unscheduleSeasonResetCron(supabase = createAdminClient()): Promise<void> {
+  const { error } = await supabase.rpc("crl6mansqueuebot_unschedule_season_reset_cron");
+  if (error) console.error("Scheduled reset: failed to remove the one-off cron job", error);
+}
 
 function getParamValue(options: CommandOption[] | undefined, name: string): string | number | boolean | undefined {
   return options?.find((o) => o.name === name)?.value;
@@ -93,6 +113,7 @@ async function processScheduleReset(
       return;
     }
     await deleteConfigValue(SCHEDULED_RESET_CONFIG_KEY);
+    await unscheduleSeasonResetCron();
     await logAdminAction(actorId, "schedule_reset_clear", undefined, `was scheduled for ${existing}`);
     await editOriginalResponse(interaction.token, { content: "Scheduled season reset cleared." });
     return;
@@ -120,6 +141,7 @@ async function processScheduleReset(
     }
 
     await setConfigValue(SCHEDULED_RESET_CONFIG_KEY, resetAt.toISOString());
+    await scheduleSeasonResetCron(resetAt);
 
     const unixSeconds = Math.floor(resetAt.getTime() / 1000);
     await logAdminAction(actorId, "schedule_reset_set", undefined, `resets at ${resetAt.toISOString()}`);

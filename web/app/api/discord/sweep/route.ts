@@ -6,7 +6,7 @@ import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matc
 import { reclaimStrayMatchRoles, releaseMatchRole } from "@/lib/discord/matchRole";
 import { postTrackedQueueMessage, refreshQueueMessage, refreshQueueMessageAfterSettlement, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
-import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
+import { SCHEDULED_RESET_CONFIG_KEY, unscheduleSeasonResetCron } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
 import { resolveSeriesLengthByMajority, autoPickForTimedOutCaptain } from "@/lib/discord/teamFormation";
 import { advanceMatchTimeStatsDayCounters } from "@/lib/discord/bonusDay";
@@ -22,6 +22,34 @@ import type { SeriesRow } from "@/lib/supabase/types";
 // shorter budget the way interactions/route.ts deliberately caps itself at 60.
 export const maxDuration = 300;
 
+
+type AdminClient = ReturnType<typeof createAdminClient>;
+
+// Which slice of the sweep a pg_cron job is asking for (migration 0057). Each job only calls this
+// route at all when its own SQL gate finds something for that slice to do, which is what keeps an
+// idle server from invoking the function 1,440 times a day:
+//   minute       — every minute, gated on a forming series / pending sub request / waiting Mafia
+//                  lobby: the short timers (votes, draft picks, sub expiry, Mafia join window).
+//   quarter      — every 15 minutes, gated on a live series or a non-empty queue: the 2-hour
+//                  series expiry and queue inactivity, which can afford up to 15 minutes' lag.
+//   hourly       — every hour, ungated: leftover channel/role/lobby backstops, the Match Times
+//                  day counter, and the safety net for a scheduled season reset whose one-off
+//                  job never fired.
+//   season-reset — the one-off job /schedule-reset creates for the reset's own minute.
+//   all          — no tier given (the pre-0057 single every-minute job, or a manual call): the
+//                  whole sweep, exactly as before the split.
+type SweepTier = "minute" | "quarter" | "hourly" | "season-reset" | "all";
+const SWEEP_TIERS: readonly SweepTier[] = ["minute", "quarter", "hourly", "season-reset", "all"];
+
+async function readTier(request: Request): Promise<SweepTier> {
+  try {
+    const body = (await request.json()) as { tier?: unknown };
+    return SWEEP_TIERS.includes(body?.tier as SweepTier) ? (body.tier as SweepTier) : "all";
+  } catch {
+    return "all";
+  }
+}
+
 // Called on a schedule by Supabase pg_cron (see CLAUDE.md, "Discord bot runtime
 // architecture") since there's no interaction to hang background timeout checks off of.
 // Guarded by a shared secret rather than Discord signature verification — this isn't a
@@ -35,8 +63,124 @@ export async function POST(request: Request) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
+  const tier = await readTier(request);
+  const runs = (t: Exclude<SweepTier, "all">) => tier === "all" || tier === t;
   const supabase = createAdminClient();
+  const summary: Record<string, unknown> = { ok: true, tier };
 
+  if (runs("minute")) {
+    Object.assign(summary, await sweepFormationTimeouts(supabase));
+    summary.subRequestsExpired = await sweepExpiredSubRequests(supabase);
+    summary.mafiaLobbiesCancelled = await sweepWaitingMafiaLobbies(supabase);
+  }
+
+  if (runs("quarter")) {
+    try {
+      summary.voided = await sweepExpiredSeries(supabase);
+    } catch (err) {
+      console.error("Sweep: failed to fetch stale series", err);
+      return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
+    }
+    summary.queueMembersRemoved = await sweepInactiveQueueMembers(supabase);
+  }
+
+  if (runs("hourly")) {
+    Object.assign(summary, await sweepLeftoverMatchResources(supabase));
+    summary.stuckMafiaLobbiesCancelled = await sweepStuckStartingMafiaLobbies(supabase);
+    summary.matchTimeStatsDaysAdvanced = await sweepMatchTimeStatsDayCounters();
+  }
+
+  // The season reset is the one-off job's whole purpose, and the hourly run is its safety net.
+  // Under "all" it keeps running every tick like before the split.
+  if (tier === "season-reset" || tier === "hourly" || tier === "all") {
+    summary.scheduledResetFired = await fireScheduledSeasonResetIfDue(supabase);
+  }
+
+  return NextResponse.json(summary);
+}
+
+// Scheduled season reset (/schedule-reset — see CLAUDE.md, "Seasons"): scheduled_season_reset_at
+// is a plain ISO timestamp in the generic config table, and /schedule-reset also creates a one-off
+// pg_cron job for it (scheduledReset.ts). Two jobs can now land on the same reset — the one-off
+// and the hourly safety net — so the claim is an atomic DELETE ... RETURNING of the exact row
+// that was read, straight from the database rather than the 30-second config cache: exactly one
+// caller gets the row back, and a reset cleared or rescheduled in the meantime matches nothing.
+// The claim happens BEFORE running the reset so a slow performSeasonReset() can't fire twice.
+async function fireScheduledSeasonResetIfDue(supabase: AdminClient): Promise<boolean> {
+  const { data: row, error: readError } = await supabase
+    .from("crl6mansqueuebot_config")
+    .select("value")
+    .eq("key", SCHEDULED_RESET_CONFIG_KEY)
+    .maybeSingle();
+  if (readError) {
+    console.error("Sweep: failed to read scheduled season reset", readError);
+    return false;
+  }
+  if (!row) {
+    // Nothing scheduled, so any one-off job still standing is a leftover (cron has no year field,
+    // so it would otherwise fire again on the same date next year). Harmless if there's none.
+    await unscheduleSeasonResetCron(supabase);
+    return false;
+  }
+  const scheduledResetAt = row.value as string;
+  if (new Date(scheduledResetAt).getTime() > Date.now()) return false;
+
+  const { data: claimed } = await supabase
+    .from("crl6mansqueuebot_config")
+    .delete()
+    .eq("key", SCHEDULED_RESET_CONFIG_KEY)
+    .eq("value", scheduledResetAt)
+    .select("key");
+  if (!claimed || claimed.length === 0) return false;
+  // Keep this instance's config cache from still showing the reset as pending.
+  await deleteConfigValue(SCHEDULED_RESET_CONFIG_KEY);
+
+  // Remove the one-off cron job as soon as the reset is claimed, whichever job claimed it.
+  await unscheduleSeasonResetCron(supabase);
+
+  try {
+    const summary = await performSeasonReset();
+
+    // No real Discord actor to attribute this to — bypasses logAdminAction (which always
+    // renders an `Actor: <@id>` field) in favor of a dedicated announcement embed, but still
+    // records a raw audit_log row for traceability. actor_discord_id is NOT NULL with no
+    // "system" sentinel convention elsewhere in the schema; "system" here renders as a
+    // harmless unresolved <@system> mention in /admin audit-log's plain-text listing only
+    // (not a live notification).
+    await supabase.from("crl6mansqueuebot_audit_log").insert({
+      actor_discord_id: "system",
+      action: "scheduled_reset_fire",
+      details: summary.closedSeasonNumber
+        ? `Closed season ${summary.closedSeasonNumber}, started season ${summary.newSeasonNumber}, ${summary.playersReset} player(s) reset to Unranked`
+        : `Started season ${summary.newSeasonNumber} (no prior active season)`,
+    });
+
+    const logChannelId = await getConfigValue("log_channel_id");
+    if (logChannelId) {
+      await discordFetch(`/channels/${logChannelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          embeds: [
+            {
+              color: GOLD_COLOR,
+              title: "Scheduled Season Reset",
+              description: summary.closedSeasonNumber
+                ? `Closed season ${summary.closedSeasonNumber} and started season ${summary.newSeasonNumber}. ${summary.playersReset} player(s) reset to Unranked.`
+                : `Started season ${summary.newSeasonNumber} (no prior active season).`,
+            },
+          ],
+        }),
+      }).catch((err) => console.error("Sweep: failed to post scheduled-reset announcement embed", err));
+    }
+    return true;
+  } catch (err) {
+    console.error("Sweep: scheduled season reset failed", err);
+    return false;
+  }
+}
+
+// ---- minute tier ------------------------------------------------------------------------
+async function sweepFormationTimeouts(supabase: AdminClient) {
   const voteTimeoutSeconds = await getConfigNumber("vote_timeout_seconds", 180);
   const voteCutoff = new Date(Date.now() - voteTimeoutSeconds * 1000).toISOString();
 
@@ -131,6 +275,92 @@ export async function POST(request: Request) {
     }
   }
 
+  return { seriesLengthResolved, voidedForSilence, draftPicksForced };
+}
+
+
+async function sweepExpiredSubRequests(supabase: AdminClient) {
+  // Pending /sub nominations expire on their own timer (sub_request_timeout_minutes) rather
+  // than riding the series timeout — a stale nomination shouldn't hang around for up to 2
+  // hours just because nobody clicked Accept. See CLAUDE.md, "Substitutes".
+  const subTimeoutMinutes = await getConfigNumber("sub_request_timeout_minutes", 10);
+  const subCutoff = new Date(Date.now() - subTimeoutMinutes * 60 * 1000).toISOString();
+
+  const { data: staleSubRequests, error: subError } = await supabase
+    .from("crl6mansqueuebot_sub_requests")
+    .select("*")
+    .lt("created_at", subCutoff);
+
+  if (subError) {
+    console.error("Sweep: failed to fetch stale sub requests", subError);
+  }
+
+  let subRequestsExpired = 0;
+  for (const request of staleSubRequests ?? []) {
+    // Atomic claim (existence = pending, same convention as sub.ts's accept handler) so this
+    // can't race a player clicking Accept in the same tick.
+    const { data: claimed } = await supabase
+      .from("crl6mansqueuebot_sub_requests")
+      .delete()
+      .eq("series_id", request.series_id)
+      .eq("leaving_player_id", request.leaving_player_id)
+      .select("series_id");
+    if (!claimed || claimed.length === 0) continue;
+
+    if (request.message_id) {
+      const { data: series } = await supabase.from("crl6mansqueuebot_series").select("queue_channel_id").eq("id", request.series_id).maybeSingle();
+      if (series?.queue_channel_id) {
+        await discordFetch(`/channels/${series.queue_channel_id}/messages/${request.message_id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            content: `Sub request to <@${request.nominee_discord_id}> expired without a response.`,
+            components: [],
+          }),
+        }).catch((err) => console.error(`Sweep: failed to update expired sub request message for series ${request.series_id}`, err));
+      }
+    }
+    subRequestsExpired += 1;
+  }
+
+  return subRequestsExpired;
+}
+
+
+async function sweepWaitingMafiaLobbies(supabase: AdminClient) {
+  // Mafia lobby timeout (/mafia — see CLAUDE.md, "Mafia"): a lobby that never fills within
+  // mafia_timeout_seconds auto-cancels. Only ever targets status='waiting' — a lobby mid-grace
+  // ('starting') is handled entirely in-process by the join call that triggered it, never here.
+  const mafiaTimeoutSeconds = await getConfigNumber("mafia_timeout_seconds", 120);
+  const mafiaCutoff = new Date(Date.now() - mafiaTimeoutSeconds * 1000).toISOString();
+
+  const { data: staleMafiaLobbies, error: mafiaError } = await supabase
+    .from("crl6mansqueuebot_mafia_games")
+    .select("*")
+    .eq("status", "waiting")
+    .lt("created_at", mafiaCutoff);
+
+  if (mafiaError) {
+    console.error("Sweep: failed to fetch stale mafia lobbies", mafiaError);
+  }
+
+  let mafiaLobbiesCancelled = 0;
+  for (const game of staleMafiaLobbies ?? []) {
+    const { data: claimed } = await supabase
+      .from("crl6mansqueuebot_mafia_games")
+      .update({ status: "cancelled" })
+      .eq("id", game.id)
+      .eq("status", "waiting")
+      .select("id");
+    if (!claimed || claimed.length === 0) continue;
+    await cancelStaleMafiaLobby(supabase, game);
+    mafiaLobbiesCancelled += 1;
+  }
+
+  return mafiaLobbiesCancelled;
+}
+
+// ---- quarter tier -----------------------------------------------------------------------
+async function sweepExpiredSeries(supabase: AdminClient) {
   const timeoutHours = await getConfigNumber("series_timeout_hours", 2);
   const cutoff = new Date(Date.now() - timeoutHours * 60 * 60 * 1000).toISOString();
 
@@ -142,7 +372,7 @@ export async function POST(request: Request) {
 
   if (error) {
     console.error("Sweep: failed to fetch stale series", error);
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    throw new Error(`failed to fetch stale series: ${error.message}`);
   }
 
   let voided = 0;
@@ -151,70 +381,11 @@ export async function POST(request: Request) {
     voided += 1;
   }
 
-  // Backstop for reported series: report.ts deletes match channels itself after a 30s
-  // closing-warning delay via `after()`, but that's a single in-function attempt with no
-  // retry — if the invocation gets cut short in prod, the channels would otherwise orphan
-  // forever, since a 'reported' series is outside every other sweep query above. Only sweep
-  // series reported over a minute ago so this never races the in-flight deletion.
-  const reportedCutoff = new Date(Date.now() - 60 * 1000).toISOString();
-  const { data: orphanCandidates, error: orphanError } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("*")
-    .eq("status", "reported")
-    .lt("reported_at", reportedCutoff)
-    // queue_channel_id deliberately excluded — it's the shared queue channel, always populated
-    // and never cleared, not a per-match resource deleteMatchChannels cleans up. Including it
-    // here would re-match (and no-op re-sweep) every reported series forever.
-    .or("category_id.not.is.null,voice_channel_a_id.not.is.null,voice_channel_b_id.not.is.null");
+  return voided;
+}
 
-  if (orphanError) {
-    console.error("Sweep: failed to fetch orphaned reported-series channels", orphanError);
-  }
 
-  let orphansCleaned = 0;
-  for (const series of orphanCandidates ?? []) {
-    await deleteMatchChannels(supabase, series);
-    orphansCleaned += 1;
-  }
-
-  // Settled series that still hold their match role. Every teardown path releases its own, so
-  // this only catches a release that didn't complete — but without it those leak *permanently*,
-  // because neither pass around it would ever retry them. The orphan pass above only selects
-  // status = 'reported' with a voice id still set, so (a) a voided series — /cancel, an admin
-  // void, a vote-silence timeout — whose teardown was cut short is outside it entirely, and
-  // (b) a reported series whose role claim failed after the channels were already deleted has
-  // had its voice ids cleared and has dropped out of it too. The stray reclaim below doesn't
-  // cover them either, since it treats any row holding a role id as a legitimate claim.
-  //
-  // releaseMatchRole's atomic claim makes racing report.ts's own 30s-delayed teardown harmless,
-  // and releasing a touch early costs nothing — nothing pings a series after "Teams formed!".
-  // It also does the teams-formed message rewrite, which the stray reclaim can't.
-  let matchRolesReleased = 0;
-  const { data: settledWithRole, error: settledRoleError } = await supabase
-    .from("crl6mansqueuebot_series")
-    .select("*")
-    .not("match_role_id", "is", null)
-    .not("status", "in", "(forming,active)");
-  if (settledRoleError) {
-    console.error("Sweep: failed to fetch settled series still holding a match role", settledRoleError);
-  }
-  for (const series of settledWithRole ?? []) {
-    await releaseMatchRole(supabase, series);
-    matchRolesReleased += 1;
-  }
-
-  // Stray match roles. Every teardown path deletes its own role, so this only ever catches a
-  // leak — but it is load-bearing rather than tidy-up: Discord caps a guild at 250 roles and
-  // this one already sits around 204, and hitting the ceiling blocks *all* role creation
-  // server-wide, band roles included. See matchRole.ts for the age floor that keeps it from
-  // deleting a role created seconds ago whose id hasn't been written back yet.
-  let matchRolesReclaimed = 0;
-  try {
-    matchRolesReclaimed = await reclaimStrayMatchRoles(supabase);
-  } catch (err) {
-    console.error("Sweep: failed to reclaim stray match roles", err);
-  }
-
+async function sweepInactiveQueueMembers(supabase: AdminClient) {
   // Queue member timeout: auto-remove players who've been queued too long without a pop.
   // Configurable per-queue-type via `queue_member_timeout_minutes` (default 30).
   const queueTimeoutMinutes = await getConfigNumber("queue_member_timeout_minutes", 30);
@@ -312,77 +483,81 @@ export async function POST(request: Request) {
     }
   }
 
-  // Pending /sub nominations expire on their own timer (sub_request_timeout_minutes) rather
-  // than riding the series timeout — a stale nomination shouldn't hang around for up to 2
-  // hours just because nobody clicked Accept. See CLAUDE.md, "Substitutes".
-  const subTimeoutMinutes = await getConfigNumber("sub_request_timeout_minutes", 10);
-  const subCutoff = new Date(Date.now() - subTimeoutMinutes * 60 * 1000).toISOString();
+  return queueMembersRemoved;
+}
 
-  const { data: staleSubRequests, error: subError } = await supabase
-    .from("crl6mansqueuebot_sub_requests")
+// ---- hourly tier ------------------------------------------------------------------------
+async function sweepLeftoverMatchResources(supabase: AdminClient) {
+  // Backstop for reported series: report.ts deletes match channels itself after a 30s
+  // closing-warning delay via `after()`, but that's a single in-function attempt with no
+  // retry — if the invocation gets cut short in prod, the channels would otherwise orphan
+  // forever, since a 'reported' series is outside every other sweep query above. Only sweep
+  // series reported over a minute ago so this never races the in-flight deletion.
+  const reportedCutoff = new Date(Date.now() - 60 * 1000).toISOString();
+  const { data: orphanCandidates, error: orphanError } = await supabase
+    .from("crl6mansqueuebot_series")
     .select("*")
-    .lt("created_at", subCutoff);
+    .eq("status", "reported")
+    .lt("reported_at", reportedCutoff)
+    // queue_channel_id deliberately excluded — it's the shared queue channel, always populated
+    // and never cleared, not a per-match resource deleteMatchChannels cleans up. Including it
+    // here would re-match (and no-op re-sweep) every reported series forever.
+    .or("category_id.not.is.null,voice_channel_a_id.not.is.null,voice_channel_b_id.not.is.null");
 
-  if (subError) {
-    console.error("Sweep: failed to fetch stale sub requests", subError);
+  if (orphanError) {
+    console.error("Sweep: failed to fetch orphaned reported-series channels", orphanError);
   }
 
-  let subRequestsExpired = 0;
-  for (const request of staleSubRequests ?? []) {
-    // Atomic claim (existence = pending, same convention as sub.ts's accept handler) so this
-    // can't race a player clicking Accept in the same tick.
-    const { data: claimed } = await supabase
-      .from("crl6mansqueuebot_sub_requests")
-      .delete()
-      .eq("series_id", request.series_id)
-      .eq("leaving_player_id", request.leaving_player_id)
-      .select("series_id");
-    if (!claimed || claimed.length === 0) continue;
-
-    if (request.message_id) {
-      const { data: series } = await supabase.from("crl6mansqueuebot_series").select("queue_channel_id").eq("id", request.series_id).maybeSingle();
-      if (series?.queue_channel_id) {
-        await discordFetch(`/channels/${series.queue_channel_id}/messages/${request.message_id}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            content: `Sub request to <@${request.nominee_discord_id}> expired without a response.`,
-            components: [],
-          }),
-        }).catch((err) => console.error(`Sweep: failed to update expired sub request message for series ${request.series_id}`, err));
-      }
-    }
-    subRequestsExpired += 1;
+  let orphansCleaned = 0;
+  for (const series of orphanCandidates ?? []) {
+    await deleteMatchChannels(supabase, series);
+    orphansCleaned += 1;
   }
 
-  // Mafia lobby timeout (/mafia — see CLAUDE.md, "Mafia"): a lobby that never fills within
-  // mafia_timeout_seconds auto-cancels. Only ever targets status='waiting' — a lobby mid-grace
-  // ('starting') is handled entirely in-process by the join call that triggered it, never here.
+  // Settled series that still hold their match role. Every teardown path releases its own, so
+  // this only catches a release that didn't complete — but without it those leak *permanently*,
+  // because neither pass around it would ever retry them. The orphan pass above only selects
+  // status = 'reported' with a voice id still set, so (a) a voided series — /cancel, an admin
+  // void, a vote-silence timeout — whose teardown was cut short is outside it entirely, and
+  // (b) a reported series whose role claim failed after the channels were already deleted has
+  // had its voice ids cleared and has dropped out of it too. The stray reclaim below doesn't
+  // cover them either, since it treats any row holding a role id as a legitimate claim.
+  //
+  // releaseMatchRole's atomic claim makes racing report.ts's own 30s-delayed teardown harmless,
+  // and releasing a touch early costs nothing — nothing pings a series after "Teams formed!".
+  // It also does the teams-formed message rewrite, which the stray reclaim can't.
+  let matchRolesReleased = 0;
+  const { data: settledWithRole, error: settledRoleError } = await supabase
+    .from("crl6mansqueuebot_series")
+    .select("*")
+    .not("match_role_id", "is", null)
+    .not("status", "in", "(forming,active)");
+  if (settledRoleError) {
+    console.error("Sweep: failed to fetch settled series still holding a match role", settledRoleError);
+  }
+  for (const series of settledWithRole ?? []) {
+    await releaseMatchRole(supabase, series);
+    matchRolesReleased += 1;
+  }
+
+  // Stray match roles. Every teardown path deletes its own role, so this only ever catches a
+  // leak — but it is load-bearing rather than tidy-up: Discord caps a guild at 250 roles and
+  // this one already sits around 204, and hitting the ceiling blocks *all* role creation
+  // server-wide, band roles included. See matchRole.ts for the age floor that keeps it from
+  // deleting a role created seconds ago whose id hasn't been written back yet.
+  let matchRolesReclaimed = 0;
+  try {
+    matchRolesReclaimed = await reclaimStrayMatchRoles(supabase);
+  } catch (err) {
+    console.error("Sweep: failed to reclaim stray match roles", err);
+  }
+
+  return { orphansCleaned, matchRolesReleased, matchRolesReclaimed };
+}
+
+
+async function sweepStuckStartingMafiaLobbies(supabase: AdminClient) {
   const mafiaTimeoutSeconds = await getConfigNumber("mafia_timeout_seconds", 120);
-  const mafiaCutoff = new Date(Date.now() - mafiaTimeoutSeconds * 1000).toISOString();
-
-  const { data: staleMafiaLobbies, error: mafiaError } = await supabase
-    .from("crl6mansqueuebot_mafia_games")
-    .select("*")
-    .eq("status", "waiting")
-    .lt("created_at", mafiaCutoff);
-
-  if (mafiaError) {
-    console.error("Sweep: failed to fetch stale mafia lobbies", mafiaError);
-  }
-
-  let mafiaLobbiesCancelled = 0;
-  for (const game of staleMafiaLobbies ?? []) {
-    const { data: claimed } = await supabase
-      .from("crl6mansqueuebot_mafia_games")
-      .update({ status: "cancelled" })
-      .eq("id", game.id)
-      .eq("status", "waiting")
-      .select("id");
-    if (!claimed || claimed.length === 0) continue;
-    await cancelStaleMafiaLobby(supabase, game);
-    mafiaLobbiesCancelled += 1;
-  }
-
   // Crash-safety backstop: a lobby stuck in 'starting' well past when the 5-second grace +
   // finalize sequence should ever take (e.g. the invocation running runMafiaFinalizeSequence
   // got killed mid-flight) would otherwise block its channel's unique-active-lobby index
@@ -396,6 +571,7 @@ export async function POST(request: Request) {
   // 120s default the flat version happened to leave 8 minutes of slack, but at a 10-minute window
   // it would have fired on a lobby five seconds into its grace period.
   const mafiaStartingCutoff = new Date(Date.now() - (mafiaTimeoutSeconds + 10 * 60) * 1000).toISOString();
+  let stuckLobbiesCancelled = 0;
   const { data: stuckStartingLobbies } = await supabase
     .from("crl6mansqueuebot_mafia_games")
     .select("*")
@@ -411,59 +587,14 @@ export async function POST(request: Request) {
       .select("id");
     if (!claimed || claimed.length === 0) continue;
     await cancelStaleMafiaLobby(supabase, game, "Something went wrong starting the game — lobby cancelled.");
-    mafiaLobbiesCancelled += 1;
+    stuckLobbiesCancelled += 1;
   }
 
-  // Scheduled season reset (/schedule-reset — see CLAUDE.md, "Seasons"): scheduled_season_reset_at
-  // is a plain ISO timestamp in the generic config table. Delete it BEFORE running the reset
-  // (not after) so a slow performSeasonReset() that overruns into the next minute's sweep tick
-  // can't fire twice — the same "claim first, then act" ordering used everywhere else in this
-  // route, just via delete-the-key instead of an atomic status UPDATE, since there's no series
-  // row here to claim against.
-  let scheduledResetFired = false;
-  const scheduledResetAt = await getConfigValue(SCHEDULED_RESET_CONFIG_KEY);
-  if (scheduledResetAt && new Date(scheduledResetAt).getTime() <= Date.now()) {
-    await deleteConfigValue(SCHEDULED_RESET_CONFIG_KEY);
-    try {
-      const summary = await performSeasonReset();
-      scheduledResetFired = true;
+  return stuckLobbiesCancelled;
+}
 
-      // No real Discord actor to attribute this to — bypasses logAdminAction (which always
-      // renders an `Actor: <@id>` field) in favor of a dedicated announcement embed, but still
-      // records a raw audit_log row for traceability. actor_discord_id is NOT NULL with no
-      // "system" sentinel convention elsewhere in the schema; "system" here renders as a
-      // harmless unresolved <@system> mention in /admin audit-log's plain-text listing only
-      // (not a live notification).
-      await supabase.from("crl6mansqueuebot_audit_log").insert({
-        actor_discord_id: "system",
-        action: "scheduled_reset_fire",
-        details: summary.closedSeasonNumber
-          ? `Closed season ${summary.closedSeasonNumber}, started season ${summary.newSeasonNumber}, ${summary.playersReset} player(s) reset to Unranked`
-          : `Started season ${summary.newSeasonNumber} (no prior active season)`,
-      });
 
-      const logChannelId = await getConfigValue("log_channel_id");
-      if (logChannelId) {
-        await discordFetch(`/channels/${logChannelId}/messages`, {
-          method: "POST",
-          body: JSON.stringify({
-            embeds: [
-              {
-                color: GOLD_COLOR,
-                title: "Scheduled Season Reset",
-                description: summary.closedSeasonNumber
-                  ? `Closed season ${summary.closedSeasonNumber} and started season ${summary.newSeasonNumber}. ${summary.playersReset} player(s) reset to Unranked.`
-                  : `Started season ${summary.newSeasonNumber} (no prior active season).`,
-              },
-            ],
-          }),
-        }).catch((err) => console.error("Sweep: failed to post scheduled-reset announcement embed", err));
-      }
-    } catch (err) {
-      console.error("Sweep: scheduled season reset failed", err);
-    }
-  }
-
+async function sweepMatchTimeStatsDayCounters() {
   // Match Times' supercharged/non-supercharged day counters (see CLAUDE.md, "Match time
   // stats") — advances once per Pacific calendar day, classifying that day against the bonus
   // config as of right now rather than recomputing every past day's classification on every page
@@ -475,21 +606,7 @@ export async function POST(request: Request) {
     console.error("Sweep: failed to advance match-time-stats day counters", err);
   }
 
-  return NextResponse.json({
-    ok: true,
-    voided,
-    voidedForSilence,
-    seriesLengthResolved,
-    draftPicksForced,
-    orphansCleaned,
-    matchRolesReleased,
-    matchRolesReclaimed,
-    queueMembersRemoved,
-    subRequestsExpired,
-    mafiaLobbiesCancelled,
-    scheduledResetFired,
-    matchTimeStatsDaysAdvanced,
-  });
+  return matchTimeStatsDaysAdvanced;
 }
 
 async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, message: string) {

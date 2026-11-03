@@ -26,7 +26,7 @@ Read the full memory **only when relevant to the task**. Search it for the featu
 - Database: Supabase Postgres, shared by the website and Discord system.
 - Discord bot: Next.js API routes inside `web/`, not a persistent separate process. Discord sends interactions to an HTTP endpoint.
 - Verify Discord request signatures and acknowledge interactions within Discord's three-second limit. Defer responses when work may take longer.
-- Scheduled cleanup and timeout work runs through the sweep route and Supabase `pg_cron`.
+- Scheduled cleanup and timeout work runs through the sweep route and Supabase `pg_cron`, split into tiers (migration 0057): a minute job that only calls the route while a series is forming, a sub request is pending or a Mafia lobby is waiting; a 15-minute job for series expiry and queue inactivity; an hourly job for leftover-resource backstops; and a one-off job per scheduled season reset, removed when it fires. Gates are EXISTS checks on live tables, never app-maintained counters.
 - MMR calculations should remain pure and independent of Discord/database code where possible.
 
 ## Current phase status
