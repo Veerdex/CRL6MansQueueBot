@@ -29,6 +29,8 @@ function player(id: string, mmr: number, isPlaced = false): PlayerRow {
     avatar_url: null,
     created_at: "2026-01-01T00:00:00Z",
     role_sync_pending: false,
+    queue_timeout_until: null,
+    strike_count: 0,
   };
 }
 

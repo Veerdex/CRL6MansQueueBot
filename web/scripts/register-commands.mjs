@@ -990,6 +990,33 @@ const commands = [
     ],
   },
   {
+    name: "timeout",
+    description: "Admin: bar a player from queueing for a set time (replaces any current timeout; 0 ends it).",
+    type: 1,
+    options: [
+      { name: "user", description: "The player to time out.", type: USER_OPTION, required: true },
+      { name: "days", description: "Days (default 0).", type: INTEGER_OPTION, required: false, min_value: 0, max_value: 3650 },
+      { name: "hours", description: "Hours (default 0).", type: INTEGER_OPTION, required: false, min_value: 0, max_value: 1000 },
+      { name: "minutes", description: "Minutes (default 0).", type: INTEGER_OPTION, required: false, min_value: 0, max_value: 10000 },
+    ],
+  },
+  {
+    name: "strike",
+    description: "Admin: strike a player — 1d, 3d, 1 week, 1 month, then permanent queue timeout.",
+    type: 1,
+    options: [
+      { name: "user", description: "The player to strike.", type: USER_OPTION, required: true },
+      {
+        name: "level",
+        description: "Set their strike level directly instead of adding one (0 clears strikes and timeout).",
+        type: INTEGER_OPTION,
+        required: false,
+        min_value: 0,
+        max_value: 5,
+      },
+    ],
+  },
+  {
     name: "test-rank-match",
     description: "Admin: spin up a simulated Rank Queue match (you + 5 test bots) to try the flow yourself.",
     type: 1,

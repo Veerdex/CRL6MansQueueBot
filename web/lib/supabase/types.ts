@@ -30,6 +30,10 @@ export type PlayerRow = {
   // so the next recomputeBands() run retries the Discord sync even though this player's own
   // band/is_prism didn't change again in the meantime.
   role_sync_pending: boolean;
+  // See migration 0058 and lib/discord/queueTimeout.ts. queue_timeout_until is an ISO timestamp,
+  // "infinity" for a permanent ban, or null for no timeout.
+  queue_timeout_until: string | null;
+  strike_count: number;
 };
 
 export type SeasonRow = {

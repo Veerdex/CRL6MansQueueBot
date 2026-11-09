@@ -13,6 +13,7 @@ import { computeBonusDayMultiplier, isSuperchargedDayLive } from "./bonusDay";
 import { grantUnrankedRoleToNewPlayer } from "./bands";
 import { getConfigNumber, getConfigValue } from "./config";
 import { getStreakIds, getPriorRankWinStreak, getPriorRankLossStreak, mention, FLAME_THRESHOLD, COLD_THRESHOLD, ON_FIRE_EMOJI, COLD_EMOJI, type StreakIds } from "./streaks";
+import { queueBlockedMessage } from "./queueTimeoutRules";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -762,6 +763,13 @@ async function processQueueCommand(interaction: DiscordInteraction, action: "joi
   }
 
   // action === "join"
+  // Admin queue timeout / strike (queueTimeout.ts). The ephemeral reply says how long is left.
+  const blockedMessage = queueBlockedMessage(player.queue_timeout_until, new Date());
+  if (blockedMessage) {
+    await editOriginalResponse(interaction.token, { content: blockedMessage });
+    return;
+  }
+
   if (await isPlayerLockedInActiveSeries(supabase, player.id)) {
     await editOriginalResponse(interaction.token, {
       content: "You're already locked into an active series — finish or report that first.",

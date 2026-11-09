@@ -142,6 +142,8 @@ async function processHelp(interaction: DiscordInteraction) {
       "`/list-admin-roles` — list roles with admin access.",
       "`/newseason` — close the current season (if any) and start the next one.",
       "`/setbandrole band:<Iron|Garnet|Emerald|Sapphire|Unranked|Prism> role:<@role>` — map a band (or the Unranked role, or the season-end Prism Top-N role) to a Discord role for auto role-sync.",
+      "`/timeout user: [days:] [hours:] [minutes:]` — bar a player from queueing for that long, replacing any current timeout (all 0 ends it).",
+      "`/strike user: [level:]` — add a strike (or set the level; 0 resets): 1 day, 3 days, 1 week, 1 month, then permanent.",
       "`/test-rank-match` — spin up a simulated match (you + 5 test bots) to try the flow yourself.",
       "`/end-test` — run inside a test match's channel to tear it down (category, voice channels, text channel, and its test data).",
     ];

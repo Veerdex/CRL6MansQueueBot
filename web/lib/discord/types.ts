@@ -49,6 +49,9 @@ export type DiscordInteraction = {
     components?: ModalSubmitComponent[];
     resolved?: {
       attachments?: Record<string, { id: string; url: string; content_type?: string }>;
+      // USER_OPTION values arrive as bare ids; the user/member objects ride along here.
+      users?: Record<string, DiscordUser>;
+      members?: Record<string, { nick?: string | null }>;
     };
   };
 };
@@ -74,7 +77,18 @@ export function stripClanTag(name: string): string {
 // candidate if a stripped value comes back empty (e.g. a nickname that was only a tag).
 export function interactionDisplayName(interaction: DiscordInteraction): string {
   const user = interaction.member?.user ?? interaction.user;
-  const candidates = [interaction.member?.nick, user?.global_name, user?.username];
+  return pickDisplayName([interaction.member?.nick, user?.global_name, user?.username]);
+}
+
+// Same display-name rules as interactionDisplayName, for a user picked through a USER_OPTION
+// (e.g. an admin command's target) rather than the caller — read off data.resolved.
+export function resolvedUserDisplayName(interaction: DiscordInteraction, userId: string): string {
+  const user = interaction.data?.resolved?.users?.[userId];
+  const member = interaction.data?.resolved?.members?.[userId];
+  return pickDisplayName([member?.nick, user?.global_name, user?.username]);
+}
+
+function pickDisplayName(candidates: (string | null | undefined)[]): string {
   for (const candidate of candidates) {
     if (!candidate) continue;
     const stripped = stripMedals(stripClanTag(candidate));

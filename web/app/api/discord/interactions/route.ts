@@ -19,6 +19,7 @@ import { handleVoteDefaultCommand } from "@/lib/discord/voteDefault";
 import { handleReportCommand } from "@/lib/discord/report";
 import { handleSubCommand, handleNominateCommand, handleSubAcceptButton } from "@/lib/discord/sub";
 import { handleCorrectCommand } from "@/lib/discord/correct";
+import { handleTimeoutCommand, handleStrikeCommand } from "@/lib/discord/queueTimeout";
 import { handleVoteButton, handleDraftPickButton, handleDraftPickMultiButton, handleCancelCommand, handleSeriesLengthVoteButton } from "@/lib/discord/teamFormation";
 import type { VoteChoice, SeriesLength } from "@/lib/supabase/types";
 import { handleSetBandRoleCommand, handleRanksCommand } from "@/lib/discord/bands";
@@ -239,6 +240,14 @@ export async function POST(request: Request) {
 
     if (commandName === "admin") {
       return NextResponse.json(handleAdminCommand(interaction));
+    }
+
+    if (commandName === "timeout") {
+      return NextResponse.json(handleTimeoutCommand(interaction));
+    }
+
+    if (commandName === "strike") {
+      return NextResponse.json(handleStrikeCommand(interaction));
     }
 
     if (commandName === "test-rank-match") {
