@@ -77,6 +77,19 @@ export function queueBlockedMessage(queueTimeoutUntil: string | null, now: Date)
   return `You're timed out from queueing for another **${formatRemaining(state.remainingMs)}** — until ${discordTimestamp(state.until)}.`;
 }
 
+// The ephemeral reply a timed-out nominee gets from a sub request's Accept button — subbing
+// in is another way into a match, so the queue timeout covers it too. null = not timed out.
+export function subBlockedMessage(queueTimeoutUntil: string | null, now: Date): string | null {
+  const state = timeoutState(queueTimeoutUntil, now);
+  if (state.kind === "none") return null;
+  if (state.kind === "permanent") return "You're permanently timed out from queueing, so you can't sub in.";
+  return `You're timed out from queueing for another **${formatRemaining(state.remainingMs)}** (until ${discordTimestamp(state.until)}), so you can't sub in.`;
+}
+
+export function isTimedOut(queueTimeoutUntil: string | null, now: Date): boolean {
+  return timeoutState(queueTimeoutUntil, now).kind !== "none";
+}
+
 // How an admin-facing reply describes a newly stored timeout.
 export function describeTimeout(queueTimeoutUntil: string | null, now: Date): string {
   const state = timeoutState(queueTimeoutUntil, now);

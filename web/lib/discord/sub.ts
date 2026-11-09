@@ -4,6 +4,7 @@ import { InteractionResponseType, InteractionResponseFlags, MessageComponentType
 import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, editOriginalResponse } from "./rest";
 import { getOrCreatePlayer, isPlayerLockedInActiveSeries, getLockedSeriesForPlayer } from "./queue";
+import { isTimedOut, subBlockedMessage } from "./queueTimeoutRules";
 import { swapMatchRoleHolder } from "./matchRole";
 import { hasAdminAccess } from "./admin";
 import { getStreakIds, mention } from "./streaks";
@@ -162,7 +163,16 @@ async function processSubRequest(
   }
 
   // Check if nominee is locked into another active series
-  const { data: nomineePlayer } = await supabase.from("crl6mansqueuebot_players").select("id").eq("discord_id", nomineeDiscordId).maybeSingle();
+  const { data: nomineePlayer } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("id, queue_timeout_until")
+    .eq("discord_id", nomineeDiscordId)
+    .maybeSingle();
+  // A queue timeout (/timeout, /strike — queueTimeout.ts) bars subbing in as well as /q.
+  if (nomineePlayer && isTimedOut(nomineePlayer.queue_timeout_until, new Date())) {
+    await editOriginalResponse(interaction.token, { content: "That player is timed out from queueing and can't be nominated." });
+    return;
+  }
   if (nomineePlayer && (await isPlayerLockedInActiveSeries(supabase, nomineePlayer.id))) {
     await editOriginalResponse(interaction.token, { content: "That player is currently locked in another match and can't be nominated." });
     return;
@@ -261,6 +271,20 @@ async function processSubAccept(interaction: DiscordInteraction, seriesId: strin
   }
   if (subRequest.nominee_discord_id !== discordId) {
     await editOriginalResponse(interaction.token, { content: "This sub request isn't for you." });
+    return;
+  }
+
+  // Checked before the claim below so a timed-out nominee's Accept doesn't also wipe the
+  // leaving player's other pending nominations — their own request just expires via the sweep.
+  // Also re-checked here (not only at nomination) for a timeout set after they were nominated.
+  const { data: nomineeTimeout } = await supabase
+    .from("crl6mansqueuebot_players")
+    .select("queue_timeout_until")
+    .eq("discord_id", discordId)
+    .maybeSingle();
+  const timeoutMessage = subBlockedMessage(nomineeTimeout?.queue_timeout_until ?? null, new Date());
+  if (timeoutMessage) {
+    await editOriginalResponse(interaction.token, { content: timeoutMessage });
     return;
   }
 

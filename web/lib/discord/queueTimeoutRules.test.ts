@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   PERMANENT_TIMEOUT,
   formatRemaining,
+  isTimedOut,
   queueBlockedMessage,
+  subBlockedMessage,
   timeoutDurationMs,
   timeoutState,
   timeoutUntilForStrikeLevel,
@@ -59,5 +61,17 @@ describe("formatRemaining", () => {
     expect(formatRemaining(1)).toBe("1m");
     expect(formatRemaining(60 * 60 * 1000)).toBe("1h");
     expect(formatRemaining(DAY + 61_000)).toBe("1d 2m");
+  });
+});
+
+describe("subBlockedMessage / isTimedOut", () => {
+  it("blocks subbing in while a timeout is active", () => {
+    expect(subBlockedMessage("2026-11-09T13:00:00.000Z", NOW)).toContain("**1h**");
+    expect(subBlockedMessage(PERMANENT_TIMEOUT, NOW)).toMatch(/permanently/);
+    expect(isTimedOut("2026-11-09T13:00:00.000Z", NOW)).toBe(true);
+  });
+  it("allows subbing in once the timeout has passed", () => {
+    expect(subBlockedMessage("2026-11-09T11:00:00.000Z", NOW)).toBeNull();
+    expect(isTimedOut(null, NOW)).toBe(false);
   });
 });

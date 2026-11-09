@@ -80,7 +80,7 @@ The configured weekly bonus period increases both gains and losses using a multi
 ## Queue timeouts and strikes
 
 - `/timeout user: [days:] [hours:] [minutes:]` (admin) sets `queue_timeout_until` to now + duration, overwriting any existing timeout; a total of 0 ends it. `/strike user: [level:]` (admin) adds one strike (capped at 5), or sets the level when `level:` is given, and applies that level's timeout: 1d, 3d, 1w, 30d, then permanent (`'infinity'`). Level 0 resets strikes and clears the timeout. Migration 0058.
-- `/q` replies ephemerally with the time remaining while a timeout is active. Setting a timeout removes the player from the queue but never voids an active series. Details are in the full memory.
+- `/q` replies ephemerally with the time remaining while a timeout is active, and a timed-out player can't be nominated as a substitute or accept a sub request. Setting a timeout removes the player from the queue but never voids an active series. Details are in the full memory.
 
 ## Discord channel behavior
 

@@ -530,7 +530,8 @@ Universal Queue was fully removed this session — explicit user request ("I wan
 - When either command sets a timeout, the player is removed from any queue and the queue message refreshes. A series they're already locked into is left alone (use `/admin force-leave`). Both commands create a player row for a target who has none yet, so the timeout applies to their first `/q`.
 - Enforced in `queue.ts`'s `processQueueCommand` join path, before the active-series check: an ephemeral "timed out for another **Xd Yh Zm** — until <Discord timestamp>" reply, or "permanently timed out". `/l` is unaffected.
 - Both actions are audited (`queue_timeout` / `strike`) with before/after change entries. Pure rules live in `web/lib/discord/queueTimeoutRules.ts` (tested); handlers live in `web/lib/discord/queueTimeout.ts`.
-- **Not covered (open)**: a timed-out player can still accept a `/sub` nomination, and the timeout is checked in app code before the join RPC rather than inside it, so a `/q` racing the timeout write by milliseconds could slip in once.
+- **Substitutes are covered too** (`sub.ts`): `/sub`/`/nominate` refuse a timed-out nominee ("That player is timed out from queueing and can't be nominated."), and the Accept button re-checks before claiming the request, so a timeout set after the nomination also blocks it. A blocked Accept deliberately runs before the claim, so the leaving player's other pending nominations survive; the timed-out nominee's own request just expires through the sweep.
+- **Not covered (open)**: the timeout is checked in app code before the join RPC rather than inside it, so a `/q` racing the timeout write by milliseconds could slip in once.
 
 ## Open items
 
