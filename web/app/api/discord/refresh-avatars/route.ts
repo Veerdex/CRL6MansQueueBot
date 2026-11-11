@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { refreshPlayerAvatars } from "@/lib/discord/avatars";
 import { syncNicknameMedals, type NicknameMedalSummary } from "@/lib/discord/nicknameSync";
+import { runDailyDiscordBackstops } from "@/lib/discord/dailyBackstops";
 
 export async function POST(request: Request) {
   const secret = process.env.CRON_SWEEP_SECRET;
@@ -22,5 +23,8 @@ export async function POST(request: Request) {
     console.error("Nickname medal sync failed", error);
     medals = { error: error instanceof Error ? error.message : String(error) };
   }
-  return NextResponse.json({ ok: true, ...summary, medals });
+  // Also the daily slot for the sweep's Discord-side backstops (stray match roles, Match Times
+  // day counter), which pg_cron can't gate on — see dailyBackstops.ts and migration 0059.
+  const backstops = await runDailyDiscordBackstops();
+  return NextResponse.json({ ok: true, ...summary, medals, ...backstops });
 }

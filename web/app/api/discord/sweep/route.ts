@@ -3,13 +3,14 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { discordFetch, sendDirectMessage, GOLD_COLOR } from "@/lib/discord/rest";
 import { getConfigNumber, getConfigValue, deleteConfigValue } from "@/lib/discord/config";
 import { deleteMatchChannels, clearPendingSeriesState } from "@/lib/discord/matchChannels";
-import { reclaimStrayMatchRoles, releaseMatchRole } from "@/lib/discord/matchRole";
+import { releaseMatchRole } from "@/lib/discord/matchRole";
 import { postTrackedQueueMessage, refreshQueueMessage, refreshQueueMessageAfterSettlement, fetchQueueMembers, getQueueMessageMode } from "@/lib/discord/queue";
 import { performSeasonReset } from "@/lib/discord/seasons";
-import { SCHEDULED_RESET_CONFIG_KEY, unscheduleSeasonResetCron } from "@/lib/discord/scheduledReset";
+import { SCHEDULED_RESET_CONFIG_KEY } from "@/lib/discord/scheduledReset";
 import { cancelStaleMafiaLobby } from "@/lib/discord/mafia";
 import { resolveSeriesLengthByMajority, autoPickForTimedOutCaptain } from "@/lib/discord/teamFormation";
-import { advanceMatchTimeStatsDayCounters } from "@/lib/discord/bonusDay";
+import { runDailyDiscordBackstops } from "@/lib/discord/dailyBackstops";
+import { parseSweepRequest, sweepRuns, type SweepReason, type SweepRequest } from "@/lib/discord/sweepReasons";
 import type { SeriesRow } from "@/lib/supabase/types";
 
 // The scheduled season reset below runs a full closeSeason(): paged standings reads, a
@@ -25,28 +26,15 @@ export const maxDuration = 300;
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-// Which slice of the sweep a pg_cron job is asking for (migration 0057). Each job only calls this
-// route at all when its own SQL gate finds something for that slice to do, which is what keeps an
-// idle server from invoking the function 1,440 times a day:
-//   minute       — every minute, gated on a forming series / pending sub request / waiting Mafia
-//                  lobby: the short timers (votes, draft picks, sub expiry, Mafia join window).
-//   quarter      — every 15 minutes, gated on a live series or a non-empty queue: the 2-hour
-//                  series expiry and queue inactivity, which can afford up to 15 minutes' lag.
-//   hourly       — every hour, ungated: leftover channel/role/lobby backstops, the Match Times
-//                  day counter, and the safety net for a scheduled season reset whose one-off
-//                  job never fired.
-//   season-reset — the one-off job /schedule-reset creates for the reset's own minute.
-//   all          — no tier given (the pre-0057 single every-minute job, or a manual call): the
-//                  whole sweep, exactly as before the split.
-type SweepTier = "minute" | "quarter" | "hourly" | "season-reset" | "all";
-const SWEEP_TIERS: readonly SweepTier[] = ["minute", "quarter", "hourly", "season-reset", "all"];
-
-async function readTier(request: Request): Promise<SweepTier> {
+// pg_cron calls this route only when Postgres finds something due (migration 0059,
+// crl6mansqueuebot_cron.tick), and passes the reasons so only those passes run — see
+// sweepReasons.ts. No reasons (a manual call) runs the whole sweep, including the two
+// Discord-side passes that otherwise live in the daily refresh-avatars job.
+async function readSweepRequest(request: Request): Promise<SweepRequest> {
   try {
-    const body = (await request.json()) as { tier?: unknown };
-    return SWEEP_TIERS.includes(body?.tier as SweepTier) ? (body.tier as SweepTier) : "all";
+    return parseSweepRequest(await request.json());
   } catch {
-    return "all";
+    return { kind: "all" };
   }
 }
 
@@ -63,46 +51,59 @@ export async function POST(request: Request) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
-  const tier = await readTier(request);
-  const runs = (t: Exclude<SweepTier, "all">) => tier === "all" || tier === t;
+  const sweep = await readSweepRequest(request);
+  const runs = (...reasons: SweepReason[]) => sweepRuns(sweep, ...reasons);
   const supabase = createAdminClient();
-  const summary: Record<string, unknown> = { ok: true, tier };
+  const summary: Record<string, unknown> = {
+    ok: true,
+    reasons: sweep.kind === "all" ? "all" : [...sweep.reasons],
+  };
 
-  if (runs("minute")) {
+  if (runs("series_length_vote", "vote_silence", "draft_pick")) {
     Object.assign(summary, await sweepFormationTimeouts(supabase));
+  }
+  if (runs("sub_expiry")) {
     summary.subRequestsExpired = await sweepExpiredSubRequests(supabase);
+  }
+  if (runs("mafia_lobby")) {
     summary.mafiaLobbiesCancelled = await sweepWaitingMafiaLobbies(supabase);
   }
-
-  if (runs("quarter")) {
+  if (runs("series_expiry")) {
     try {
       summary.voided = await sweepExpiredSeries(supabase);
     } catch (err) {
       console.error("Sweep: failed to fetch stale series", err);
       return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
     }
+  }
+  if (runs("queue_inactivity")) {
     summary.queueMembersRemoved = await sweepInactiveQueueMembers(supabase);
   }
-
-  if (runs("hourly")) {
-    Object.assign(summary, await sweepLeftoverMatchResources(supabase));
+  if (runs("orphan_channels")) {
+    summary.orphansCleaned = await sweepOrphanedMatchChannels(supabase);
+  }
+  if (runs("match_role_release")) {
+    summary.matchRolesReleased = await sweepSettledMatchRoles(supabase);
+  }
+  if (runs("stuck_mafia")) {
     summary.stuckMafiaLobbiesCancelled = await sweepStuckStartingMafiaLobbies(supabase);
-    summary.matchTimeStatsDaysAdvanced = await sweepMatchTimeStatsDayCounters();
+  }
+  if (runs("season_reset")) {
+    summary.scheduledResetFired = await fireScheduledSeasonResetIfDue(supabase);
   }
 
-  // The season reset is the one-off job's whole purpose, and the hourly run is its safety net.
-  // Under "all" it keeps running every tick like before the split.
-  if (tier === "season-reset" || tier === "hourly" || tier === "all") {
-    summary.scheduledResetFired = await fireScheduledSeasonResetIfDue(supabase);
+  // Discord-side passes Postgres can't gate on; normally run by the daily refresh-avatars job.
+  if (sweep.kind === "all") {
+    Object.assign(summary, await runDailyDiscordBackstops(supabase));
   }
 
   return NextResponse.json(summary);
 }
 
 // Scheduled season reset (/schedule-reset — see CLAUDE.md, "Seasons"): scheduled_season_reset_at
-// is a plain ISO timestamp in the generic config table, and /schedule-reset also creates a one-off
-// pg_cron job for it (scheduledReset.ts). Two jobs can now land on the same reset — the one-off
-// and the hourly safety net — so the claim is an atomic DELETE ... RETURNING of the exact row
+// is a plain ISO timestamp in the generic config table, and the every-minute pg_cron gate wakes
+// this route with "season_reset" once it has passed (migration 0059). A manual whole-sweep call
+// can land on the same reset, so the claim is an atomic DELETE ... RETURNING of the exact row
 // that was read, straight from the database rather than the 30-second config cache: exactly one
 // caller gets the row back, and a reset cleared or rescheduled in the meantime matches nothing.
 // The claim happens BEFORE running the reset so a slow performSeasonReset() can't fire twice.
@@ -116,12 +117,7 @@ async function fireScheduledSeasonResetIfDue(supabase: AdminClient): Promise<boo
     console.error("Sweep: failed to read scheduled season reset", readError);
     return false;
   }
-  if (!row) {
-    // Nothing scheduled, so any one-off job still standing is a leftover (cron has no year field,
-    // so it would otherwise fire again on the same date next year). Harmless if there's none.
-    await unscheduleSeasonResetCron(supabase);
-    return false;
-  }
+  if (!row) return false;
   const scheduledResetAt = row.value as string;
   if (new Date(scheduledResetAt).getTime() > Date.now()) return false;
 
@@ -134,9 +130,6 @@ async function fireScheduledSeasonResetIfDue(supabase: AdminClient): Promise<boo
   if (!claimed || claimed.length === 0) return false;
   // Keep this instance's config cache from still showing the reset as pending.
   await deleteConfigValue(SCHEDULED_RESET_CONFIG_KEY);
-
-  // Remove the one-off cron job as soon as the reset is claimed, whichever job claimed it.
-  await unscheduleSeasonResetCron(supabase);
 
   try {
     const summary = await performSeasonReset();
@@ -486,8 +479,8 @@ async function sweepInactiveQueueMembers(supabase: AdminClient) {
   return queueMembersRemoved;
 }
 
-// ---- hourly tier ------------------------------------------------------------------------
-async function sweepLeftoverMatchResources(supabase: AdminClient) {
+// ---- leftover-resource backstops ------------------------------------------------------
+async function sweepOrphanedMatchChannels(supabase: AdminClient) {
   // Backstop for reported series: report.ts deletes match channels itself after a 30s
   // closing-warning delay via `after()`, but that's a single in-function attempt with no
   // retry — if the invocation gets cut short in prod, the channels would otherwise orphan
@@ -514,14 +507,19 @@ async function sweepLeftoverMatchResources(supabase: AdminClient) {
     orphansCleaned += 1;
   }
 
+  return orphansCleaned;
+}
+
+async function sweepSettledMatchRoles(supabase: AdminClient) {
   // Settled series that still hold their match role. Every teardown path releases its own, so
   // this only catches a release that didn't complete — but without it those leak *permanently*,
   // because neither pass around it would ever retry them. The orphan pass above only selects
   // status = 'reported' with a voice id still set, so (a) a voided series — /cancel, an admin
   // void, a vote-silence timeout — whose teardown was cut short is outside it entirely, and
   // (b) a reported series whose role claim failed after the channels were already deleted has
-  // had its voice ids cleared and has dropped out of it too. The stray reclaim below doesn't
-  // cover them either, since it treats any row holding a role id as a legitimate claim.
+  // had its voice ids cleared and has dropped out of it too. The daily stray reclaim
+  // (dailyBackstops.ts) doesn't cover them either, since it treats any row holding a role id as a
+  // legitimate claim.
   //
   // releaseMatchRole's atomic claim makes racing report.ts's own 30s-delayed teardown harmless,
   // and releasing a touch early costs nothing — nothing pings a series after "Teams formed!".
@@ -540,19 +538,7 @@ async function sweepLeftoverMatchResources(supabase: AdminClient) {
     matchRolesReleased += 1;
   }
 
-  // Stray match roles. Every teardown path deletes its own role, so this only ever catches a
-  // leak — but it is load-bearing rather than tidy-up: Discord caps a guild at 250 roles and
-  // this one already sits around 204, and hitting the ceiling blocks *all* role creation
-  // server-wide, band roles included. See matchRole.ts for the age floor that keeps it from
-  // deleting a role created seconds ago whose id hasn't been written back yet.
-  let matchRolesReclaimed = 0;
-  try {
-    matchRolesReclaimed = await reclaimStrayMatchRoles(supabase);
-  } catch (err) {
-    console.error("Sweep: failed to reclaim stray match roles", err);
-  }
-
-  return { orphansCleaned, matchRolesReleased, matchRolesReclaimed };
+  return matchRolesReleased;
 }
 
 
@@ -593,21 +579,6 @@ async function sweepStuckStartingMafiaLobbies(supabase: AdminClient) {
   return stuckLobbiesCancelled;
 }
 
-
-async function sweepMatchTimeStatsDayCounters() {
-  // Match Times' supercharged/non-supercharged day counters (see CLAUDE.md, "Match time
-  // stats") — advances once per Pacific calendar day, classifying that day against the bonus
-  // config as of right now rather than recomputing every past day's classification on every page
-  // load. Best-effort/non-fatal, same as every other block in this route.
-  let matchTimeStatsDaysAdvanced = 0;
-  try {
-    matchTimeStatsDaysAdvanced = await advanceMatchTimeStatsDayCounters(new Date());
-  } catch (err) {
-    console.error("Sweep: failed to advance match-time-stats day counters", err);
-  }
-
-  return matchTimeStatsDaysAdvanced;
-}
 
 async function voidStaleSeries(supabase: ReturnType<typeof createAdminClient>, series: SeriesRow, message: string) {
   const { error } = await supabase

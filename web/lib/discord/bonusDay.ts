@@ -164,10 +164,10 @@ export const MATCH_TIME_STATS_SUPERCHARGED_DAYS_KEY = "match_time_stats_supercha
 export const MATCH_TIME_STATS_NONSUPERCHARGED_DAYS_KEY = "match_time_stats_nonsupercharged_days";
 export const MATCH_TIME_STATS_LAST_MARKED_DATE_KEY = "match_time_stats_last_marked_date";
 
-// DB-backed wrapper around computeDayAdvanceSteps, called once per sweep tick (see
-// web/app/api/discord/sweep/route.ts) — a no-op on nearly every tick (0 steps, since a Pacific
-// day only rolls over once every ~1440 one-minute ticks), and catches up multiple days at once
-// if the sweep was ever down across a day boundary. Returns how many days were counted this call.
+// DB-backed wrapper around computeDayAdvanceSteps, called once a day by the refresh-avatars job
+// (see dailyBackstops.ts) and by a manual whole-sweep call — normally one step per run, a no-op
+// on a repeat call the same Pacific day, and catches up multiple days at once if a run was ever
+// missed. Returns how many days were counted this call.
 export async function advanceMatchTimeStatsDayCounters(now: Date): Promise<number> {
   const lastMarked = await getConfigValue(MATCH_TIME_STATS_LAST_MARKED_DATE_KEY);
   if (!lastMarked) return 0; // not seeded yet — the migration that seeds it hasn't been applied

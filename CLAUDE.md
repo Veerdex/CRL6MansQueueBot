@@ -26,7 +26,9 @@ Read the full memory **only when relevant to the task**. Search it for the featu
 - Database: Supabase Postgres, shared by the website and Discord system.
 - Discord bot: Next.js API routes inside `web/`, not a persistent separate process. Discord sends interactions to an HTTP endpoint.
 - Verify Discord request signatures and acknowledge interactions within Discord's three-second limit. Defer responses when work may take longer.
-- Scheduled cleanup and timeout work runs through the sweep route and Supabase `pg_cron`, split into tiers (migration 0057): a minute job that only calls the route while a series is forming, a sub request is pending or a Mafia lobby is waiting; a 15-minute job for series expiry and queue inactivity; an hourly job for leftover-resource backstops; and a one-off job per scheduled season reset, removed when it fires. Gates are EXISTS checks on live tables, never app-maintained counters.
+- Scheduled cleanup and timeout work runs through the sweep route and Supabase `pg_cron`. The setup is one gated every-minute job (migrations 0059–0060): `crl6mansqueuebot_cron.tick()` asks `crl6mansqueuebot_cron.due()` what is due, and calls the route only when something is. It posts the reasons so the route runs only those passes. A reason that is still due after a wake retries on the next minute; the user chose that over a 10-minute throttle. The gates read live tables, never app-maintained counters.
+  - **Adding sweep work**: any new time-based sweep pass needs a matching `due()` row (via a new migration) and a reason in `web/lib/discord/sweepReasons.ts`, or it never runs.
+  - **Daily backstops**: checks that compare against Discord or the calendar can't be gated in Postgres. These are the stray match-role reclaim and the Match Times day counter, and they run in the daily refresh-avatars job via `dailyBackstops.ts`.
 - MMR calculations should remain pure and independent of Discord/database code where possible.
 
 ## Current phase status

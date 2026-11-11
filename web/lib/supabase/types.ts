@@ -447,14 +447,6 @@ export type Database = {
         Args: { p_series_id: string };
         Returns: number;
       };
-      crl6mansqueuebot_schedule_season_reset_cron: {
-        Args: { p_reset_at: string };
-        Returns: undefined;
-      };
-      crl6mansqueuebot_unschedule_season_reset_cron: {
-        Args: Record<string, never>;
-        Returns: boolean;
-      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
